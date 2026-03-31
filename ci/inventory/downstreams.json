@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "downstreams": [
+    {
+      "name": "PrimeNumberTheoremAnd",
+      "repo": "AlexKontorovich/PrimeNumberTheoremAnd",
+      "default_branch": "main",
+      "dependency_name": "mathlib",
+      "enabled": true
+    },
+    {
+      "name": "Toric",
+      "repo": "YaelDillies/toric",
+      "default_branch": "master",
+      "dependency_name": "mathlib",
+      "enabled": true
+    },
+    {
+      "name": "cslib",
+      "repo": "leanprover/cslib",
+      "default_branch": "main",
+      "dependency_name": "mathlib",
+      "enabled": true
+    }
+  ]
+}

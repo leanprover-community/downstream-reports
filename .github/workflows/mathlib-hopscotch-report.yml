@@ -1,0 +1,248 @@
+name: mathlib-hopscotch-report
+
+on:
+  # TODO: Enable once the manual-testing loop is stable.
+  # schedule:
+  #   - cron: "0 6 * * *"
+  workflow_dispatch:
+    inputs:
+      upstream_ref:
+        description: "Upstream ref to test. Defaults to master."
+        required: false
+        type: string
+      downstream:
+        description: "Single downstream name to test. Defaults to all enabled downstreams."
+        required: false
+        type: string
+      quiet:
+        description: "Run the tool with --quiet."
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: mathlib-hopscotch-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      has_downstreams: ${{ steps.matrix.outputs.has_downstreams }}
+      matrix: ${{ steps.matrix.outputs.matrix }}
+      upstream_ref: ${{ steps.upstream_ref.outputs.value }}
+    steps:
+      - uses: actions/checkout@v6
+      - id: upstream_ref
+        env:
+          INPUT_UPSTREAM_REF: ${{ inputs.upstream_ref }}
+        run: |
+          if [ -n "$INPUT_UPSTREAM_REF" ]; then
+            echo "value=$INPUT_UPSTREAM_REF" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=master" >> "$GITHUB_OUTPUT"
+          fi
+      - id: matrix
+        env:
+          INPUT_DOWNSTREAM: ${{ inputs.downstream }}
+        run: |
+          python3 - <<'PY' > matrix.json
+          import json
+          import os
+          from pathlib import Path
+
+          payload = json.loads(Path("ci/inventory/downstreams.json").read_text())
+          downstream = os.environ.get("INPUT_DOWNSTREAM", "")
+          include = [
+              item
+              for item in payload.get("downstreams", [])
+              if item.get("enabled", True) and (not downstream or item["name"] == downstream)
+          ]
+          print(json.dumps({"include": include}, sort_keys=True))
+          PY
+          MATRIX_JSON=$(tr -d '\n' < matrix.json)
+          echo "matrix=$MATRIX_JSON" >> "$GITHUB_OUTPUT"
+          if [ "$MATRIX_JSON" = '{"include":[]}' ]; then
+            echo "has_downstreams=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_downstreams=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  validate:
+    if: needs.plan.outputs.has_downstreams == 'true'
+    name: "validate: ${{ matrix.name }}"
+    needs:
+      - plan
+    runs-on:
+      - self-hosted
+      - pr
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix: ${{ fromJson(needs.plan.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v6
+      
+      - name: Set up Python
+        uses: actions/setup-python@v6.2.0
+        with:
+          python-version: '3.x'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f scripts/requirements.txt ]; then
+            pip install -r scripts/requirements.txt
+          fi
+
+      - name: Install Lean
+        run: |
+          # elan-init.sh is fetched from a well-known URL on every run. This is
+          # intentional: the self-hosted runners are ephemeral and there is no
+          # pinned elan release to maintain. A compromised elan release would be
+          # quickly noticed by the community; the risk is accepted.
+          curl https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh -sSf | sh -s -- -y --default-toolchain none
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+
+      - name: Download hopscotch binary
+        run: |
+          mkdir -p "${{ runner.temp }}/tool-bin"
+          curl -L \
+            https://github.com/leanprover-community/hopscotch/releases/download/v1.0.0/hopscotch \
+            -o "${{ runner.temp }}/tool-bin/hopscotch"
+          chmod +x "${{ runner.temp }}/tool-bin/hopscotch"
+
+      - name: Select validation window
+        id: select_window
+        env:
+          DOWNSTREAM_NAME: ${{ matrix.name }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          UPSTREAM_REF: ${{ needs.plan.outputs.upstream_ref }}
+          OUTPUT_DIR: ${{ runner.temp }}/artifacts/${{ matrix.name }}
+          POSTGRES_DSN: ${{ secrets.POSTGRES_DSN }}
+          PYTHONUNBUFFERED: "1"
+          WORKDIR: ${{ runner.temp }}/downstream-regression
+        run: |
+          python3 -u scripts/select_downstream_regression_window.py \
+            --inventory ci/inventory/downstreams.json \
+            --backend sql \
+            --workflow regression \
+            --upstream leanprover-community/mathlib4 \
+            --downstream "$DOWNSTREAM_NAME" \
+            --upstream-ref "$UPSTREAM_REF" \
+            --workdir "$WORKDIR" \
+            --output-dir "$OUTPUT_DIR" \
+            --quiet \
+            --tool-exe "${{ runner.temp }}/tool-bin/hopscotch"
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          selection = json.loads((Path(os.environ["OUTPUT_DIR"]) / "selection.json").read_text())
+          with Path(os.environ["GITHUB_OUTPUT"]).open("a") as handle:
+              handle.write(f"needs_probe={'true' if selection.get('needs_probe') else 'false'}\n")
+          PY
+      - name: Run downstream probe
+        if: steps.select_window.outputs.needs_probe == 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OUTPUT_DIR: ${{ runner.temp }}/artifacts/${{ matrix.name }}
+          PYTHONUNBUFFERED: "1"
+          QUIET: ${{ inputs.quiet }}
+          WORKDIR: ${{ runner.temp }}/downstream-regression
+        run: |
+          QUIET_FLAG=""
+          if [ "$QUIET" = "true" ]; then
+            QUIET_FLAG="--quiet"
+          fi
+          python3 -u scripts/probe_downstream_regression_window.py \
+            --selection "$OUTPUT_DIR/selection.json" \
+            --workdir "$WORKDIR" \
+            --output-dir "$OUTPUT_DIR" \
+            $QUIET_FLAG \
+            --tool-exe "${{ runner.temp }}/tool-bin/hopscotch"
+      - name: Upload downstream artifacts
+        if: always()
+        uses: actions/upload-artifact@v7.0.0
+        with:
+          name: result-${{ matrix.name }}
+          path: ${{ runner.temp }}/artifacts/${{ matrix.name }}
+          if-no-files-found: error
+
+  report:
+    if: always() && needs.plan.outputs.has_downstreams == 'true'
+    needs:
+      - plan
+      - validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.ref_name }}
+      
+      - name: Set up Python
+        uses: actions/setup-python@v6.2.0
+        with:
+          python-version: '3.x'
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f scripts/requirements.txt ]; then
+            pip install -r scripts/requirements.txt
+          fi
+
+      - uses: actions/download-artifact@v8.0.1
+        with:
+          path: downloaded-results
+          pattern: result-*
+      - name: Collect validate job URLs
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          python3 - <<'PY'
+          import json, os, subprocess
+          data = json.loads(subprocess.check_output([
+              "gh", "api",
+              f"repos/{os.environ['GH_REPO']}/actions/runs/{os.environ['RUN_ID']}/jobs?per_page=100",
+          ]))
+          urls = {}
+          for job in data.get("jobs", []):
+              name = job["name"]
+              if name.startswith("validate: "):
+                  downstream = name[len("validate: "):]
+                  urls[downstream] = {
+                      "job_id": str(job["id"]),
+                      "url": job["html_url"],
+                      "started_at": job.get("started_at"),
+                      "finished_at": job.get("completed_at"),
+                      "conclusion": job.get("conclusion"),
+                  }
+          with open("job_urls.json", "w") as f:
+              json.dump(urls, f)
+          PY
+      - name: Aggregate results
+        env:
+          POSTGRES_DSN: ${{ secrets.POSTGRES_DSN }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          UPSTREAM_REF: ${{ needs.plan.outputs.upstream_ref }}
+        run: |
+          python3 scripts/aggregate_results.py \
+            --results-dir downloaded-results \
+            --backend sql \
+            --workflow regression \
+            --upstream leanprover-community/mathlib4 \
+            --run-id "$RUN_ID" \
+            --run-url "$RUN_URL" \
+            --upstream-ref "$UPSTREAM_REF" \
+            --job-urls job_urls.json \
+            --report-output /tmp/report.md
+          cat /tmp/report.md >> "$GITHUB_STEP_SUMMARY"
+

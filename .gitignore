@@ -1,0 +1,5 @@
+/.lake
+/.elan
+/.work
+/scripts/__pycache__
+/tests/__pycache__

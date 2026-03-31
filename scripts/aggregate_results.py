@@ -1,0 +1,560 @@
+#!/usr/bin/env python3
+"""Aggregate per-downstream validation results into persisted regression state.
+
+State machine overview:
+
+    passing --failed--> failing
+    failing --failed--> failing
+    failing --passed--> passing
+    passing --passed--> passing
+
+Results tagged as `error` do not open or close a regression episode. They are
+recorded on the downstream status entry but leave the episode cursor unchanged.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from enum import Enum
+from pathlib import Path
+from typing import Any
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from scripts.storage import (
+    DownstreamStatusRecord,
+    FilesystemBackend,
+    RunResultRecord,
+    StorageBackend,
+    ValidateJobRecord,
+    result_to_row,
+)
+
+
+class Outcome(str, Enum):
+    """Possible outcomes for one validation result."""
+
+    PASSED = "passed"
+    FAILED = "failed"
+    ERROR = "error"
+
+
+class EpisodeState(str, Enum):
+    """High-level transition labels used in the markdown report."""
+
+    STILL_PASSING = "still_passing"
+    NEW_FAILURE = "new_failure"
+    STILL_FAILING = "still_failing"
+    RECOVERED = "recovered"
+    ERROR = "error"
+
+
+@dataclass(frozen=True)
+class ValidationResult:
+    """Subset of the per-downstream result schema needed for aggregation."""
+
+    @dataclass(frozen=True)
+    class CommitDetail:
+        """One Mathlib commit plus the title shown in reports."""
+
+        sha: str
+        title: str
+
+    downstream: str
+    repo: str
+    downstream_commit: str | None
+    target_commit: str | None
+    outcome: Outcome
+    failure_stage: str | None
+    first_failing_commit: str | None
+    commit_window_truncated: bool
+    summary: str
+    error: str | None
+    last_successful_commit: str | None = None
+    search_mode: str = "head-only"
+    tested_commit_details: list["ValidationResult.CommitDetail"] = field(default_factory=list)
+    head_probe_outcome: str | None = None
+    head_probe_failure_stage: str | None = None
+    head_probe_summary: str | None = None
+    culprit_log_path: str | None = None
+    pinned_commit: str | None = None
+
+    @classmethod
+    def from_json(cls, payload: dict[str, Any]) -> "ValidationResult":
+        """Decode one JSON result file."""
+
+        return cls(
+            downstream=payload["downstream"],
+            repo=payload["repo"],
+            downstream_commit=payload.get("downstream_commit"),
+            target_commit=payload.get("target_commit"),
+            outcome=Outcome(payload["outcome"]),
+            failure_stage=payload.get("failure_stage"),
+            first_failing_commit=payload.get("first_failing_commit"),
+            last_successful_commit=payload.get("last_successful_commit"),
+            commit_window_truncated=payload.get("commit_window_truncated", False),
+            summary=payload.get("summary", ""),
+            error=payload.get("error"),
+            search_mode=payload.get("search_mode", "head-only"),
+            tested_commit_details=[
+                cls.CommitDetail(**detail) for detail in payload.get("tested_commit_details", [])
+            ],
+            head_probe_outcome=payload.get("head_probe_outcome"),
+            head_probe_failure_stage=payload.get("head_probe_failure_stage"),
+            head_probe_summary=payload.get("head_probe_summary"),
+            culprit_log_path=payload.get("culprit_log_path"),
+            pinned_commit=payload.get("pinned_commit"),
+        )
+
+
+@dataclass(frozen=True)
+class LoadedResult:
+    """One loaded result plus any auxiliary artifact content used in reports."""
+
+    result: ValidationResult
+    culprit_log_text: str | None = None
+
+
+def utc_now() -> str:
+    """Return a stable UTC timestamp string."""
+
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def short_commit(commit: str | None) -> str:
+    """Abbreviate a commit hash for markdown tables."""
+
+    if commit is None:
+        return "-"
+    return commit[:12]
+
+
+def upstream_commit_url(commit: str | None, upstream: str) -> str | None:
+    """Return the GitHub commit URL for one SHA in the given upstream repo."""
+
+    if commit is None:
+        return None
+    return f"https://github.com/{upstream}/commit/{commit}"
+
+
+def render_commit_link(commit: str | None, upstream: str = "leanprover-community/mathlib4") -> str:
+    """Render one commit hash as a markdown link when possible."""
+
+    if commit is None:
+        return "`-`"
+    url = upstream_commit_url(commit, upstream)
+    return f"[`{short_commit(commit)}`]({url})"
+
+
+def render_commit_detail(detail: dict[str, Any]) -> str:
+    """Render one commit and its title for markdown output."""
+
+    return f"{render_commit_link(detail.get('sha'))} {detail.get('title', '')}".rstrip()
+
+
+def find_commit_detail(details: list[dict[str, Any]], sha: str | None) -> dict[str, Any] | None:
+    """Return the matching commit detail when it appears in the recorded window."""
+
+    if sha is None:
+        return None
+    for detail in details:
+        if detail.get("sha") == sha:
+            return detail
+    return None
+
+
+def render_named_commit(details: list[dict[str, Any]], sha: str | None, upstream: str = "leanprover-community/mathlib4") -> str:
+    """Render one named commit using its recorded title when available."""
+
+    detail = find_commit_detail(details, sha)
+    if detail is not None:
+        return render_commit_detail(detail)
+    return render_commit_link(sha, upstream)
+
+
+def truncate_log_text(text: str, *, max_lines: int = 200, max_chars: int = 40000) -> str:
+    """Limit embedded log output so reports stay readable."""
+
+    lines = text.splitlines()
+    truncated = False
+    if len(lines) > max_lines:
+        lines = lines[:max_lines]
+        truncated = True
+    limited = "\n".join(lines)
+    if len(limited) > max_chars:
+        limited = limited[:max_chars].rstrip()
+        truncated = True
+    if truncated:
+        limited += "\n[log truncated]"
+    return limited
+
+
+def filter_culprit_log_text(text: str) -> str:
+    """Drop successful-target lines from the embedded failing-commit log."""
+
+    return "\n".join(line for line in text.splitlines() if not line.strip().startswith("✔"))
+
+
+def load_culprit_log_text(artifact_root: Path, culprit_log_path: str | None) -> str | None:
+    """Load the copied log for the first bad commit when available."""
+
+    if culprit_log_path is None:
+        return None
+    basename = Path(culprit_log_path).name
+    matches = sorted(artifact_root.rglob(basename))
+    if not matches:
+        return None
+    return truncate_log_text(filter_culprit_log_text(matches[0].read_text(errors="replace")))
+
+
+def first_bad_position(details: list[dict[str, Any]], first_bad_sha: str | None) -> tuple[int, int] | None:
+    """Return the 1-based position of the first bad commit inside the bisect window."""
+
+    if first_bad_sha is None or not details:
+        return None
+    for index, detail in enumerate(details, start=1):
+        if detail.get("sha") == first_bad_sha:
+            return index, len(details)
+    return None
+
+
+def load_results(results_dir: Path) -> list[LoadedResult]:
+    """Load all `result.json` files under the downloaded artifact tree."""
+
+    results: list[LoadedResult] = []
+    for path in sorted(results_dir.rglob("result.json")):
+        result = ValidationResult.from_json(json.loads(path.read_text()))
+        results.append(
+            LoadedResult(
+                result=result,
+                culprit_log_text=load_culprit_log_text(path.parent, result.culprit_log_path),
+            )
+        )
+    if not results:
+        raise ValueError(f"no result.json files found under {results_dir}")
+    return results
+
+
+def apply_result(
+    current: DownstreamStatusRecord | None,
+    result: ValidationResult,
+) -> tuple[DownstreamStatusRecord, EpisodeState]:
+    """Apply one validation result to the persisted regression state.
+
+    Returns a *new* ``DownstreamStatusRecord`` — the input is never mutated.
+    """
+
+    was_failing = current is not None and current.first_known_bad_commit is not None
+
+    pin = result.pinned_commit
+
+    if result.outcome is Outcome.ERROR:
+        prior = current or DownstreamStatusRecord()
+        return DownstreamStatusRecord(
+            last_known_good_commit=prior.last_known_good_commit,
+            first_known_bad_commit=prior.first_known_bad_commit,
+            pinned_commit=pin or prior.pinned_commit,
+        ), EpisodeState.ERROR
+
+    if result.outcome is Outcome.PASSED:
+        episode_state = EpisodeState.RECOVERED if was_failing else EpisodeState.STILL_PASSING
+        return DownstreamStatusRecord(
+            last_known_good_commit=result.target_commit,
+            first_known_bad_commit=None,
+            pinned_commit=pin,
+        ), episode_state
+
+    # FAILED
+    last_good = result.last_successful_commit or (
+        current.last_known_good_commit if current else None
+    )
+    if was_failing and current is not None:
+        return DownstreamStatusRecord(
+            last_known_good_commit=last_good,
+            first_known_bad_commit=current.first_known_bad_commit,
+            pinned_commit=pin,
+        ), EpisodeState.STILL_FAILING
+
+    first_bad = result.first_failing_commit or result.target_commit
+    return DownstreamStatusRecord(
+        last_known_good_commit=last_good,
+        first_known_bad_commit=first_bad,
+        pinned_commit=pin,
+    ), EpisodeState.NEW_FAILURE
+
+
+def render_report(
+    *,
+    recorded_at: str,
+    upstream_ref: str,
+    upstream: str = "leanprover-community/mathlib4",
+    run_id: str,
+    run_url: str,
+    rows: list[dict[str, Any]],
+    job_urls: dict[str, str] | None = None,
+) -> str:
+    """Render the human-readable markdown report used in GitHub summaries."""
+
+    lines = [
+        "# Downstream Regression Report",
+        "",
+        f"- Generated at: `{recorded_at}`",
+        f"- Upstream ref: `{upstream_ref}`",
+        "",
+        "| Downstream | Outcome | Status | Target | Last known good | First known bad |",
+        "| --- | --- | --- | --- | --- | --- |",
+    ]
+    for row in rows:
+        notes = []
+        if row["failure_stage"] is not None:
+            notes.append(f"stage={row['failure_stage']}")
+        if row["search_mode"] != "head-only":
+            notes.append(f"mode={row['search_mode']}")
+        if row["commit_window_truncated"]:
+            notes.append("window-truncated")
+        if row["error"] is not None:
+            notes.append(row["error"])
+        lines.append(
+            "| {downstream} | {outcome} | {episode_state} | {target} | {last_known_good} | {first_known_bad}".format(
+                downstream=row["downstream"],
+                outcome=row["outcome"],
+                episode_state=row["episode_state"],
+                target=render_commit_link(row["target_commit"], upstream),
+                last_known_good=render_commit_link(row["last_known_good"], upstream),
+                first_known_bad=render_commit_link(row["first_known_bad"], upstream),
+            )
+        )
+    lines.append("")
+
+    for row in rows:
+        details = row["tested_commit_details"]
+        downstream_name = row["downstream"]
+        job_url = (job_urls or {}).get(downstream_name)
+        name_html = (
+            f'<a href="{job_url}"><strong>{downstream_name}</strong></a>'
+            if job_url
+            else f"<strong>{downstream_name}</strong>"
+        )
+        lines.extend(
+            [
+                "<details>",
+                f"<summary>{name_html} &mdash; <code>{row['outcome']}</code> &mdash; <code>{row['episode_state']}</code></summary>",
+                "",
+            ]
+        )
+        lines.append("- Previous state before this run:")
+        lines.append(
+            "  - last known good: "
+            + render_named_commit(details, row.get("previous_last_known_good"), upstream)
+        )
+        lines.append(
+            "  - first known bad: "
+            + render_named_commit(details, row.get("previous_first_known_bad"), upstream)
+        )
+        if row["head_probe_outcome"] is not None:
+            head_probe = row["head_probe_outcome"]
+            if row["head_probe_failure_stage"] is not None:
+                head_probe = f"{head_probe} (stage={row['head_probe_failure_stage']})"
+            lines.append(f"- Head probe: `{head_probe}`")
+        if row["tested_commit_details"]:
+            if row["search_mode"] == "bisect":
+                lines.append("- Bisect window boundary:")
+                lines.append(f"  - oldest: {render_commit_detail(details[0])}")
+                lines.append(f"  - newest: {render_commit_detail(details[-1])}")
+                lines.append("")
+                lines.append("**Results**")
+                lines.append("")
+                lines.append("- Current run frontier:")
+                lines.append(
+                    "  - last known good: "
+                    + render_named_commit(details, row.get("current_last_successful"), upstream)
+                )
+                lines.append(
+                    "  - first bad found this run: "
+                    + render_named_commit(details, row.get("current_first_failing"), upstream)
+                )
+                position = first_bad_position(details, row.get("current_first_failing"))
+                if position is not None:
+                    index, total = position
+                    lines.append(
+                        f"- First bad position: `{index}/{total}` in the bisect window "
+                        f"(advanced {index - 1} of {total - 1} commits from the lower bound)"
+                    )
+            else:
+                lines.append("- Commit list:")
+                for detail in row["tested_commit_details"]:
+                    lines.append(f"  - {render_commit_detail(detail)}")
+        lines.append("- State after this run:")
+        lines.append(
+            "  - last known good: "
+            + render_named_commit(details, row["last_known_good"], upstream)
+        )
+        lines.append(
+            "  - first known bad: "
+            + render_named_commit(details, row["first_known_bad"], upstream)
+        )
+        if row.get("culprit_log_text"):
+            lines.extend(["", "First bad commit failure logs:", "```text", row["culprit_log_text"], "```"])
+        if row["summary"]:
+            lines.extend(["", "```text", row["summary"], "```"])
+        lines.extend(["", "</details>", ""])
+    return "\n".join(lines) + "\n"
+
+
+def build_parser() -> argparse.ArgumentParser:
+    """Build the CLI parser for the aggregation step."""
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--results-dir", type=Path, required=True)
+    parser.add_argument("--workflow", required=True, choices=["regression", "bumping"])
+    parser.add_argument("--upstream", default="leanprover-community/mathlib4")
+    parser.add_argument("--run-id", required=True)
+    parser.add_argument("--run-url", required=True)
+    parser.add_argument("--upstream-ref", required=True)
+    parser.add_argument("--job-urls", type=Path)
+    parser.add_argument(
+        "--backend", choices=["filesystem", "sql"], default="filesystem",
+        help="Storage backend to use.",
+    )
+    parser.add_argument(
+        "--state-root", type=Path, default=None,
+        help="State root directory; required when --backend=filesystem.",
+    )
+    parser.add_argument(
+        "--dsn", default=None,
+        help="Database connection string; required when --backend=sql.",
+    )
+    parser.add_argument(
+        "--report-output", type=Path, default=None,
+        help="Path to write the markdown report; useful when --backend=sql.",
+    )
+    return parser
+
+
+def main() -> int:
+    """Aggregate result artifacts into persisted regression state and reports."""
+
+    args = build_parser().parse_args()
+    recorded_at = utc_now()
+
+    if args.backend == "sql":
+        dsn = args.dsn or os.environ.get("POSTGRES_DSN")
+        if not dsn:
+            print("error: --dsn or POSTGRES_DSN environment variable is required when --backend=sql", file=sys.stderr)
+            return 1
+        from sqlalchemy import create_engine
+        from scripts.storage import SqlBackend
+        backend: StorageBackend = SqlBackend(create_engine(dsn))
+    else:
+        if not args.state_root:
+            print("error: --state-root is required when --backend=filesystem", file=sys.stderr)
+            return 1
+        backend = FilesystemBackend(args.state_root)
+
+    prior_statuses = backend.load_all_statuses(args.workflow, args.upstream)
+    loaded_results = load_results(args.results_dir)
+
+    updated_statuses: dict[str, DownstreamStatusRecord] = {}
+    result_records: list[RunResultRecord] = []
+    render_rows: list[dict[str, Any]] = []
+
+    for loaded in sorted(loaded_results, key=lambda item: item.result.downstream):
+        result = loaded.result
+        prior = prior_statuses.get(result.downstream)
+        updated, episode_state = apply_result(prior, result)
+        updated_statuses[result.downstream] = updated
+        record = RunResultRecord(
+            upstream=args.upstream,
+            downstream=result.downstream,
+            repo=result.repo,
+            downstream_commit=result.downstream_commit,
+            outcome=result.outcome.value,
+            episode_state=episode_state.value,
+            target_commit=result.target_commit,
+            previous_last_known_good=prior.last_known_good_commit if prior else None,
+            previous_first_known_bad=prior.first_known_bad_commit if prior else None,
+            last_known_good=updated.last_known_good_commit,
+            first_known_bad=updated.first_known_bad_commit,
+            current_last_successful=result.last_successful_commit,
+            current_first_failing=result.first_failing_commit,
+            failure_stage=result.failure_stage,
+            search_mode=result.search_mode,
+            commit_window_truncated=result.commit_window_truncated,
+            error=result.error,
+            summary=result.summary,
+            head_probe_outcome=result.head_probe_outcome,
+            head_probe_failure_stage=result.head_probe_failure_stage,
+            head_probe_summary=result.head_probe_summary,
+            culprit_log_text=loaded.culprit_log_text,
+            pinned_commit=result.pinned_commit,
+        )
+        result_records.append(record)
+        render_rows.append({
+            **result_to_row(record),
+            "tested_commit_details": [
+                {"sha": d.sha, "title": d.title} for d in result.tested_commit_details
+            ],
+        })
+
+    job_urls: dict[str, str] = {}
+    validate_jobs: list[ValidateJobRecord] = []
+    if args.job_urls and args.job_urls.exists():
+        raw_job_data: dict[str, Any] = json.loads(args.job_urls.read_text())
+        for downstream, entry in raw_job_data.items():
+            if isinstance(entry, str):
+                # Legacy format: just a URL string.
+                job_urls[downstream] = entry
+            else:
+                job_urls[downstream] = entry["url"]
+                validate_jobs.append(ValidateJobRecord(
+                    downstream=downstream,
+                    job_id=entry["job_id"],
+                    job_url=entry["url"],
+                    started_at=entry.get("started_at"),
+                    finished_at=entry.get("finished_at"),
+                    conclusion=entry.get("conclusion"),
+                ))
+    markdown = render_report(
+        recorded_at=recorded_at,
+        upstream_ref=args.upstream_ref,
+        upstream=args.upstream,
+        run_id=args.run_id,
+        run_url=args.run_url,
+        rows=render_rows,
+        job_urls=job_urls,
+    )
+
+    backend.save_run(
+        run_id=args.run_id,
+        workflow=args.workflow,
+        upstream=args.upstream,
+        upstream_ref=args.upstream_ref,
+        run_url=args.run_url,
+        created_at=recorded_at,
+        results=result_records,
+        updated_statuses=updated_statuses,
+        report_markdown=markdown,
+        validate_jobs=validate_jobs or None,
+    )
+
+    if args.report_output is not None:
+        args.report_output.parent.mkdir(parents=True, exist_ok=True)
+        args.report_output.write_text(markdown)
+
+    if args.workflow == "bumping":
+        updates = {
+            r.downstream: r.downstream_commit
+            for r in result_records
+            if r.outcome in ("passed", "failed") and r.downstream_commit
+        }
+        backend.save_bumping_seen(updates)
+
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
