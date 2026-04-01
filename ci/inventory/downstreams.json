@@ -21,6 +21,34 @@
       "default_branch": "main",
       "dependency_name": "mathlib",
       "enabled": true
+    },
+    {
+      "name": "FLT",
+      "repo": "ImperialCollegeLondon/FLT",
+      "default_branch": "main",
+      "dependency_name": "mathlib",
+      "enabled": true
+    },
+    {
+      "name": "infinity-cosmos",
+      "repo": "emilyriehl/infinity-cosmos",
+      "default_branch": "main",
+      "dependency_name": "mathlib",
+      "enabled": true
+    },
+    {
+      "name": "Sphere-Packing-Lean",
+      "repo": "thefundamentaltheor3m/Sphere-Packing-Lean",
+      "default_branch": "main",
+      "dependency_name": "mathlib",
+      "enabled": true
+    },
+    {
+      "name": "formal-conjectures",
+      "repo": "google-deepmind/formal-conjectures",
+      "default_branch": "main",
+      "dependency_name": "mathlib",
+      "enabled": true
     }
   ]
 }
