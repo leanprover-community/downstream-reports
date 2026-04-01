@@ -328,6 +328,10 @@ tbody tr.data-row:hover td { background: #f6f8fa; }
 }
 .tips strong { font-weight: 600; color: #57606a; }
 .tips .sep { margin: 0 8px; color: var(--border); }
+th.sortable { cursor: pointer; user-select: none; }
+th.sortable:hover { background: #e8eaed; }
+th.sort-asc::after  { content: " ▲"; font-size: 9px; color: var(--grey); }
+th.sort-desc::after { content: " ▼"; font-size: 9px; color: var(--grey); }
 .filter-bar { margin-bottom: 12px; }
 .filter-bar input {
   width: 100%; padding: 7px 12px; font-size: 13px;
@@ -380,7 +384,7 @@ def render_run_banner(
         f'<div class="run-banner-meta">'
         f'<span><strong>Upstream ref:</strong>&nbsp;<code>{esc(upstream_ref)}</code></span>'
         f'<span class="divider">|</span>'
-        f'<span><strong>Run:</strong>&nbsp;<a href="{esc(run_url)}" target="_blank" rel="noopener noreferrer">{esc(run_id)}</a></span>'
+        f'<span><strong>Latest run:</strong>&nbsp;<a href="{esc(run_url)}" target="_blank" rel="noopener noreferrer">{esc(run_id)}</a></span>'
         f'<span class="divider">|</span>'
         f'<span><strong>Reported:</strong>&nbsp;{fmt_dt(reported_at)}</span>'
         f'{target_banner}'
@@ -394,7 +398,6 @@ def render_table_row(
     r: dict,
     *,
     run_url: str,
-    show_target_column: bool,
     commit_titles: dict[str, str | None],
     downstream_commit_titles: dict[str, str | None],
 ) -> str:
@@ -418,6 +421,8 @@ def render_table_row(
     target = r.get("target_commit")
     lkg = r.get("last_known_good")
     fkb = r.get("first_known_bad")
+    age_val  = r.get("age_commits")
+    bump_val = r.get("bump_commits")
 
     episode_state = r.get("episode_state")
     episode_badge = badge(episode_state, EPISODE_CLASS, EPISODE_LABEL, EPISODE_TOOLTIP)
@@ -433,29 +438,32 @@ def render_table_row(
     name_cell += '</div>'
 
     outcome_cell  = badge(r.get("outcome"), OUTCOME_CLASS, tooltip_map=OUTCOME_TOOLTIP)
-    target_cell   = commit_link(UPSTREAM_REPO, target, ct(target)) if show_target_column else None
+    target_cell   = commit_link(UPSTREAM_REPO, target, ct(target))
     lkg_cell      = commit_link(UPSTREAM_REPO, lkg,    ct(lkg))
     fkb_cell      = commit_link(UPSTREAM_REPO, fkb,    ct(fkb))
     pin_cell      = commit_link(UPSTREAM_REPO, pin,    ct(pin))
-    age_cell      = distance_cell(r.get("age_commits"))
-    bump_cell     = distance_cell(r.get("bump_commits"))
+    age_cell      = distance_cell(age_val)
+    bump_cell     = distance_cell(bump_val)
 
+    row_run_url = r.get("run_url") or run_url
     btns: list[str] = []
     if r.get("job_url"):
         btns.append(f'<a href="{esc(r["job_url"])}" class="btn" target="_blank" rel="noopener noreferrer">CI job&nbsp;↗</a>')
-    if run_url:
-        btns.append(f'<a href="{esc(run_url)}" class="btn" target="_blank" rel="noopener noreferrer">Run&nbsp;↗</a>')
+    if row_run_url:
+        btns.append(f'<a href="{esc(row_run_url)}" class="btn" target="_blank" rel="noopener noreferrer">Run&nbsp;↗</a>')
     links_cell = f'<div class="links">{"".join(btns)}</div>'
 
+    _av = str(age_val)  if age_val  is not None else "-1"
+    _bv = str(bump_val) if bump_val is not None else "-1"
     cells = (
-        f"<td>{name_cell}</td>"
-        f"<td>{outcome_cell}</td>"
-        + (f"<td>{target_cell}</td>" if show_target_column else "")
-        + f"<td>{lkg_cell}</td>"
-        f"<td>{fkb_cell}</td>"
-        f"<td>{pin_cell}</td>"
-        f"<td>{age_cell}</td>"
-        f"<td>{bump_cell}</td>"
+        f'<td data-sort-val="{esc(downstream.lower())}">{name_cell}</td>'
+        f'<td data-sort-val="{esc(r.get("outcome", ""))}">{outcome_cell}</td>'
+        f'<td data-sort-val="{esc(pin or "")}">{pin_cell}</td>'
+        f'<td data-sort-val="{_av}">{age_cell}</td>'
+        f'<td data-sort-val="{esc(target or "")}">{target_cell}</td>'
+        f'<td data-sort-val="{esc(lkg or "")}">{lkg_cell}</td>'
+        f'<td data-sort-val="{esc(fkb or "")}">{fkb_cell}</td>'
+        f'<td data-sort-val="{_bv}">{bump_cell}</td>'
         f"<td>{links_cell}</td>"
     )
     ep_label = EPISODE_LABEL.get(episode_state, episode_state or "")
@@ -532,11 +540,8 @@ def render(
 
     stats_html = render_stats(rows)
 
-    # If every downstream resolved the same Mathlib commit, show it once in the
-    # banner and omit the per-row column; otherwise keep the column.
     target_shas = {r.get("target_commit") for r in rows if r.get("target_commit")}
     common_target: str | None = next(iter(target_shas)) if len(target_shas) == 1 else None
-    show_target_column = len(target_shas) > 1
 
     target_banner = ""
     if common_target:
@@ -555,40 +560,38 @@ def render(
         target_banner=target_banner,
     )
 
-    # Sort: failing first, then errors, then passing; alpha within each group
     def sort_key(r: dict) -> tuple:
-        order = {"failed": 0, "error": 1, "passed": 2}.get(r.get("outcome", ""), 3)
-        return (order, r.get("downstream", "").lower())
+        return (r.get("downstream", "").lower(),)
 
     table_rows = [
         render_table_row(
             r,
             run_url=run_url,
-            show_target_column=show_target_column,
             commit_titles=commit_titles,
             downstream_commit_titles=downstream_commit_titles,
         )
         for r in sorted(rows, key=sort_key)
     ]
 
-    def _th(label: str, key: str | None = None) -> str:
-        if key:
-            return f'<th><span data-tooltip="{esc(COL_DESC[key])}">{label}</span></th>'
-        return f"<th>{label}</th>"
+    def _th(label: str, key: str | None = None, sortable: bool = False, sort_type: str = "string") -> str:
+        cls = ' class="sortable"' if sortable else ""
+        stype = f' data-sort-type="{sort_type}"' if sortable else ""
+        inner = f'<span data-tooltip="{esc(COL_DESC[key])}">{label}</span>' if key else label
+        return f"<th{cls}{stype}>{inner}</th>"
 
     thead_row = (
-        _th("Downstream",      "downstream")
-        + _th("Outcome",         "outcome")
-        + (_th("Target",         "target") if show_target_column else "")
+        _th("Downstream",      "downstream",      sortable=True)
+        + _th("Outcome",         "outcome",         sortable=True)
+        + _th("Pinned",          "pinned")
+        + _th("Age",             "age",             sortable=True, sort_type="numeric")
+        + _th("Target",          "target")
         + _th("Last known good", "last_known_good")
         + _th("First known bad", "first_known_bad")
-        + _th("Pinned",          "pinned")
-        + _th("Age",             "age")
-        + _th("Bump",            "bump")
+        + _th("Bump",            "bump",            sortable=True, sort_type="numeric")
         + _th("Links")
     )
 
-    n_cols = 9 if show_target_column else 8
+    n_cols = 9
     if not table_rows:
         table_rows = [
             f'<tr><td colspan="{n_cols}" style="text-align:center;padding:20px;color:#bbb;">'
@@ -612,11 +615,11 @@ def render(
   {report_desc}
   {stats_html}
   <div class="tips">
-    <strong>Tip:</strong>
-    hover any badge or commit SHA to see details
+    <strong>Tips:</strong>
+    Hover any badge or commit SHA to see details. Click on column headers to sort. Use the filter box to quickly find your project or filter by outcome.
   </div>
   <div class="filter-bar">
-    <input id="filter" type="search" placeholder="Filter by repository…" aria-label="Filter by repository">
+    <input id="filter" type="search" placeholder="Filter by repository, commit, outcome…" aria-label="Filter by repository, commit, outcome">
   </div>
   <div class="table-wrap">
   <table>
@@ -641,6 +644,29 @@ def render(
       row.hidden = !match;
     }});
   }});
+
+  (() => {{
+    const tbody = document.querySelector('tbody');
+    let sortCol = -1, sortAsc = true;
+    document.querySelectorAll('th.sortable').forEach(th => {{
+      th.addEventListener('click', () => {{
+        const idx = Array.from(th.parentElement.children).indexOf(th);
+        sortAsc = sortCol === idx ? !sortAsc : true;
+        sortCol = idx;
+        document.querySelectorAll('th.sortable').forEach(t => t.classList.remove('sort-asc', 'sort-desc'));
+        th.classList.add(sortAsc ? 'sort-asc' : 'sort-desc');
+        const isNumeric = th.dataset.sortType === 'numeric';
+        Array.from(tbody.querySelectorAll('tr.data-row'))
+          .sort((a, b) => {{
+            const av = a.children[idx]?.dataset.sortVal ?? '';
+            const bv = b.children[idx]?.dataset.sortVal ?? '';
+            const cmp = isNumeric ? parseFloat(av) - parseFloat(bv) : av.localeCompare(bv);
+            return sortAsc ? cmp : -cmp;
+          }})
+          .forEach(r => tbody.appendChild(r));
+      }});
+    }});
+  }})();
 </script>
 </body>
 </html>
