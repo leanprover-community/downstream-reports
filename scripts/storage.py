@@ -658,6 +658,89 @@ class SqlBackend:
 
 
 # ---------------------------------------------------------------------------
+# Site-generation read-only queries
+# ---------------------------------------------------------------------------
+
+
+def latest_regression_run_id(engine: Any) -> str | None:
+    """Return the run_id of the most recent regression run, or None."""
+    if not _SA_AVAILABLE:
+        raise ImportError("sqlalchemy is required; pip install sqlalchemy")
+    stmt = (
+        sa_select(_sa_run.c.run_id)
+        .where(_sa_run.c.workflow == "regression")
+        .order_by(_sa_run.c.reported_at.desc())
+        .limit(1)
+    )
+    with engine.connect() as conn:
+        return conn.execute(stmt).scalar()
+
+
+def load_run_for_site(engine: Any, run_id: str) -> tuple[dict, list[dict]]:
+    """Return (run_meta, rows) for *run_id*, ready for the site renderer.
+
+    Uses the SQLAlchemy table metadata defined in this module so that schema
+    changes are reflected automatically.  Each row dict includes job metadata
+    (job_url, job_started_at, job_finished_at, job_conclusion) merged in from
+    the validate_job table.
+    """
+    if not _SA_AVAILABLE:
+        raise ImportError("sqlalchemy is required; pip install sqlalchemy")
+
+    with engine.connect() as conn:
+        run_row = conn.execute(
+            sa_select(
+                _sa_run.c.run_id,
+                _sa_run.c.workflow,
+                _sa_run.c.upstream_ref,
+                _sa_run.c.run_url,
+                _sa_run.c.started_at,
+                _sa_run.c.reported_at,
+            ).where(_sa_run.c.run_id == run_id)
+        ).mappings().one()
+
+        results = conn.execute(
+            sa_select(
+                _sa_run_result.c.downstream,
+                _sa_run_result.c.repo,
+                _sa_run_result.c.downstream_commit,
+                _sa_run_result.c.outcome,
+                _sa_run_result.c.episode_state,
+                _sa_run_result.c.target_commit,
+                _sa_run_result.c.last_known_good,
+                _sa_run_result.c.first_known_bad,
+                _sa_run_result.c.pinned_commit,
+            )
+            .where(_sa_run_result.c.run_id == run_id)
+            .order_by(_sa_run_result.c.downstream)
+        ).mappings().all()
+
+        jobs = conn.execute(
+            sa_select(
+                _sa_validate_job.c.downstream,
+                _sa_validate_job.c.job_url,
+                _sa_validate_job.c.started_at,
+                _sa_validate_job.c.finished_at,
+                _sa_validate_job.c.conclusion,
+            ).where(_sa_validate_job.c.run_id == run_id)
+        ).mappings().all()
+
+    job_map = {j["downstream"]: dict(j) for j in jobs}
+
+    rows = []
+    for r in results:
+        row = dict(r)
+        job = job_map.get(r["downstream"], {})
+        row["job_url"] = job.get("job_url")
+        row["job_started_at"] = job.get("started_at")
+        row["job_finished_at"] = job.get("finished_at")
+        row["job_conclusion"] = job.get("conclusion")
+        rows.append(row)
+
+    return dict(run_row), rows
+
+
+# ---------------------------------------------------------------------------
 # Factory
 # ---------------------------------------------------------------------------
 

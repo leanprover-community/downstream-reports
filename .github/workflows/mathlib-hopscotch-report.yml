@@ -95,9 +95,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          if [ -f scripts/requirements.txt ]; then
-            pip install -r scripts/requirements.txt
-          fi
+          pip install -r scripts/requirements.txt
 
       - name: Install Lean
         run: |
@@ -192,9 +190,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          if [ -f scripts/requirements.txt ]; then
-            pip install -r scripts/requirements.txt
-          fi
+          pip install -r scripts/requirements.txt
 
       - uses: actions/download-artifact@v8.0.1
         with:

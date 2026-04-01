@@ -1,5 +1,10 @@
 /.lake
 /.elan
 /.work
+# The venv lives inside scripts/ (see scripts/.gitignore for the primary exclusions).
+# These entries are belt-and-suspenders for root-level git operations.
 /scripts/__pycache__
-/tests/__pycache__
+/scripts/lib/
+/scripts/bin/
+/scripts/include/
+/scripts/pyvenv.cfg

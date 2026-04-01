@@ -45,7 +45,7 @@ instead of upstream HEAD. It uses `select_bumping_plan.py` and
 | `select_bumping_plan.py` | plan (bumping) | Queries GitHub API for new bumping-branch commits, outputs a job matrix. |
 | `select_bumping_bisect_window.py` | validate (bumping) | Like `select_downstream_regression_window.py` but for bumping branches. |
 | `generate_site.py` | generate-pages | Generates a static HTML status page from SQL or filesystem state. |
-| `db_migrate.py` | manual | Creates/migrates the SQL schema. |
+| `storage.py` | `create_schema(engine)` | Creates/migrates the SQL schema. See [storage backends doc](../docs/storage-backends.md) for provisioning instructions. |
 
 ### Tests
 

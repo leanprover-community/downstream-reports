@@ -67,11 +67,14 @@ in workflow invocations.
 
 Provision the schema once with:
 
-```bash
-python3 scripts/db_migrate.py postgresql://user:pass@host/dbname
+```python
+from sqlalchemy import create_engine
+from scripts.storage import create_schema
+
+create_schema(create_engine("postgresql://user:pass@host/dbname"))
 ```
 
-`db_migrate.py` is idempotent — safe to re-run on a database that is already
+`create_schema` is idempotent — safe to re-run on a database that is already
 provisioned.
 
 ### Schema
