@@ -53,7 +53,7 @@
     {
       "name": "physlib",
       "repo": "leanprover-community/physlib",
-      "default_branch": "main",
+      "default_branch": "master",
       "dependency_name": "mathlib",
       "enabled": true
     }
