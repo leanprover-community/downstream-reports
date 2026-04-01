@@ -219,6 +219,31 @@ def pinned_commit_from_manifest(project_dir: Path, dependency_name: str) -> str 
     return None
 
 
+def git_url_from_manifest(project_dir: Path, dependency_name: str) -> str | None:
+    """Return the git URL for `dependency_name` from `lake-manifest.json`.
+
+    Lake records the remote URL alongside the resolved SHA, so this works for
+    projects using either `lakefile.toml` or `lakefile.lean`.  Returns None if
+    the manifest is absent or the dependency is not listed.
+
+    TODO: Remove this (and the --git-url workaround in invoke_tool) once
+    hopscotch can infer the dependency URL automatically from the lakefile or
+    lake-manifest.
+    """
+    manifest_path = project_dir / "lake-manifest.json"
+    if not manifest_path.exists():
+        return None
+    try:
+        payload = json.loads(manifest_path.read_text())
+    except Exception:
+        return None
+    for pkg in payload.get("packages", []):
+        if pkg.get("name") == dependency_name and pkg.get("type") == "git":
+            url = pkg.get("url")
+            return url if isinstance(url, str) and url else None
+    return None
+
+
 def pinned_dependency_rev(project_dir: Path, dependency_name: str) -> str | None:
     """Return the dependency rev from `lakefile.toml`, if one is explicitly set.
 

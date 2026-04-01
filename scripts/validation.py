@@ -9,6 +9,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from scripts.git_ops import git_url_from_manifest
 from scripts.models import (
     CommitDetail,
     DownstreamConfig,
@@ -227,6 +228,7 @@ def invoke_tool(
     output_dir.mkdir(parents=True, exist_ok=True)
     stdout_path = output_dir / "tool-stdout.txt"
     stderr_path = output_dir / "tool-stderr.txt"
+    git_url = git_url_from_manifest(project_dir, config.dependency_name)
     command = (
         [
             str(tool_exe),
@@ -240,6 +242,7 @@ def invoke_tool(
             str(project_dir),
             "--scan-mode",
             "bisect" if bisect else "linear",
+            *(["--git-url", git_url] if git_url else []),
             *(["--quiet"] if quiet else []),
         ]
     )
