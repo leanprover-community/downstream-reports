@@ -76,7 +76,7 @@ appended directly to the GitHub Actions job summary. It contains:
 
 - A **summary table** with one row per downstream showing the outcome
   (`passed` / `failed` / `error`), the episode-level state transition
-  (`STILL_PASSING`, `NEW_FAILURE`, `STILL_FAILING`, `RECOVERED`), the target
+  (`PASSING`, `NEW_FAILURE`, `FAILING`, `RECOVERED`), the target
   mathlib commit, the last known-good commit, the first known-bad commit, and
   brief notes (failure stage, search mode).
 - A collapsible **`<details>` block per downstream** with the search mode
@@ -116,6 +116,6 @@ Example entry:
 ```
 
 On the first run after adding an entry the workflow has no prior episode state
-for it. A passing result is recorded as `still_passing`; a failing result opens
+for it. A passing result is recorded as `passing`; a failing result opens
 a `new_failure` episode immediately. See [`docs/operations.md`](docs/operations.md)
 for how to interpret episode states and manage the database.

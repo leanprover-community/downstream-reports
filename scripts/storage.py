@@ -35,7 +35,8 @@ Adding a new backend
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+import os
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
@@ -90,7 +91,7 @@ class RunResultRecord:
     repo: str
     downstream_commit: str | None
     outcome: str                     # 'passed' | 'failed' | 'error'
-    episode_state: str               # 'still_passing' | 'new_failure' | ...
+    episode_state: str               # 'passing' | 'new_failure' | 'failing' | 'recovered' | 'error'
     target_commit: str | None
     previous_last_known_good: str | None
     previous_first_known_bad: str | None
@@ -197,31 +198,7 @@ def result_to_row(r: RunResultRecord) -> dict[str, Any]:
     Used by ``FilesystemBackend`` when writing JSON files and by
     ``aggregate_results.render_report`` which expects this shape.
     """
-    return {
-        "upstream": r.upstream,
-        "downstream": r.downstream,
-        "repo": r.repo,
-        "downstream_commit": r.downstream_commit,
-        "outcome": r.outcome,
-        "episode_state": r.episode_state,
-        "target_commit": r.target_commit,
-        "previous_last_known_good": r.previous_last_known_good,
-        "previous_first_known_bad": r.previous_first_known_bad,
-        "last_known_good": r.last_known_good,
-        "first_known_bad": r.first_known_bad,
-        "current_last_successful": r.current_last_successful,
-        "current_first_failing": r.current_first_failing,
-        "failure_stage": r.failure_stage,
-        "search_mode": r.search_mode,
-        "commit_window_truncated": r.commit_window_truncated,
-        "error": r.error,
-        "summary": r.summary,
-        "head_probe_outcome": r.head_probe_outcome,
-        "head_probe_failure_stage": r.head_probe_failure_stage,
-        "head_probe_summary": r.head_probe_summary,
-        "culprit_log_text": r.culprit_log_text,
-        "pinned_commit": r.pinned_commit,
-    }
+    return asdict(r)
 
 
 class FilesystemBackend:
@@ -678,3 +655,47 @@ class SqlBackend:
                     conflict_cols=["downstream"],
                     update_cols=["last_seen_branch_commit", "updated_at"],
                 )
+
+
+# ---------------------------------------------------------------------------
+# Factory
+# ---------------------------------------------------------------------------
+
+
+def add_backend_args(parser: Any) -> None:
+    """Add ``--backend``, ``--state-root``, and ``--dsn`` to an argument parser."""
+
+    parser.add_argument(
+        "--backend", choices=["filesystem", "sql"], default="filesystem",
+        help="Storage backend to use.",
+    )
+    parser.add_argument(
+        "--state-root", type=Path, default=None,
+        help="State root directory; required when --backend=filesystem.",
+    )
+    parser.add_argument(
+        "--dsn", default=None,
+        help="Database connection string; required when --backend=sql.",
+    )
+
+
+def create_backend(
+    backend: str,
+    *,
+    dsn: str | None = None,
+    state_root: Path | None = None,
+) -> StorageBackend:
+    """Create a storage backend from CLI-style parameters.
+
+    Resolves ``--dsn`` from the ``POSTGRES_DSN`` environment variable when not
+    provided directly.  Raises ``SystemExit`` on invalid combinations.
+    """
+    if backend == "sql":
+        dsn = dsn or os.environ.get("POSTGRES_DSN")
+        if not dsn:
+            raise SystemExit("--dsn or POSTGRES_DSN environment variable is required when --backend=sql")
+        from sqlalchemy import create_engine
+        return SqlBackend(create_engine(dsn))
+    if not state_root:
+        raise SystemExit("--state-root is required when --backend=filesystem")
+    return FilesystemBackend(state_root)

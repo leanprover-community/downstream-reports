@@ -21,9 +21,9 @@ just the current outcome. It is what tells you whether something changed.
 
 | State | Previous | Current | What it means |
 | --- | --- | --- | --- |
-| `still_passing` | passing | passed | Healthy; no action needed. |
+| `passing` | passing | passed | Healthy; no action needed. |
 | `new_failure` | passing | failed | A regression was introduced. Investigate `first_known_bad`. |
-| `still_failing` | failing | failed | Ongoing regression. `first_known_bad` is preserved from the initial episode. |
+| `failing` | failing | failed | Ongoing regression. `first_known_bad` is preserved from the initial episode. |
 | `recovered` | failing | passed | The downstream builds again; the episode is closed. |
 | `error` | (any) | error | Transient problem; episode state is unchanged. Check the validate job log. |
 
@@ -32,7 +32,7 @@ downstream produces `error` on every run, `new_failure` will never be recorded
 even if the downstream is genuinely broken. Check the runner or network when
 `error` recurs across multiple runs.
 
-The `first_known_bad` commit shown for a `still_failing` downstream is always
+The `first_known_bad` commit shown for a `failing` downstream is always
 the commit from the *initial* `new_failure` episode, not the current run. It
 represents the earliest known introduction of the regression.
 
@@ -64,7 +64,7 @@ WHERE downstream = 'PrimeNumberTheoremAnd'
 ```
 
 On the next run the downstream will be treated as passing and the episode will
-be recorded as `still_passing` or `new_failure` depending on the actual outcome.
+be recorded as `passing` or `new_failure` depending on the actual outcome.
 
 **Advance `last_known_good` to a commit confirmed good out of band:**
 

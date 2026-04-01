@@ -9,13 +9,12 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from scripts.run_downstream_regression import (
-    DownstreamConfig,
+from scripts.cache import cache_env, downstream_cache_dir
+from scripts.git_ops import clone_downstream
+from scripts.models import DownstreamConfig
+from scripts.validation import (
     build_result_from_tool,
     build_selection_error_result,
-    cache_env,
-    clone_downstream,
-    downstream_cache_dir,
     load_selection,
     run_validation_attempt,
     write_result,

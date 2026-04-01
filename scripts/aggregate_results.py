@@ -16,39 +16,30 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import sys
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
 from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from scripts.models import Outcome, utc_now
 from scripts.storage import (
     DownstreamStatusRecord,
-    FilesystemBackend,
     RunResultRecord,
-    StorageBackend,
     ValidateJobRecord,
+    add_backend_args,
+    create_backend,
     result_to_row,
 )
-
-
-class Outcome(str, Enum):
-    """Possible outcomes for one validation result."""
-
-    PASSED = "passed"
-    FAILED = "failed"
-    ERROR = "error"
 
 
 class EpisodeState(str, Enum):
     """High-level transition labels used in the markdown report."""
 
-    STILL_PASSING = "still_passing"
+    PASSING = "passing"
     NEW_FAILURE = "new_failure"
-    STILL_FAILING = "still_failing"
+    FAILING = "failing"
     RECOVERED = "recovered"
     ERROR = "error"
 
@@ -117,12 +108,6 @@ class LoadedResult:
 
     result: ValidationResult
     culprit_log_text: str | None = None
-
-
-def utc_now() -> str:
-    """Return a stable UTC timestamp string."""
-
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
 def short_commit(commit: str | None) -> str:
@@ -261,7 +246,7 @@ def apply_result(
         ), EpisodeState.ERROR
 
     if result.outcome is Outcome.PASSED:
-        episode_state = EpisodeState.RECOVERED if was_failing else EpisodeState.STILL_PASSING
+        episode_state = EpisodeState.RECOVERED if was_failing else EpisodeState.PASSING
         return DownstreamStatusRecord(
             last_known_good_commit=result.target_commit,
             first_known_bad_commit=None,
@@ -277,7 +262,7 @@ def apply_result(
             last_known_good_commit=last_good,
             first_known_bad_commit=current.first_known_bad_commit,
             pinned_commit=pin,
-        ), EpisodeState.STILL_FAILING
+        ), EpisodeState.FAILING
 
     first_bad = result.first_failing_commit or result.target_commit
     return DownstreamStatusRecord(
@@ -416,18 +401,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--run-url", required=True)
     parser.add_argument("--upstream-ref", required=True)
     parser.add_argument("--job-urls", type=Path)
-    parser.add_argument(
-        "--backend", choices=["filesystem", "sql"], default="filesystem",
-        help="Storage backend to use.",
-    )
-    parser.add_argument(
-        "--state-root", type=Path, default=None,
-        help="State root directory; required when --backend=filesystem.",
-    )
-    parser.add_argument(
-        "--dsn", default=None,
-        help="Database connection string; required when --backend=sql.",
-    )
+    add_backend_args(parser)
     parser.add_argument(
         "--report-output", type=Path, default=None,
         help="Path to write the markdown report; useful when --backend=sql.",
@@ -441,19 +415,7 @@ def main() -> int:
     args = build_parser().parse_args()
     recorded_at = utc_now()
 
-    if args.backend == "sql":
-        dsn = args.dsn or os.environ.get("POSTGRES_DSN")
-        if not dsn:
-            print("error: --dsn or POSTGRES_DSN environment variable is required when --backend=sql", file=sys.stderr)
-            return 1
-        from sqlalchemy import create_engine
-        from scripts.storage import SqlBackend
-        backend: StorageBackend = SqlBackend(create_engine(dsn))
-    else:
-        if not args.state_root:
-            print("error: --state-root is required when --backend=filesystem", file=sys.stderr)
-            return 1
-        backend = FilesystemBackend(args.state_root)
+    backend = create_backend(args.backend, dsn=args.dsn, state_root=args.state_root)
 
     prior_statuses = backend.load_all_statuses(args.workflow, args.upstream)
     loaded_results = load_results(args.results_dir)

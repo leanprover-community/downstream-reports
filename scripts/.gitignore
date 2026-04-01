@@ -1,0 +1,6 @@
+# Virtual-environment artifacts (originally created by venv).
+bin/
+lib/
+include/
+pyvenv.cfg
+__pycache__/

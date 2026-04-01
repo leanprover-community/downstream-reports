@@ -4,43 +4,40 @@
 from __future__ import annotations
 
 import argparse
-import os
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from scripts.run_downstream_regression import (
-    DownstreamConfig,
-    WindowSelection,
-    append_commit_plan_artifact,
+from scripts.cache import cache_env, downstream_cache_dir, warm_downstream_cache
+from scripts.git_ops import (
     build_commit_window,
-    build_error_result,
-    build_result_from_tool,
-    cache_env,
-    classify_exit_code,
     clone_downstream,
     clone_upstream,
-    commit_plan_artifact_path,
     describe_commits,
-    downstream_cache_dir,
     is_strict_ancestor,
-    load_inventory,
     parent_commit,
+    resolve_search_base_commit,
+    resolve_upstream_target,
+    select_search_base_from_candidates,
+    should_run_boundary_search,
+)
+from scripts.models import DownstreamConfig, WindowSelection, load_inventory
+from scripts.storage import add_backend_args, create_backend
+from scripts.validation import (
+    append_commit_plan_artifact,
+    build_error_result,
+    build_result_from_tool,
+    classify_exit_code,
+    commit_plan_artifact_path,
     print_commit_plan_summary,
     render_selection_summary,
-    resolve_upstream_target,
-    resolve_search_base_commit,
     run_validation_attempt,
-    select_search_base_from_candidates,
     selection_summary_path,
-    should_run_boundary_search,
     tool_summary_text,
-    warm_downstream_cache,
     write_result,
     write_selection,
 )
-from scripts.storage import FilesystemBackend
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -64,11 +61,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-commits", type=int, default=100000)
     parser.add_argument("--quiet", action="store_true")
     parser.add_argument("--tool-exe", type=Path)
-    parser.add_argument(
-        "--backend", choices=["filesystem", "sql"], default="filesystem",
-    )
-    parser.add_argument("--state-root", type=Path, default=None)
-    parser.add_argument("--dsn", default=None)
+    add_backend_args(parser)
     return parser
 
 
@@ -98,17 +91,7 @@ def main() -> int:
             dependency_name=args.dependency_name,
         )
 
-    if args.backend == "sql":
-        dsn = args.dsn or os.environ.get("POSTGRES_DSN")
-        if not dsn:
-            raise SystemExit("--dsn or POSTGRES_DSN environment variable is required when --backend=sql")
-        from sqlalchemy import create_engine
-        from scripts.storage import SqlBackend
-        backend = SqlBackend(create_engine(dsn))
-    else:
-        if not args.state_root:
-            raise SystemExit("--state-root is required when --backend=filesystem")
-        backend = FilesystemBackend(args.state_root)
+    backend = create_backend(args.backend, dsn=args.dsn, state_root=args.state_root)
 
     status = backend.load_all_statuses(args.workflow, args.upstream)
     previous = status.get(config.name)

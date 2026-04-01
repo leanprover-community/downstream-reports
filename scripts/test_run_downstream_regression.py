@@ -1,30 +1,32 @@
 #!/usr/bin/env python3
-"""Focused tests for downstream cache setup in `run_downstream_regression.py`."""
+"""Focused tests for the downstream regression workflow modules."""
 
 from __future__ import annotations
 
-import importlib.util
+import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import patch, Mock
 
+# Ensure the repo root is on sys.path so `scripts.*` imports work.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-def load_module():
-    """Load the workflow runner script as a Python module for testing."""
-
-    script_path = Path(__file__).with_name("run_downstream_regression.py")
-    spec = importlib.util.spec_from_file_location("run_downstream_regression", script_path)
-    assert spec is not None
-    assert spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    return module
-
-
-MODULE = load_module()
+from scripts.cache import cache_env, github_cache_scope, warm_downstream_cache
+from scripts.models import CommitDetail, DownstreamConfig, WindowSelection
+from scripts.validation import (
+    append_commit_plan_artifact,
+    classify_exit_code,
+    commit_plan_artifact_path,
+    invoke_tool,
+    load_selection,
+    print_commit_plan_summary,
+    render_selection_summary,
+    selection_artifact_path,
+    write_selection,
+)
+from scripts.models import Outcome
 
 
 class GitHubCacheScopeTests(unittest.TestCase):
@@ -33,14 +35,14 @@ class GitHubCacheScopeTests(unittest.TestCase):
     def test_owner_name_shorthand_is_supported(self) -> None:
         """Scenario: GitHub `owner/name` shorthand maps directly to the cache scope."""
 
-        self.assertEqual("leanprover-community/physlib", MODULE.github_cache_scope("leanprover-community/physlib"))
+        self.assertEqual("leanprover-community/physlib", github_cache_scope("leanprover-community/physlib"))
 
     def test_github_https_url_is_supported(self) -> None:
         """Scenario: an explicit GitHub HTTPS remote maps to the same cache scope."""
 
         self.assertEqual(
             "leanprover-community/physlib",
-            MODULE.github_cache_scope("https://github.com/leanprover-community/physlib.git"),
+            github_cache_scope("https://github.com/leanprover-community/physlib.git"),
         )
 
     def test_local_paths_and_non_github_urls_are_skipped(self) -> None:
@@ -49,8 +51,8 @@ class GitHubCacheScopeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             local_repo = Path(tmp) / "local-downstream"
             local_repo.mkdir()
-            self.assertIsNone(MODULE.github_cache_scope(str(local_repo)))
-        self.assertIsNone(MODULE.github_cache_scope("https://example.com/leanprover-community/physlib.git"))
+            self.assertIsNone(github_cache_scope(str(local_repo)))
+        self.assertIsNone(github_cache_scope("https://example.com/leanprover-community/physlib.git"))
 
 
 class WarmCacheTests(unittest.TestCase):
@@ -61,7 +63,7 @@ class WarmCacheTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             cache_dir = Path(tmp) / "cache"
-            env = MODULE.cache_env(cache_dir)
+            env = cache_env(cache_dir)
             self.assertNotIn("LAKE_ARTIFACT_CACHE", env)
             self.assertNotIn("LAKE_CACHE_DIR", env)
             self.assertEqual(str(cache_dir / "mathlib"), env["MATHLIB_CACHE_DIR"])
@@ -75,18 +77,18 @@ class WarmCacheTests(unittest.TestCase):
             (project_dir / "lean-toolchain").write_text("leanprover/lean4:v4.20.0\n")
             output_dir = Path(tmp) / "artifacts"
             output_dir.mkdir()
-            config = MODULE.DownstreamConfig(
+            config = DownstreamConfig(
                 name="physlib",
                 repo="leanprover-community/physlib",
                 default_branch="master",
             )
-            env = MODULE.cache_env(Path(tmp) / "cache")
+            env = cache_env(Path(tmp) / "cache")
 
-            with patch.object(MODULE, "run") as mock_run:
-                mock_run.return_value = MODULE.subprocess.CompletedProcess(
+            with patch("scripts.cache.run") as mock_run:
+                mock_run.return_value = subprocess.CompletedProcess(
                     ["elan"], 0, stdout="cache fetched\n", stderr=""
                 )
-                MODULE.warm_downstream_cache(config, project_dir=project_dir, output_dir=output_dir, env=env)
+                warm_downstream_cache(config, project_dir=project_dir, output_dir=output_dir, env=env)
 
             mock_run.assert_called_once_with(
                 [
@@ -116,18 +118,18 @@ class WarmCacheTests(unittest.TestCase):
             output_dir.mkdir()
             local_repo = Path(tmp) / "remote.git"
             local_repo.mkdir()
-            config = MODULE.DownstreamConfig(
+            config = DownstreamConfig(
                 name="sandbox-downstream",
                 repo=str(local_repo),
                 default_branch="master",
             )
 
-            with patch.object(MODULE, "run") as mock_run:
-                MODULE.warm_downstream_cache(
+            with patch("scripts.cache.run") as mock_run:
+                warm_downstream_cache(
                     config,
                     project_dir=project_dir,
                     output_dir=output_dir,
-                    env=MODULE.cache_env(Path(tmp) / "cache"),
+                    env=cache_env(Path(tmp) / "cache"),
                 )
 
             mock_run.assert_not_called()
@@ -141,12 +143,10 @@ class InvokeToolTests(unittest.TestCase):
         """Scenario: a workflow-provided binary avoids `lake exe` rebuild checks."""
 
         with tempfile.TemporaryDirectory() as tmp:
-            tool_root = Path(tmp) / "tool"
-            tool_root.mkdir()
             project_dir = Path(tmp) / "downstream"
             project_dir.mkdir()
             output_dir = Path(tmp) / "artifacts"
-            config = MODULE.DownstreamConfig(
+            config = DownstreamConfig(
                 name="physlib",
                 repo="leanprover-community/physlib",
                 default_branch="master",
@@ -154,14 +154,13 @@ class InvokeToolTests(unittest.TestCase):
             tool_exe = Path(tmp) / "hopscotch"
             tool_exe.write_text("")
 
-            mock_process = unittest.mock.Mock()
+            mock_process = Mock()
             mock_process.stdout = iter([])
             mock_process.wait.return_value = 0
             mock_process.args = [str(tool_exe)]
 
-            with patch.object(MODULE.subprocess, "Popen", return_value=mock_process) as mock_popen:
-                MODULE.invoke_tool(
-                    tool_root,
+            with patch("scripts.validation.subprocess.Popen", return_value=mock_process) as mock_popen:
+                invoke_tool(
                     config,
                     "deadbeef00000000000000000000000000000000",
                     "cafebabe00000000000000000000000000000000",
@@ -188,25 +187,25 @@ class CommitPlanArtifactTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             output_dir = Path(tmp) / "artifacts"
             commits = [
-                MODULE.CommitDetail(sha="a" * 40, title="first title"),
-                MODULE.CommitDetail(sha="b" * 40, title="second title"),
+                CommitDetail(sha="a" * 40, title="first title"),
+                CommitDetail(sha="b" * 40, title="second title"),
             ]
 
-            MODULE.append_commit_plan_artifact(
+            append_commit_plan_artifact(
                 output_dir=output_dir,
                 label="bisect window (oldest to newest)",
                 commits=commits,
                 bisect_window=True,
             )
 
-            artifact_path = MODULE.commit_plan_artifact_path(output_dir)
+            artifact_path = commit_plan_artifact_path(output_dir)
             artifact_text = artifact_path.read_text()
             self.assertIn("bisect window (oldest to newest)", artifact_text)
             self.assertIn(f"- {'a' * 40} first title", artifact_text)
             self.assertIn(f"- {'b' * 40} second title", artifact_text)
 
             with patch("builtins.print") as mock_print:
-                MODULE.print_commit_plan_summary(
+                print_commit_plan_summary(
                     downstream="PrimeNumberTheoremAnd",
                     label="bisect window (oldest to newest)",
                     commits=commits,
@@ -226,7 +225,7 @@ class WindowSelectionArtifactTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             output_dir = Path(tmp) / "artifacts"
-            selection = MODULE.WindowSelection(
+            selection = WindowSelection(
                 needs_probe=True,
                 downstream="PrimeNumberTheoremAnd",
                 repo="AlexKontorovich/PrimeNumberTheoremAnd",
@@ -238,8 +237,8 @@ class WindowSelectionArtifactTests(unittest.TestCase):
                 search_mode="bisect",
                 tested_commits=["good" * 10, "bad" * 10],
                 tested_commit_details=[
-                    MODULE.CommitDetail(sha="good" * 10, title="good title"),
-                    MODULE.CommitDetail(sha="bad" * 10, title="bad title"),
+                    CommitDetail(sha="good" * 10, title="good title"),
+                    CommitDetail(sha="bad" * 10, title="bad title"),
                 ],
                 commit_window_truncated=True,
                 head_probe_outcome="failed",
@@ -250,10 +249,10 @@ class WindowSelectionArtifactTests(unittest.TestCase):
                 next_action="Run the probe task.",
             )
 
-            artifact_path = MODULE.selection_artifact_path(output_dir)
+            artifact_path = selection_artifact_path(output_dir)
             artifact_path.parent.mkdir(parents=True, exist_ok=True)
-            MODULE.write_selection(artifact_path, selection)
-            loaded = MODULE.load_selection(artifact_path)
+            write_selection(artifact_path, selection)
+            loaded = load_selection(artifact_path)
 
             self.assertTrue(loaded.needs_probe)
             self.assertEqual(loaded.search_mode, "bisect")
@@ -267,7 +266,7 @@ class WindowSelectionArtifactTests(unittest.TestCase):
     def test_selection_summary_explains_skipped_probe(self) -> None:
         """Scenario: the selector summary explains why the probe task will not run."""
 
-        selection = MODULE.WindowSelection(
+        selection = WindowSelection(
             downstream="PrimeNumberTheoremAnd",
             upstream_ref="master",
             target_commit="bad" * 10,
@@ -276,13 +275,27 @@ class WindowSelectionArtifactTests(unittest.TestCase):
             next_action="Skip the probe task and report the passing head-only result.",
         )
 
-        summary = MODULE.render_selection_summary(selection)
+        summary = render_selection_summary(selection)
 
         self.assertIn("Window Selection Summary", summary)
         self.assertIn("Head probe outcome: `passed`", summary)
         self.assertIn("Decision:", summary)
         self.assertIn("there is no failing window to bisect", summary)
         self.assertIn("Skip the probe task", summary)
+
+
+class ClassifyExitCodeTests(unittest.TestCase):
+    """Scenarios for mapping hopscotch exit codes to outcomes."""
+
+    def test_zero_is_passed(self) -> None:
+        self.assertEqual(classify_exit_code(0), Outcome.PASSED)
+
+    def test_one_is_failed(self) -> None:
+        self.assertEqual(classify_exit_code(1), Outcome.FAILED)
+
+    def test_other_codes_are_error(self) -> None:
+        self.assertEqual(classify_exit_code(2), Outcome.ERROR)
+        self.assertEqual(classify_exit_code(137), Outcome.ERROR)
 
 
 if __name__ == "__main__":

@@ -27,7 +27,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from scripts.storage import FilesystemBackend
+from scripts.storage import add_backend_args, create_backend
 
 
 def _gh_api(path: str, token: str) -> dict | None:
@@ -72,11 +72,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Include all matching downstreams even if no new bumping-branch commits",
     )
-    parser.add_argument(
-        "--backend", choices=["filesystem", "sql"], default="filesystem",
-    )
-    parser.add_argument("--state-root", type=Path, default=None)
-    parser.add_argument("--dsn", default=None)
+    add_backend_args(parser)
     return parser
 
 
@@ -87,17 +83,7 @@ def main() -> int:
     if not token:
         raise SystemExit("GITHUB_TOKEN environment variable is required")
 
-    if args.backend == "sql":
-        dsn = args.dsn or os.environ.get("POSTGRES_DSN")
-        if not dsn:
-            raise SystemExit("--dsn or POSTGRES_DSN environment variable is required when --backend=sql")
-        from sqlalchemy import create_engine
-        from scripts.storage import SqlBackend
-        backend = SqlBackend(create_engine(dsn))
-    else:
-        if not args.state_root:
-            raise SystemExit("--state-root is required when --backend=filesystem")
-        backend = FilesystemBackend(args.state_root)
+    backend = create_backend(args.backend, dsn=args.dsn, state_root=args.state_root)
 
     seen_map = backend.load_bumping_seen()  # {downstream: last_seen_sha}
 
