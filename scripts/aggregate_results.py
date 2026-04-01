@@ -16,7 +16,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
+import urllib.error
+import urllib.request
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -32,6 +35,48 @@ from scripts.storage import (
     create_backend,
     result_to_row,
 )
+
+
+GITHUB_API = "https://api.github.com"
+
+
+def _gh_get(url: str, headers: dict[str, str]) -> dict | None:
+    req = urllib.request.Request(url, headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            return json.loads(resp.read())
+    except Exception as exc:
+        print(f"  warning: GitHub API request failed ({url}): {exc}")
+        return None
+
+
+def fetch_commit_distances(
+    pairs: set[tuple[str, str]],
+    repo: str,
+    token: str | None,
+) -> dict[tuple[str, str], int | None]:
+    """Return {(base_sha, head_sha): ahead_by} for every pair.
+
+    `ahead_by` is the number of commits reachable from head but not base.
+    Returns None for a pair when the API call fails.
+    """
+    headers: dict[str, str] = {
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+        "User-Agent": "hopscotch-reports/aggregate_results",
+    }
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+
+    cache: dict[tuple[str, str], int | None] = {}
+    for base, head in sorted(pairs):
+        if base == head:
+            cache[(base, head)] = 0
+            continue
+        url = f"{GITHUB_API}/repos/{repo}/compare/{base}...{head}"
+        data = _gh_get(url, headers)
+        cache[(base, head)] = data.get("ahead_by") if data is not None else None
+    return cache
 
 
 class EpisodeState(str, Enum):
@@ -406,6 +451,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--report-output", type=Path, default=None,
         help="Path to write the markdown report; useful when --backend=sql.",
     )
+    parser.add_argument(
+        "--github-token",
+        default=os.environ.get("GITHUB_TOKEN"),
+        help="GitHub token for commit distance lookups (default: $GITHUB_TOKEN)",
+    )
     return parser
 
 
@@ -422,7 +472,8 @@ def main() -> int:
 
     updated_statuses: dict[str, DownstreamStatusRecord] = {}
     result_records: list[RunResultRecord] = []
-    render_rows: list[dict[str, Any]] = []
+    # tested_commit_details is not stored; keep it alongside for the markdown report.
+    tested_details_per_record: list[list[dict[str, Any]]] = []
 
     for loaded in sorted(loaded_results, key=lambda item: item.result.downstream):
         result = loaded.result
@@ -455,12 +506,31 @@ def main() -> int:
             pinned_commit=result.pinned_commit,
         )
         result_records.append(record)
-        render_rows.append({
-            **result_to_row(record),
-            "tested_commit_details": [
-                {"sha": d.sha, "title": d.title} for d in result.tested_commit_details
-            ],
-        })
+        tested_details_per_record.append(
+            [{"sha": d.sha, "title": d.title} for d in result.tested_commit_details]
+        )
+
+    # Compute commit distances (pinned→target = age, pinned→lkg = bump) via the
+    # GitHub compare API, then annotate each record.  Batched after the loop so
+    # each unique pair is fetched exactly once.
+    compare_pairs: set[tuple[str, str]] = set()
+    for r in result_records:
+        if r.pinned_commit and r.target_commit and r.pinned_commit != r.target_commit:
+            compare_pairs.add((r.pinned_commit, r.target_commit))
+        if r.pinned_commit and r.last_known_good and r.pinned_commit != r.last_known_good:
+            compare_pairs.add((r.pinned_commit, r.last_known_good))
+    if compare_pairs:
+        print(f"Fetching commit distances for {len(compare_pairs)} unique pair(s)…")
+        distances = fetch_commit_distances(compare_pairs, args.upstream, args.github_token)
+        for r in result_records:
+            pin = r.pinned_commit
+            r.age_commits = distances.get((pin, r.target_commit)) if pin and r.target_commit else None
+            r.bump_commits = distances.get((pin, r.last_known_good)) if pin and r.last_known_good else None
+
+    render_rows: list[dict[str, Any]] = [
+        {**result_to_row(r), "tested_commit_details": details}
+        for r, details in zip(result_records, tested_details_per_record)
+    ]
 
     job_urls: dict[str, str] = {}
     validate_jobs: list[ValidateJobRecord] = []

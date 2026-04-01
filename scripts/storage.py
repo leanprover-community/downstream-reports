@@ -109,6 +109,8 @@ class RunResultRecord:
     head_probe_summary: str | None
     culprit_log_text: str | None
     pinned_commit: str | None = None
+    age_commits: int | None = None   # commits between pinned_commit and target_commit
+    bump_commits: int | None = None  # commits between pinned_commit and last_known_good
 
 
 # ---------------------------------------------------------------------------
@@ -359,6 +361,7 @@ try:
         Boolean,
         Column,
         DateTime,
+        Integer,
         MetaData,
         String,
         Table,
@@ -417,6 +420,8 @@ try:
         Column("head_probe_failure_stage", String),
         Column("head_probe_summary", String),
         Column("pinned_commit", String),
+        Column("age_commits", Integer),
+        Column("bump_commits", Integer),
     )
 
     _sa_bumping_seen = Table(
@@ -599,6 +604,8 @@ class SqlBackend:
                     "head_probe_failure_stage": r.head_probe_failure_stage,
                     "head_probe_summary": r.head_probe_summary,
                     "pinned_commit": r.pinned_commit,
+                    "age_commits": r.age_commits,
+                    "bump_commits": r.bump_commits,
                 })
 
             for downstream, s in updated_statuses.items():
@@ -710,6 +717,8 @@ def load_run_for_site(engine: Any, run_id: str) -> tuple[dict, list[dict]]:
                 _sa_run_result.c.last_known_good,
                 _sa_run_result.c.first_known_bad,
                 _sa_run_result.c.pinned_commit,
+                _sa_run_result.c.age_commits,
+                _sa_run_result.c.bump_commits,
             )
             .where(_sa_run_result.c.run_id == run_id)
             .order_by(_sa_run_result.c.downstream)

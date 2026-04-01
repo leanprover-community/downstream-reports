@@ -225,6 +225,7 @@ jobs:
           PY
       - name: Aggregate results
         env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           POSTGRES_DSN: ${{ secrets.POSTGRES_DSN }}
           RUN_ID: ${{ github.run_id }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}

@@ -24,7 +24,6 @@ import html as _html
 import json
 import os
 import sys
-import urllib.error
 import urllib.request
 from collections import defaultdict
 from datetime import datetime, timezone
@@ -107,46 +106,6 @@ def fetch_commit_titles(
 
     return cache
 
-
-def _gh_get(url: str, headers: dict[str, str]) -> dict | None:
-    """Perform a single GitHub API GET and return the parsed JSON, or None on error."""
-    req = urllib.request.Request(url, headers=headers)
-    try:
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            return json.loads(resp.read())
-    except Exception as exc:
-        print(f"  warning: GitHub API request failed ({url}): {exc}")
-        return None
-
-
-def fetch_commit_distances(
-    pairs: set[tuple[str, str]],
-    repo: str,
-    token: str | None,
-) -> dict[tuple[str, str], int | None]:
-    """Return {(base_sha, head_sha): ahead_by} for every pair, using the GitHub compare API.
-
-    `ahead_by` is the number of commits reachable from head but not from base —
-    i.e. how many commits head is ahead of base.  Returns None for a pair when
-    the API call fails.  Each unique pair is fetched exactly once.
-    """
-    headers: dict[str, str] = {
-        "Accept": "application/vnd.github+json",
-        "X-GitHub-Api-Version": "2022-11-28",
-        "User-Agent": "hopscotch-reports/generate_site",
-    }
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
-
-    cache: dict[tuple[str, str], int | None] = {}
-    for base, head in sorted(pairs):
-        if base == head:
-            cache[(base, head)] = 0
-            continue
-        url = f"{GITHUB_API}/repos/{repo}/compare/{base}...{head}"
-        data = _gh_get(url, headers)
-        cache[(base, head)] = data.get("ahead_by") if data is not None else None
-    return cache
 
 
 COL_DESC = {
@@ -437,7 +396,6 @@ def render_table_row(
     run_url: str,
     show_target_column: bool,
     commit_titles: dict[str, str | None],
-    commit_distances: dict[tuple[str, str], int | None],
     downstream_commit_titles: dict[str, str | None],
 ) -> str:
     downstream = r.get("downstream", "")
@@ -455,11 +413,6 @@ def render_table_row(
 
     def ct(sha: str | None) -> str | None:
         return commit_titles.get(sha) if sha else None
-
-    def dist(base: str | None, head: str | None) -> int | None:
-        if not base or not head:
-            return None
-        return commit_distances.get((base, head))
 
     pin = r.get("pinned_commit")
     target = r.get("target_commit")
@@ -484,8 +437,8 @@ def render_table_row(
     lkg_cell      = commit_link(UPSTREAM_REPO, lkg,    ct(lkg))
     fkb_cell      = commit_link(UPSTREAM_REPO, fkb,    ct(fkb))
     pin_cell      = commit_link(UPSTREAM_REPO, pin,    ct(pin))
-    age_cell      = distance_cell(dist(pin, target))
-    bump_cell     = distance_cell(dist(pin, lkg))
+    age_cell      = distance_cell(r.get("age_commits"))
+    bump_cell     = distance_cell(r.get("bump_commits"))
 
     btns: list[str] = []
     if r.get("job_url"):
@@ -528,7 +481,6 @@ def render(
     generated_at: str,
     rows: list[dict],
     commit_titles: dict[str, str | None],
-    commit_distances: dict[tuple[str, str], int | None],
     downstream_commit_titles: dict[str, str | None],
 ) -> str:
     col_glossary_items = "".join(
@@ -614,7 +566,6 @@ def render(
             run_url=run_url,
             show_target_column=show_target_column,
             commit_titles=commit_titles,
-            commit_distances=commit_distances,
             downstream_commit_titles=downstream_commit_titles,
         )
         for r in sorted(rows, key=sort_key)
@@ -765,19 +716,6 @@ def main() -> None:
         print(f"Fetching downstream commit titles for {repo} ({len(shas)} SHA(s))…")
         downstream_commit_titles.update(fetch_commit_titles(shas, repo, args.github_token))
 
-    # Collect (base, head) pairs needed for age and bump, then fetch distances.
-    compare_pairs: set[tuple[str, str]] = set()
-    for r in rows:
-        pin = r.get("pinned_commit")
-        target = r.get("target_commit")
-        lkg = r.get("last_known_good")
-        if pin and target and pin != target:
-            compare_pairs.add((pin, target))
-        if pin and lkg and pin != lkg:
-            compare_pairs.add((pin, lkg))
-    print(f"Fetching commit distances for {len(compare_pairs)} unique pair(s)…")
-    commit_distances = fetch_commit_distances(compare_pairs, UPSTREAM_REPO, args.github_token)
-
     html = render(
         run_id=run_id,
         run_url=run_url,
@@ -786,7 +724,6 @@ def main() -> None:
         generated_at=generated_at,
         rows=rows,
         commit_titles=commit_titles,
-        commit_distances=commit_distances,
         downstream_commit_titles=downstream_commit_titles,
     )
 
