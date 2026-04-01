@@ -663,6 +663,11 @@ def main() -> None:
     )
     ap.add_argument("--output", required=True, help="Output HTML file path")
     ap.add_argument(
+        "--inventory",
+        default=str(Path(__file__).resolve().parent.parent / "ci" / "inventory" / "downstreams.json"),
+        help="Path to downstreams.json inventory; disabled entries are excluded from the page",
+    )
+    ap.add_argument(
         "--github-token",
         default=os.environ.get("GITHUB_TOKEN"),
         help="GitHub token for commit title lookups (default: $GITHUB_TOKEN)",
@@ -698,6 +703,19 @@ def main() -> None:
     run_url = run_meta.get("run_url", "") or ""
     upstream_ref = run_meta.get("upstream_ref", "unknown") or "unknown"
     reported_at = run_meta.get("reported_at") or None
+
+    # Filter out downstreams that are disabled in the inventory.
+    inventory_path = Path(args.inventory)
+    if inventory_path.exists():
+        inventory = json.loads(inventory_path.read_text())
+        enabled = {
+            item["name"]
+            for item in inventory.get("downstreams", [])
+            if item.get("enabled", True)
+        }
+        rows = [r for r in rows if r.get("downstream") in enabled]
+    else:
+        print(f"  warning: inventory not found at {inventory_path}, skipping filter")
 
     # Collect every unique Mathlib SHA referenced across all rows, then fetch
     # their commit titles in one pass (memoized — each SHA fetched at most once).

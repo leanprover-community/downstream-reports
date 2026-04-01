@@ -365,6 +365,8 @@ try:
         MetaData,
         String,
         Table,
+        and_,
+        func,
         select as sa_select,
     )
 
@@ -684,12 +686,14 @@ def latest_regression_run_id(engine: Any) -> str | None:
 
 
 def load_run_for_site(engine: Any, run_id: str) -> tuple[dict, list[dict]]:
-    """Return (run_meta, rows) for *run_id*, ready for the site renderer.
+    """Return (run_meta, rows) for the site renderer.
 
-    Uses the SQLAlchemy table metadata defined in this module so that schema
-    changes are reflected automatically.  Each row dict includes job metadata
-    (job_url, job_started_at, job_finished_at, job_conclusion) merged in from
-    the validate_job table.
+    *run_id* is used only for the banner metadata (title, run URL, upstream
+    ref).  The table rows always reflect the **latest result per downstream**
+    across all regression runs, so that downstreams absent from the specified
+    run (e.g. because the workflow was triggered for a subset of downstreams,
+    or a downstream was temporarily disabled) still appear with their most
+    recent data and their own CI job link.
     """
     if not _SA_AVAILABLE:
         raise ImportError("sqlalchemy is required; pip install sqlalchemy")
@@ -706,6 +710,20 @@ def load_run_for_site(engine: Any, run_id: str) -> tuple[dict, list[dict]]:
             ).where(_sa_run.c.run_id == run_id)
         ).mappings().one()
 
+        # Subquery: the most recent reported_at for each downstream across all
+        # regression runs.  Downstreams absent from the banner run still appear
+        # here using their own latest run's data.
+        latest_per_ds = (
+            sa_select(
+                _sa_run_result.c.downstream,
+                func.max(_sa_run.c.reported_at).label("latest_at"),
+            )
+            .join(_sa_run, _sa_run_result.c.run_id == _sa_run.c.run_id)
+            .where(_sa_run.c.workflow == "regression")
+            .group_by(_sa_run_result.c.downstream)
+            .subquery()
+        )
+
         results = conn.execute(
             sa_select(
                 _sa_run_result.c.downstream,
@@ -719,33 +737,24 @@ def load_run_for_site(engine: Any, run_id: str) -> tuple[dict, list[dict]]:
                 _sa_run_result.c.pinned_commit,
                 _sa_run_result.c.age_commits,
                 _sa_run_result.c.bump_commits,
+                _sa_validate_job.c.job_url,
+                _sa_validate_job.c.started_at.label("job_started_at"),
+                _sa_validate_job.c.finished_at.label("job_finished_at"),
+                _sa_validate_job.c.conclusion.label("job_conclusion"),
             )
-            .where(_sa_run_result.c.run_id == run_id)
+            .join(latest_per_ds, _sa_run_result.c.downstream == latest_per_ds.c.downstream)
+            .join(_sa_run, and_(
+                _sa_run_result.c.run_id == _sa_run.c.run_id,
+                _sa_run.c.reported_at == latest_per_ds.c.latest_at,
+            ))
+            .outerjoin(_sa_validate_job, and_(
+                _sa_run_result.c.run_id == _sa_validate_job.c.run_id,
+                _sa_run_result.c.downstream == _sa_validate_job.c.downstream,
+            ))
             .order_by(_sa_run_result.c.downstream)
         ).mappings().all()
 
-        jobs = conn.execute(
-            sa_select(
-                _sa_validate_job.c.downstream,
-                _sa_validate_job.c.job_url,
-                _sa_validate_job.c.started_at,
-                _sa_validate_job.c.finished_at,
-                _sa_validate_job.c.conclusion,
-            ).where(_sa_validate_job.c.run_id == run_id)
-        ).mappings().all()
-
-    job_map = {j["downstream"]: dict(j) for j in jobs}
-
-    rows = []
-    for r in results:
-        row = dict(r)
-        job = job_map.get(r["downstream"], {})
-        row["job_url"] = job.get("job_url")
-        row["job_started_at"] = job.get("started_at")
-        row["job_finished_at"] = job.get("finished_at")
-        row["job_conclusion"] = job.get("conclusion")
-        rows.append(row)
-
+    rows = [dict(r) for r in results]
     return dict(run_row), rows
 
 
