@@ -50,13 +50,35 @@ def short_sha(sha: str | None) -> str | None:
     return sha[:7] if sha else None
 
 
-def commit_link(repo: str, sha: str | None, title: str | None = None) -> str:
+def commit_link(
+    repo: str,
+    sha: str | None,
+    title: str | None = None,
+    tag: str | None = None,
+    date: str | None = None,
+) -> str:
     if not sha:
         return "<span class='none'>—</span>"
     url = f"{GITHUB}/{repo}/commit/{sha}"
-    s = short_sha(sha)
-    tooltip = esc(title if title else sha)
-    return f'<a href="{esc(url)}" class="sha" data-tooltip="{tooltip}" target="_blank" rel="noopener noreferrer">{esc(s)}</a>'
+    display = tag if tag else short_sha(sha)
+    date_str = date[:10] if date else None  # YYYY-MM-DD
+    NL = "&#10;"
+    if tag:
+        parts: list[str] = [short_sha(sha)]  # type: ignore[list-item]
+        if date_str:
+            parts.append(date_str)
+        if title:
+            parts.append(title)
+        tooltip = NL.join(esc(p) for p in parts)
+    else:
+        parts = []
+        if date_str:
+            parts.append(date_str)
+        if title:
+            parts.append(title)
+        tooltip = NL.join(esc(p) for p in parts) if parts else esc(sha)
+    cls = "sha sha-tag" if tag else "sha"
+    return f'<a href="{esc(url)}" class="{cls}" data-tooltip="{tooltip}" target="_blank" rel="noopener noreferrer">{esc(display)}</a>'
 
 
 def fmt_dt(iso: str | None) -> str:
@@ -77,11 +99,12 @@ def fetch_commit_titles(
     shas: set[str],
     repo: str,
     token: str | None,
-) -> dict[str, str | None]:
-    """Return {sha: title} for every SHA in *shas*, fetched from the GitHub API.
+) -> dict[str, dict[str, str | None]]:
+    """Return {sha: {"title": ..., "date": ...}} for every SHA in *shas*.
 
-    The title is the first line of the commit message.  On any error the SHA
-    maps to None so callers can fall back gracefully.
+    *title* is the first line of the commit message; *date* is the committer
+    date as an ISO 8601 string.  On any error the SHA maps to
+    ``{"title": None, "date": None}`` so callers can fall back gracefully.
     """
     headers: dict[str, str] = {
         "Accept": "application/vnd.github+json",
@@ -91,7 +114,7 @@ def fetch_commit_titles(
     if token:
         headers["Authorization"] = f"Bearer {token}"
 
-    cache: dict[str, str | None] = {}
+    cache: dict[str, dict[str, str | None]] = {}
     for sha in sorted(shas):  # deterministic order for predictable log output
         url = f"{GITHUB_API}/repos/{repo}/commits/{sha}"
         req = urllib.request.Request(url, headers=headers)
@@ -99,23 +122,64 @@ def fetch_commit_titles(
             with urllib.request.urlopen(req, timeout=10) as resp:
                 data = json.loads(resp.read())
             message: str = data.get("commit", {}).get("message", "") or ""
-            cache[sha] = message.splitlines()[0] if message else None
+            date: str | None = data.get("commit", {}).get("committer", {}).get("date") or None
+            cache[sha] = {
+                "title": message.splitlines()[0] if message else None,
+                "date": date,
+            }
         except Exception as exc:
             print(f"  warning: could not fetch commit title for {sha[:7]}: {exc}")
-            cache[sha] = None
+            cache[sha] = {"title": None, "date": None}
 
     return cache
 
 
+def fetch_tags(
+    repo: str,
+    token: str | None,
+    max_pages: int = 5,
+) -> dict[str, str]:
+    """Return {full_sha: tag_name} for the most recent tags in *repo*.
+
+    Fetches up to *max_pages* × 100 tags (newest first).  On any error the
+    partial result collected so far is returned so callers degrade gracefully.
+    """
+    headers: dict[str, str] = {
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+        "User-Agent": "hopscotch-reports/generate_site",
+    }
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+
+    result: dict[str, str] = {}
+    for page in range(1, max_pages + 1):
+        url = f"{GITHUB_API}/repos/{repo}/tags?per_page=100&page={page}"
+        req = urllib.request.Request(url, headers=headers)
+        try:
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                data = json.loads(resp.read())
+            if not data:
+                break
+            for tag in data:
+                sha = tag.get("commit", {}).get("sha")
+                name = tag.get("name")
+                if sha and name and sha not in result:
+                    result[sha] = name
+        except Exception as exc:
+            print(f"  warning: could not fetch tags for {repo} (page {page}): {exc}")
+            break
+    return result
+
 
 COL_DESC = {
     "downstream":      "Project tested updating the Mathlib dependency",
-    "outcome":         "Result of the build updating the downstream to the target revision",
+    "outcome":         "Compatibility of the downstream with the target Mathlib revision",
     "target":          "Mathlib revision this run targeted",
-    "last_known_good": "Latest Mathlib revision where build passed",
-    "first_known_bad": "Earliest Mathlib revision where build failed",
+    "last_known_good": "Latest Mathlib revision compatible with the downstream",
+    "first_known_bad": "Earliest Mathlib revision incompatible with the downstream",
     "pinned":          "Mathlib revision in the lake manifest",
-    "age":             "Commits between 'pinned' and 'target'",
+    "age":             "Days between 'pinned' and 'target' (commit count below)",
     "bump":            "Commits that can be safely advanced ('pinned' -> 'last known good')",
 }
 
@@ -124,9 +188,14 @@ OUTCOME_CLASS = {
     "failed": "badge-red",
     "error":  "badge-yellow",
 }
+OUTCOME_LABEL = {
+    "passed": "compatible",
+    "failed": "incompatible",
+    "error":  "error",
+}
 OUTCOME_TOOLTIP = {
-    "passed": "Build succeeded against the target Mathlib commit",
-    "failed": "Build failed against the target Mathlib commit",
+    "passed": "Compatible with the target Mathlib commit",
+    "failed": "Incompatible with the target Mathlib commit",
     "error":  "CI job encountered an unexpected error",
 }
 EPISODE_CLASS = {
@@ -137,17 +206,17 @@ EPISODE_CLASS = {
     "error":       "badge-yellow",
 }
 EPISODE_LABEL = {
-    "passing":     "passing",
+    "passing":     "compatible",
     "recovered":   "recovered",
-    "new_failure": "new failure",
-    "failing":     "failing",
+    "new_failure": "new incompatibility",
+    "failing":     "incompatible",
     "error":       "error",
 }
 EPISODE_TOOLTIP = {
-    "passing":     "Has been passing consistently",
-    "recovered":   "Was failing but has now recovered",
-    "new_failure": "Newly broken — was passing in the previous run",
-    "failing":     "Has been failing across multiple runs",
+    "passing":     "Has been compatible consistently",
+    "recovered":   "Was incompatible but is now compatible",
+    "new_failure": "Newly incompatible — was compatible in the previous run",
+    "failing":     "Has been incompatible across multiple runs",
     "error":       "CI job has been erroring across multiple runs",
 }
 
@@ -256,24 +325,32 @@ th {
 .report-desc-intro { margin: 0 0 8px; color: #57606a; }
 .report-desc-list { margin: 0 0 8px; padding-left: 20px; color: #57606a; display: flex; flex-direction: column; gap: 4px; }
 .report-desc-footer { margin: 0; color: #57606a; }
-.glossary-toggle { margin-top: 8px; }
+.glossary-toggle { margin-top: 10px; }
 .glossary-toggle summary {
-  display: inline-flex; align-items: center; gap: 4px;
-  font-size: 12px; font-weight: 600; color: var(--grey);
+  display: inline-flex; align-items: center; gap: 5px;
+  font-size: 12px; font-weight: 600; color: #57606a;
+  background: #f1f3f5; border: 1px solid var(--border); border-radius: 4px;
+  padding: 3px 10px;
   cursor: pointer; user-select: none; list-style: none;
 }
+.glossary-toggle summary:hover { background: #e8eaed; color: #24292e; }
 .glossary-toggle summary::-webkit-details-marker { display: none; }
 .glossary-toggle summary::before {
   content: "▶"; font-size: 9px; transition: transform .15s;
 }
 .glossary-toggle[open] summary::before { transform: rotate(90deg); }
-.col-glossary { display: flex; flex-direction: column; gap: 3px; margin-top: 8px; }
+.col-glossary { display: flex; flex-direction: row; gap: 24px; margin-top: 8px; flex-wrap: wrap; align-items: flex-start; }
+.col-glossary-col { display: flex; flex-direction: column; gap: 3px; flex: 1 1 0; min-width: 0; }
 .col-glossary-item { display: flex; gap: 6px; align-items: baseline; font-size: 12px; }
 .col-glossary-key {
   font-weight: 600; text-transform: uppercase; font-size: 11px;
   letter-spacing: .04em; color: var(--grey); white-space: nowrap; min-width: 120px;
 }
 .col-glossary-val { color: #57606a; }
+.col-glossary-badge-intro { font-size: 12px; color: #57606a; margin: 0 0 6px; font-weight: 500; }
+.col-glossary-badge-item { display: flex; gap: 8px; align-items: center; font-size: 12px; }
+.col-glossary-badge-key { white-space: nowrap; min-width: 120px; }
+.col-glossary-badge-val { color: #57606a; }
 td { padding: 9px 12px; border-bottom: 1px solid var(--border); vertical-align: middle; }
 tr:last-child td { border-bottom: none; }
 tbody tr.data-row:hover td { background: #f6f8fa; }
@@ -291,19 +368,32 @@ tbody tr.data-row:hover td { background: #f6f8fa; }
 .badge-yellow { background: #fff8c5; color: var(--yellow); }
 .badge-grey   { background: #f1f3f5; color: var(--grey); }
 [data-tooltip] { position: relative; }
+[data-tooltip]::before {
+  content: '';
+  position: absolute;
+  bottom: calc(100% + 2px);
+  left: 50%; transform: translateX(-50%);
+  border: 5px solid transparent;
+  border-top-color: #24292e;
+  pointer-events: none;
+  opacity: 0; transition: opacity 0.07s ease;
+  z-index: 11;
+}
 [data-tooltip]::after {
   content: attr(data-tooltip);
   position: absolute;
-  bottom: calc(100% + 6px);
+  bottom: calc(100% + 12px);
   left: 50%; transform: translateX(-50%);
   background: #24292e; color: #fff;
-  padding: 4px 8px; border-radius: 4px;
-  font-size: 11px; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+  padding: 5px 10px; border-radius: 5px;
+  font-size: 12px; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
   font-weight: normal; text-transform: none; letter-spacing: normal;
-  white-space: nowrap; pointer-events: none;
-  opacity: 0; transition: opacity 0s;
+  white-space: pre; pointer-events: none;
+  box-shadow: 0 3px 10px rgba(0,0,0,0.25);
+  opacity: 0; transition: opacity 0.12s ease;
   z-index: 10;
 }
+[data-tooltip]:hover::before,
 [data-tooltip]:hover::after { opacity: 1; }
 .sha {
   font-family: "SFMono-Regular", Consolas, monospace; font-size: 12px;
@@ -311,10 +401,13 @@ tbody tr.data-row:hover td { background: #f6f8fa; }
   background: #f1f3f5; padding: 1px 4px; border-radius: 3px;
 }
 .sha:hover { background: #e1e4e8; }
+.sha.sha-tag { color: #6f42c1; background: #f0ebff; }
+.sha.sha-tag:hover { background: #e4d9f7; }
 .none { color: #bbb; }
 .distance { font-family: "SFMono-Regular", Consolas, monospace; font-size: 12px; }
 .distance.stale { color: var(--yellow); }
 .distance.zero { color: var(--grey); }
+.distance-sub { font-family: "SFMono-Regular", Consolas, monospace; font-size: 11px; color: var(--grey); margin-top: 1px; }
 .links { display: flex; gap: 4px; flex-wrap: wrap; }
 .btn {
   display: inline-block; padding: 2px 8px;
@@ -348,9 +441,28 @@ footer a:hover { text-decoration: underline; }
 """
 
 
-def distance_cell(n: int | None) -> str:
-    if n is None:
+def days_between(date_a: str | None, date_b: str | None) -> int | None:
+    """Return (date_b - date_a).days, or None if either date is missing/unparseable."""
+    if not date_a or not date_b:
+        return None
+    try:
+        a = datetime.fromisoformat(date_a.replace("Z", "+00:00"))
+        b = datetime.fromisoformat(date_b.replace("Z", "+00:00"))
+        return (b - a).days
+    except Exception:
+        return None
+
+
+def distance_cell(n: int | None, days: int | None = None) -> str:
+    if n is None and days is None:
         return "<span class='none'>—</span>"
+    if days is not None:
+        if days == 0:
+            primary = '<span class="distance zero">0d</span>'
+        else:
+            primary = f'<span class="distance stale">{days}d</span>'
+        sub = f'<div class="distance-sub">(+{n})</div>' if n is not None else ""
+        return primary + sub
     if n == 0:
         return '<span class="distance zero">0</span>'
     return f'<span class="distance stale">+{n}</span>'
@@ -362,8 +474,8 @@ def render_stats(rows: list[dict]) -> str:
     n_error  = sum(1 for r in rows if r.get("outcome") == "error")
     return (
         f'<div class="stats">'
-        f'<div class="stat green"><div class="n">{n_passed}</div><div class="l">passing</div></div>'
-        f'<div class="stat red"><div class="n">{n_failed}</div><div class="l">failing</div></div>'
+        f'<div class="stat green"><div class="n">{n_passed}</div><div class="l">compatible</div></div>'
+        f'<div class="stat red"><div class="n">{n_failed}</div><div class="l">incompatible</div></div>'
         f'<div class="stat yellow"><div class="n">{n_error}</div><div class="l">errors</div></div>'
         f'</div>'
     )
@@ -398,8 +510,9 @@ def render_table_row(
     r: dict,
     *,
     run_url: str,
-    commit_titles: dict[str, str | None],
-    downstream_commit_titles: dict[str, str | None],
+    commit_titles: dict[str, dict[str, str | None]],
+    downstream_commit_titles: dict[str, dict[str, str | None]],
+    sha_to_tag: dict[str, str],
 ) -> str:
     downstream = r.get("downstream", "")
     repo = r.get("repo", "")
@@ -415,7 +528,15 @@ def render_table_row(
         name_cell += f'<div class="repo-label">{esc(repo)}</div>'
 
     def ct(sha: str | None) -> str | None:
-        return commit_titles.get(sha) if sha else None
+        info = commit_titles.get(sha) if sha else None
+        return info.get("title") if info else None
+
+    def cd(sha: str | None) -> str | None:
+        info = commit_titles.get(sha) if sha else None
+        return info.get("date") if info else None
+
+    def tg(sha: str | None) -> str | None:
+        return sha_to_tag.get(sha) if sha else None
 
     pin = r.get("pinned_commit")
     target = r.get("target_commit")
@@ -425,25 +546,30 @@ def render_table_row(
     bump_val = r.get("bump_commits")
 
     episode_state = r.get("episode_state")
-    episode_badge = badge(episode_state, EPISODE_CLASS, EPISODE_LABEL, EPISODE_TOOLTIP)
-    episode_title = f"status: {EPISODE_LABEL.get(episode_state, episode_state)}" if episode_state else None
+    # Only show the episode badge for transitions; steady-state is conveyed by the outcome column.
+    _episode_is_transition = episode_state in ("new_failure", "recovered")
+    episode_badge = badge(episode_state, EPISODE_CLASS, EPISODE_LABEL, EPISODE_TOOLTIP) if _episode_is_transition else None
+    episode_title = f"status: {EPISODE_LABEL.get(episode_state, episode_state)}" if episode_state and _episode_is_transition else None
     ds_commit = r.get("downstream_commit")
-    ds_title = downstream_commit_titles.get(ds_commit) if ds_commit else None
-    ds_commit_link = commit_link(repo, ds_commit, ds_title) if ds_commit and repo and "/" in repo else ""
+    ds_info = downstream_commit_titles.get(ds_commit) if ds_commit else None
+    ds_title = ds_info.get("title") if ds_info else None
+    ds_date = ds_info.get("date") if ds_info else None
+    ds_commit_link = commit_link(repo, ds_commit, ds_title, date=ds_date) if ds_commit and repo and "/" in repo else ""
     name_cell += f'<div class="episode-label">'
     if ds_commit_link:
         name_cell += f'{ds_commit_link}&nbsp;'
-    if episode_title:
+    if episode_title and episode_badge:
         name_cell += f'<span title="{esc(episode_title)}">{episode_badge}</span>'
     name_cell += '</div>'
 
-    outcome_cell  = badge(r.get("outcome"), OUTCOME_CLASS, tooltip_map=OUTCOME_TOOLTIP)
-    target_cell   = commit_link(UPSTREAM_REPO, target, ct(target))
-    lkg_cell      = commit_link(UPSTREAM_REPO, lkg,    ct(lkg))
-    fkb_cell      = commit_link(UPSTREAM_REPO, fkb,    ct(fkb))
-    pin_cell      = commit_link(UPSTREAM_REPO, pin,    ct(pin))
-    age_cell      = distance_cell(age_val)
-    bump_cell     = distance_cell(bump_val)
+    outcome_cell  = badge(r.get("outcome"), OUTCOME_CLASS, label_map=OUTCOME_LABEL, tooltip_map=OUTCOME_TOOLTIP)
+    target_cell   = commit_link(UPSTREAM_REPO, target, ct(target), tg(target), cd(target))
+    lkg_cell      = commit_link(UPSTREAM_REPO, lkg,    ct(lkg),    tg(lkg),    cd(lkg))
+    fkb_cell      = commit_link(UPSTREAM_REPO, fkb,    ct(fkb),    tg(fkb),    cd(fkb))
+    pin_cell      = commit_link(UPSTREAM_REPO, pin,    ct(pin),    tg(pin),    cd(pin))
+    age_days  = days_between(cd(pin), cd(target))
+    age_cell  = distance_cell(age_val, age_days)
+    bump_cell = distance_cell(bump_val)
 
     row_run_url = r.get("run_url") or run_url
     btns: list[str] = []
@@ -453,7 +579,7 @@ def render_table_row(
         btns.append(f'<a href="{esc(row_run_url)}" class="btn" target="_blank" rel="noopener noreferrer">Run&nbsp;↗</a>')
     links_cell = f'<div class="links">{"".join(btns)}</div>'
 
-    _av = str(age_val)  if age_val  is not None else "-1"
+    _av = str(age_days) if age_days is not None else (str(age_val) if age_val is not None else "-1")
     _bv = str(bump_val) if bump_val is not None else "-1"
     cells = (
         f'<td data-sort-val="{esc(downstream.lower())}">{name_cell}</td>'
@@ -467,15 +593,20 @@ def render_table_row(
         f"<td>{links_cell}</td>"
     )
     ep_label = EPISODE_LABEL.get(episode_state, episode_state or "")
+    outcome_search = {"passed": "compatible", "failed": "incompatible"}.get(r.get("outcome", ""), r.get("outcome", ""))
     filter_tokens = " ".join(filter(None, [
         downstream.lower(),
         repo.lower(),
-        r.get("outcome", ""),
+        outcome_search,
         ep_label,
         short_sha(pin),
+        tg(pin),
         short_sha(target),
+        tg(target),
         short_sha(lkg),
+        tg(lkg),
         short_sha(fkb),
+        tg(fkb),
     ]))
     return f'<tr class="data-row" data-filter="{esc(filter_tokens)}">{cells}</tr>'
 
@@ -488,8 +619,9 @@ def render(
     reported_at: Any,
     generated_at: str,
     rows: list[dict],
-    commit_titles: dict[str, str | None],
-    downstream_commit_titles: dict[str, str | None],
+    commit_titles: dict[str, dict[str, str | None]],
+    downstream_commit_titles: dict[str, dict[str, str | None]],
+    sha_to_tag: dict[str, str],
 ) -> str:
     col_glossary_items = "".join(
         f'<div class="col-glossary-item">'
@@ -507,6 +639,27 @@ def render(
             ("Bump",            COL_DESC["bump"]),
         ]
     )
+    badge_glossary_intro = (
+        '<div class="col-glossary-badge-intro">'
+        "Each run attempts to build the downstream project after updating its Mathlib "
+        "dependency to the target revision. "
+        "A failure in this build means something conflicts between the dependency "
+        "and the dependent at that revision (an API change, namespace conflict, ...)"
+        "</div>"
+    )
+    badge_glossary_items = badge_glossary_intro + "".join(
+        f'<div class="col-glossary-badge-item">'
+        f'<span class="col-glossary-badge-key">'
+        f'<span class="badge {cls}">{label}</span>'
+        f'</span>'
+        f'<span class="col-glossary-badge-val">{esc(desc)}</span>'
+        f'</div>'
+        for cls, label, desc in [
+            ("badge-green",  "compatible",         OUTCOME_TOOLTIP["passed"]),
+            ("badge-red",    "incompatible",        OUTCOME_TOOLTIP["failed"]),
+            ("badge-yellow", "error",               OUTCOME_TOOLTIP["error"])
+        ]
+    )
     readme_url = f"{GITHUB}/{THIS_REPO}#readme"
     mathlib_url = f"{GITHUB}/{UPSTREAM_REPO}"
     report_desc = (
@@ -517,11 +670,11 @@ def render(
         f'<li><strong>How far behind is the dependency revision?</strong> '
         f'A scheduled workflow builds each registered downstream against the most recent mathlib commit (the <em>target</em>). '
         f'The <em>age</em> column shows how many commits your pinned revision lags behind it.</li>'
-        f'<li><strong>Which commit broke my build?</strong> '
-        f'When a build against the target fails, we run '
+        f'<li><strong>Which commit introduced the incompatibility?</strong> '
+        f'When the downstream is incompatible with the target, we run '
         f'<a href="https://github.com/leanprover-community/hopscotch" target="_blank" rel="noopener noreferrer">hopscotch</a> '
         f'to scan the mathlib history between the pinned revision and the target, '
-        f'to identify the <em>first known bad</em> commit — the earliest one that breaks your build — '
+        f'to identify the <em>first known bad</em> commit — the earliest Mathlib revision incompatible with the downstream — '
         f'and the <em>last known good</em> commit just before it.</li>'
         f'<li><strong>How much can I safely advance the dependency?</strong> '
         f'The <em>last known good</em> commit is a safe upgrade target. '
@@ -533,7 +686,14 @@ def render(
         f'</p>'
         f'<details class="glossary-toggle">'
         f'<summary>Glossary</summary>'
-        f'<div class="col-glossary">{col_glossary_items}</div>'
+        f'<div class="col-glossary">'
+        f'<div class="col-glossary-col">'
+        f'{col_glossary_items}'
+        f'</div>'
+        f'<div class="col-glossary-col">'
+        f'{badge_glossary_items}'
+        f'</div>'
+        f'</div>'
         f'</details>'
         f'</div>'
     )
@@ -545,10 +705,13 @@ def render(
 
     target_banner = ""
     if common_target:
-        target_title = commit_titles.get(common_target)
+        target_info = commit_titles.get(common_target) or {}
+        target_title = target_info.get("title")
+        target_date = target_info.get("date")
+        target_tag = sha_to_tag.get(common_target)
         target_banner = (
             f'<span class="divider">|</span>'
-            f'<span><strong>Target:</strong>&nbsp;{commit_link(UPSTREAM_REPO, common_target, target_title)}</span>'
+            f'<span><strong>Target:</strong>&nbsp;{commit_link(UPSTREAM_REPO, common_target, target_title, target_tag, target_date)}</span>'
         )
 
     run_banner = render_run_banner(
@@ -569,6 +732,7 @@ def render(
             run_url=run_url,
             commit_titles=commit_titles,
             downstream_commit_titles=downstream_commit_titles,
+            sha_to_tag=sha_to_tag,
         )
         for r in sorted(rows, key=sort_key)
     ]
@@ -760,6 +924,11 @@ def main() -> None:
         print(f"Fetching downstream commit titles for {repo} ({len(shas)} SHA(s))…")
         downstream_commit_titles.update(fetch_commit_titles(shas, repo, args.github_token))
 
+    # Fetch tags for the upstream repo so tagged commits display the tag name.
+    print(f"Fetching tags for {UPSTREAM_REPO}…")
+    sha_to_tag = fetch_tags(UPSTREAM_REPO, args.github_token)
+    print(f"  {len(sha_to_tag)} tag(s) loaded.")
+
     html = render(
         run_id=run_id,
         run_url=run_url,
@@ -769,6 +938,7 @@ def main() -> None:
         rows=rows,
         commit_titles=commit_titles,
         downstream_commit_titles=downstream_commit_titles,
+        sha_to_tag=sha_to_tag,
     )
 
     out = Path(args.output)

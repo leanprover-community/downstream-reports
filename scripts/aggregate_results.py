@@ -329,6 +329,16 @@ def render_report(
 ) -> str:
     """Render the human-readable markdown report used in GitHub summaries."""
 
+    _outcome_label = {"passed": "compatible", "failed": "incompatible"}
+    _episode_label = {
+        "passing":     "compatible",
+        "recovering":  "recovered",
+        "recovered":   "recovered",
+        "new_failure": "new incompatibility",
+        "failing":     "incompatible",
+        "error":       "error",
+    }
+
     lines = [
         "# Downstream Regression Report",
         "",
@@ -351,8 +361,8 @@ def render_report(
         lines.append(
             "| {downstream} | {outcome} | {episode_state} | {target} | {last_known_good} | {first_known_bad}".format(
                 downstream=row["downstream"],
-                outcome=row["outcome"],
-                episode_state=row["episode_state"],
+                outcome=_outcome_label.get(row["outcome"], row["outcome"]),
+                episode_state=_episode_label.get(row["episode_state"], row["episode_state"]),
                 target=render_commit_link(row["target_commit"], upstream),
                 last_known_good=render_commit_link(row["last_known_good"], upstream),
                 first_known_bad=render_commit_link(row["first_known_bad"], upstream),
@@ -372,7 +382,7 @@ def render_report(
         lines.extend(
             [
                 "<details>",
-                f"<summary>{name_html} &mdash; <code>{row['outcome']}</code> &mdash; <code>{row['episode_state']}</code></summary>",
+                f"<summary>{name_html} &mdash; <code>{_outcome_label.get(row['outcome'], row['outcome'])}</code> &mdash; <code>{_episode_label.get(row['episode_state'], row['episode_state'])}</code></summary>",
                 "",
             ]
         )
@@ -404,14 +414,14 @@ def render_report(
                     + render_named_commit(details, row.get("current_last_successful"), upstream)
                 )
                 lines.append(
-                    "  - first bad found this run: "
+                    "  - first incompatible commit found this run: "
                     + render_named_commit(details, row.get("current_first_failing"), upstream)
                 )
                 position = first_bad_position(details, row.get("current_first_failing"))
                 if position is not None:
                     index, total = position
                     lines.append(
-                        f"- First bad position: `{index}/{total}` in the bisect window "
+                        f"- First incompatible commit position: `{index}/{total}` in the bisect window "
                         f"(advanced {index - 1} of {total - 1} commits from the lower bound)"
                     )
             else:
@@ -428,7 +438,7 @@ def render_report(
             + render_named_commit(details, row["first_known_bad"], upstream)
         )
         if row.get("culprit_log_text"):
-            lines.extend(["", "First bad commit failure logs:", "```text", row["culprit_log_text"], "```"])
+            lines.extend(["", "First incompatible commit logs:", "```text", row["culprit_log_text"], "```"])
         if row["summary"]:
             lines.extend(["", "```text", row["summary"], "```"])
         lines.extend(["", "</details>", ""])
