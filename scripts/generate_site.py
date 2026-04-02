@@ -174,26 +174,26 @@ def fetch_tags(
 
 COL_DESC = {
     "downstream":      "Project tested updating the Mathlib dependency",
-    "outcome":         "Compatibility of the downstream with the target Mathlib revision",
-    "target":          "Mathlib revision this run targeted",
+    "compatibility":   "Compatibility of the downstream with the target Mathlib revision\n(based on the result of the latest validation run)",
+    "target":          "Mathlib revision targeted in the latest validation run",
     "last_known_good": "Latest Mathlib revision compatible with the downstream",
     "first_known_bad": "Earliest Mathlib revision incompatible with the downstream",
-    "pinned":          "Mathlib revision in the lake manifest",
+    "pinned":          "Mathlib revision in the downstream's lake manifest",
     "age":             "Days between 'pinned' and 'target' (commit count below)",
     "bump":            "Commits that can be safely advanced ('pinned' -> 'last known good')",
 }
 
-OUTCOME_CLASS = {
+COMPATIBILITY_CLASS = {
     "passed": "badge-green",
     "failed": "badge-red",
     "error":  "badge-yellow",
 }
-OUTCOME_LABEL = {
+COMPATIBILITY_LABEL = {
     "passed": "compatible",
     "failed": "incompatible",
     "error":  "error",
 }
-OUTCOME_TOOLTIP = {
+COMPATIBILITY_TOOLTIP = {
     "passed": "Compatible with the target Mathlib commit",
     "failed": "Incompatible with the target Mathlib commit",
     "error":  "CI job encountered an unexpected error",
@@ -546,7 +546,7 @@ def render_table_row(
     bump_val = r.get("bump_commits")
 
     episode_state = r.get("episode_state")
-    # Only show the episode badge for transitions; steady-state is conveyed by the outcome column.
+    # Only show the episode badge for transitions; steady-state is conveyed by the compatibility column.
     _episode_is_transition = episode_state in ("new_failure", "recovered")
     episode_badge = badge(episode_state, EPISODE_CLASS, EPISODE_LABEL, EPISODE_TOOLTIP) if _episode_is_transition else None
     episode_title = f"status: {EPISODE_LABEL.get(episode_state, episode_state)}" if episode_state and _episode_is_transition else None
@@ -557,12 +557,12 @@ def render_table_row(
     ds_commit_link = commit_link(repo, ds_commit, ds_title, date=ds_date) if ds_commit and repo and "/" in repo else ""
     name_cell += f'<div class="episode-label">'
     if ds_commit_link:
-        name_cell += f'{ds_commit_link}&nbsp;'
+        name_cell += f'<tt>@</tt> {ds_commit_link}&nbsp;'
     if episode_title and episode_badge:
         name_cell += f'<span title="{esc(episode_title)}">{episode_badge}</span>'
     name_cell += '</div>'
 
-    outcome_cell  = badge(r.get("outcome"), OUTCOME_CLASS, label_map=OUTCOME_LABEL, tooltip_map=OUTCOME_TOOLTIP)
+    compatibility_cell  = badge(r.get("outcome"), COMPATIBILITY_CLASS, label_map=COMPATIBILITY_LABEL, tooltip_map=COMPATIBILITY_TOOLTIP)
     target_cell   = commit_link(UPSTREAM_REPO, target, ct(target), tg(target), cd(target))
     lkg_cell      = commit_link(UPSTREAM_REPO, lkg,    ct(lkg),    tg(lkg),    cd(lkg))
     fkb_cell      = commit_link(UPSTREAM_REPO, fkb,    ct(fkb),    tg(fkb),    cd(fkb))
@@ -583,21 +583,21 @@ def render_table_row(
     _bv = str(bump_val) if bump_val is not None else "-1"
     cells = (
         f'<td data-sort-val="{esc(downstream.lower())}">{name_cell}</td>'
-        f'<td data-sort-val="{esc(r.get("outcome", ""))}">{outcome_cell}</td>'
         f'<td data-sort-val="{esc(pin or "")}">{pin_cell}</td>'
         f'<td data-sort-val="{_av}">{age_cell}</td>'
         f'<td data-sort-val="{esc(target or "")}">{target_cell}</td>'
+        f'<td data-sort-val="{esc(r.get("compatibility", ""))}">{compatibility_cell}</td>'
         f'<td data-sort-val="{esc(lkg or "")}">{lkg_cell}</td>'
         f'<td data-sort-val="{esc(fkb or "")}">{fkb_cell}</td>'
         f'<td data-sort-val="{_bv}">{bump_cell}</td>'
         f"<td>{links_cell}</td>"
     )
     ep_label = EPISODE_LABEL.get(episode_state, episode_state or "")
-    outcome_search = {"passed": "compatible", "failed": "incompatible"}.get(r.get("outcome", ""), r.get("outcome", ""))
+    compatibility_search = {"passed": "compatible", "failed": "incompatible"}.get(r.get("compatibility", ""), r.get("compatibility", ""))
     filter_tokens = " ".join(filter(None, [
         downstream.lower(),
         repo.lower(),
-        outcome_search,
+        compatibility_search,
         ep_label,
         short_sha(pin),
         tg(pin),
@@ -630,8 +630,8 @@ def render(
         f'</div>'
         for label, desc in [
             ("Downstream",      COL_DESC["downstream"]),
-            ("Outcome",         COL_DESC["outcome"]),
             ("Target",          COL_DESC["target"]),
+            ("Compatibility",    COL_DESC["compatibility"]),
             ("Last known good", COL_DESC["last_known_good"]),
             ("First known bad", COL_DESC["first_known_bad"]),
             ("Pinned",          COL_DESC["pinned"]),
@@ -655,9 +655,9 @@ def render(
         f'<span class="col-glossary-badge-val">{esc(desc)}</span>'
         f'</div>'
         for cls, label, desc in [
-            ("badge-green",  "compatible",         OUTCOME_TOOLTIP["passed"]),
-            ("badge-red",    "incompatible",        OUTCOME_TOOLTIP["failed"]),
-            ("badge-yellow", "error",               OUTCOME_TOOLTIP["error"])
+            ("badge-green",  "compatible",         COMPATIBILITY_TOOLTIP["passed"]),
+            ("badge-red",    "incompatible",        COMPATIBILITY_TOOLTIP["failed"]),
+            ("badge-yellow", "error",               COMPATIBILITY_TOOLTIP["error"])
         ]
     )
     readme_url = f"{GITHUB}/{THIS_REPO}#readme"
@@ -745,10 +745,10 @@ def render(
 
     thead_row = (
         _th("Downstream",      "downstream",      sortable=True)
-        + _th("Outcome",         "outcome",         sortable=True)
-        + _th("Pinned",          "pinned")
+        + _th("Pinned to",          "pinned")
         + _th("Age",             "age",             sortable=True, sort_type="numeric")
         + _th("Target",          "target")
+        + _th("Compatibility",         "compatibility",         sortable=True)
         + _th("Last known good", "last_known_good")
         + _th("First known bad", "first_known_bad")
         + _th("Bump",            "bump",            sortable=True, sort_type="numeric")
@@ -780,10 +780,10 @@ def render(
   {stats_html}
   <div class="tips">
     <strong>Tips:</strong>
-    Hover any badge or commit SHA to see details. Click on column headers to sort. Use the filter box to quickly find your project or filter by outcome.
+    Hover any badge or commit SHA to see details. Click on column headers to sort. Use the filter box to quickly find your project or filter by compatibility.
   </div>
   <div class="filter-bar">
-    <input id="filter" type="search" placeholder="Filter by repository, commit, outcome…" aria-label="Filter by repository, commit, outcome">
+    <input id="filter" type="search" placeholder="Filter by repository, commit, compatibility…" aria-label="Filter by repository, commit, compatibility">
   </div>
   <div class="table-wrap">
   <table>
