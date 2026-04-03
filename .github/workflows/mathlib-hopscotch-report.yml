@@ -110,7 +110,7 @@ jobs:
         run: |
           mkdir -p "${{ runner.temp }}/tool-bin"
           curl -L \
-            https://github.com/leanprover-community/hopscotch/releases/download/v1.0.1/hopscotch \
+            https://github.com/leanprover-community/hopscotch/releases/download/v1.1.0/hopscotch-linux-x86_64 \
             -o "${{ runner.temp }}/tool-bin/hopscotch"
           chmod +x "${{ runner.temp }}/tool-bin/hopscotch"
 
