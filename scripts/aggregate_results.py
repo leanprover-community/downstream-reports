@@ -400,6 +400,8 @@ def render_report(
             if row["head_probe_failure_stage"] is not None:
                 head_probe = f"{head_probe} (stage={row['head_probe_failure_stage']})"
             lines.append(f"- Head probe: `{head_probe}`")
+            if row.get("head_probe_summary"):
+                lines.extend(["", "Head probe output:", "```text", row["head_probe_summary"], "```"])
         if row["tested_commit_details"]:
             if row["search_mode"] == "bisect":
                 lines.append("- Bisect window boundary:")

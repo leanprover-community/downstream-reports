@@ -172,6 +172,16 @@ jobs:
           path: ${{ runner.temp }}/artifacts/${{ matrix.name }}
           if-no-files-found: error
 
+      - name: Print validation summary
+        if: always()
+        env:
+          OUTPUT_DIR: ${{ runner.temp }}/artifacts/${{ matrix.name }}
+          UPSTREAM_REF: ${{ needs.plan.outputs.upstream_ref }}
+        run: |
+          python3 scripts/summarize_single_result.py \
+            --result-dir "$OUTPUT_DIR" \
+            --upstream-ref "$UPSTREAM_REF"
+
   report:
     if: always() && needs.plan.outputs.has_downstreams == 'true'
     needs:
