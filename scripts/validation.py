@@ -422,6 +422,47 @@ def build_error_result(
     )
 
 
+def build_skip_result(
+    *,
+    config: DownstreamConfig,
+    downstream_commit: str | None,
+    upstream_ref: str,
+    target_commit: str | None,
+    search_mode: str,
+    outcome: Outcome,
+    first_failing_commit: str | None = None,
+    last_successful_commit: str | None = None,
+    summary: str,
+    pinned_commit: str | None = None,
+    tested_commit_details: list[CommitDetail] | None = None,
+) -> ValidationResult:
+    """Build a synthetic result for a skipped validation (no tool invocation)."""
+
+    return ValidationResult(
+        schema_version=1,
+        downstream=config.name,
+        repo=config.repo,
+        default_branch=config.default_branch,
+        downstream_commit=downstream_commit,
+        dependency_name=config.dependency_name,
+        upstream_ref=upstream_ref,
+        target_commit=target_commit,
+        search_mode=search_mode,
+        tested_commits=[target_commit] if target_commit else [],
+        tested_commit_details=tested_commit_details or [],
+        commit_window_truncated=False,
+        outcome=outcome,
+        failure_stage=None,
+        first_failing_commit=first_failing_commit,
+        last_successful_commit=last_successful_commit,
+        summary=summary,
+        error=None,
+        generated_at=utc_now(),
+        culprit_log_path=None,
+        pinned_commit=pinned_commit,
+    )
+
+
 def build_selection_error_result(
     selection: WindowSelection,
     error: str,

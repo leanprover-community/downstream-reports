@@ -4,8 +4,10 @@
 from __future__ import annotations
 
 import argparse
+import subprocess
 import sys
 from pathlib import Path
+from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -22,12 +24,13 @@ from scripts.git_ops import (
     select_search_base_from_candidates,
     should_run_boundary_search,
 )
-from scripts.models import DownstreamConfig, WindowSelection, load_inventory
-from scripts.storage import add_backend_args, create_backend
+from scripts.models import DownstreamConfig, Outcome, WindowSelection, load_inventory
+from scripts.storage import DownstreamStatusRecord, add_backend_args, create_backend
 from scripts.validation import (
     append_commit_plan_artifact,
     build_error_result,
     build_result_from_tool,
+    build_skip_result,
     classify_exit_code,
     commit_plan_artifact_path,
     print_commit_plan_summary,
@@ -38,6 +41,123 @@ from scripts.validation import (
     write_result,
     write_selection,
 )
+
+
+# ---------------------------------------------------------------------------
+# Skip heuristics
+#
+# Each function encapsulates one optional optimisation that can short-circuit
+# the normal probe/bisect flow.  They return a synthetic ValidationResult when
+# the skip applies, or None to fall through to the next step.  Selection
+# metadata (decision_reason, next_action) is set as a side-effect so the
+# caller only needs to check the return value.
+# ---------------------------------------------------------------------------
+
+
+def try_skip_already_good(
+    *,
+    skip_enabled: bool,
+    selection: WindowSelection,
+    previous: DownstreamStatusRecord | None,
+    config: DownstreamConfig,
+    upstream_ref: str,
+) -> ValidationResult | None:
+    """Skip if target == last-known-good and the downstream hasn't changed.
+
+    Unlikely in practice given mathlib's high churn, but handles re-runs and
+    quiet periods cheaply.
+    """
+    if not skip_enabled:
+        return None
+    if previous is None or previous.last_known_good_commit is None:
+        return None
+    if selection.target_commit != previous.last_known_good_commit:
+        return None
+    if selection.downstream_commit != previous.downstream_commit:
+        return None
+
+    print(
+        f"[{config.name}] target {selection.target_commit[:12]} == last_known_good "
+        f"and downstream unchanged; skipping"
+    )
+    selection.decision_reason = (
+        "Target commit matches the stored last-known-good and the downstream "
+        "has not changed.  This exact combination was already verified as passing."
+    )
+    selection.next_action = "Skip all probes and report the cached passing result."
+    return build_skip_result(
+        config=config,
+        downstream_commit=selection.downstream_commit,
+        upstream_ref=upstream_ref,
+        target_commit=selection.target_commit,
+        search_mode="skipped-already-good",
+        outcome=Outcome.PASSED,
+        last_successful_commit=selection.target_commit,
+        summary="Skipped: target and downstream unchanged since last passing validation.",
+        pinned_commit=selection.pinned_commit,
+    )
+
+
+def try_skip_known_bad_bisect(
+    *,
+    skip_enabled: bool,
+    selection: WindowSelection,
+    previous: DownstreamStatusRecord | None,
+    config: DownstreamConfig,
+    upstream_ref: str,
+    upstream_dir: Path,
+    head_probe_run: subprocess.CompletedProcess[str],
+    head_probe_state: dict[str, Any],
+    head_probe_summary_text: str | None,
+) -> ValidationResult | None:
+    """Skip bisect when already failing with a known culprit and downstream unchanged.
+
+    When the stored first-known-bad commit is an ancestor of the current target
+    and the downstream source hasn't changed, re-bisecting would identify the
+    same culprit.
+    """
+    if not skip_enabled:
+        return None
+    if previous is None or previous.first_known_bad_commit is None:
+        return None
+    if selection.downstream_commit != previous.downstream_commit:
+        return None
+    if not is_strict_ancestor(upstream_dir, previous.first_known_bad_commit, selection.target_commit):
+        return None
+
+    print(
+        f"[{config.name}] HEAD probe failed; first_known_bad "
+        f"{previous.first_known_bad_commit[:12]} is ancestor of target "
+        f"and downstream unchanged; skipping bisect"
+    )
+    selection.decision_reason = (
+        "The HEAD probe failed, the stored first-known-bad commit is an ancestor of "
+        "the target, and the downstream has not changed.  Re-bisecting would identify "
+        "the same culprit."
+    )
+    selection.next_action = "Skip the bisect probe and report the known failing result."
+    return build_result_from_tool(
+        config=config,
+        downstream_commit=selection.downstream_commit,
+        upstream_ref=upstream_ref,
+        target_commit=selection.target_commit,
+        search_mode="head-only-known-bad",
+        tested_commits=[selection.target_commit],
+        tested_commit_details=selection.tested_commit_details,
+        truncated=False,
+        tool_run=head_probe_run,
+        state=head_probe_state,
+        tool_summary=head_probe_summary_text,
+        head_probe_outcome=selection.head_probe_outcome,
+        head_probe_failure_stage=selection.head_probe_failure_stage,
+        head_probe_summary=selection.head_probe_summary,
+        pinned_commit=selection.pinned_commit,
+    )
+
+
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -61,6 +181,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-commits", type=int, default=100000)
     parser.add_argument("--quiet", action="store_true")
     parser.add_argument("--tool-exe", type=Path)
+    # Skip-optimisation flags (on by default; pass --no-… to force full runs).
+    parser.add_argument(
+        "--skip-already-good", action=argparse.BooleanOptionalAction, default=True,
+        help="Skip validation when target == last-known-good and downstream unchanged.",
+    )
+    parser.add_argument(
+        "--skip-known-bad-bisect", action=argparse.BooleanOptionalAction, default=True,
+        help="Skip bisect when the downstream is already failing with a known culprit "
+             "that is an ancestor of the target and the downstream is unchanged.",
+    )
     add_backend_args(parser)
     return parser
 
@@ -109,6 +239,13 @@ def main() -> int:
         selection_summary_file.write_text(summary)
         print(summary, end="")
 
+    def emit(result: ValidationResult | None = None) -> int:
+        write_selection(args.output_dir / "selection.json", selection)
+        if result is not None:
+            write_result(args.output_dir / "result.json", result)
+        finalize_selection()
+        return 0
+
     try:
         upstream_dir = args.workdir / "mathlib4.git"
         downstream_dir = args.workdir / "downstreams" / config.name
@@ -118,17 +255,28 @@ def main() -> int:
         env = cache_env(cache_dir)
 
         clone_upstream(args.upstream_repo, upstream_dir)
-        target_commit = resolve_upstream_target(upstream_dir, args.upstream_ref)
-        downstream_commit = clone_downstream(config, downstream_dir)
-        pinned_search_base_commit = resolve_search_base_commit(
+        selection.target_commit = resolve_upstream_target(upstream_dir, args.upstream_ref)
+        selection.downstream_commit = clone_downstream(config, downstream_dir)
+        selection.pinned_commit = resolve_search_base_commit(
             project_dir=downstream_dir,
             dependency_name=config.dependency_name,
             upstream_dir=upstream_dir,
             last_known_good=None,
         )
-        selection.downstream_commit = downstream_commit
-        selection.target_commit = target_commit
-        selection.pinned_commit = pinned_search_base_commit
+
+        result = try_skip_already_good(
+            skip_enabled=args.skip_already_good and config.skip_already_good,
+            selection=selection,
+            previous=previous,
+            config=config,
+            upstream_ref=args.upstream_ref,
+        )
+        if result is not None:
+            return emit(result)
+
+        target_commit = selection.target_commit
+        downstream_commit = selection.downstream_commit
+        pinned_search_base_commit = selection.pinned_commit
 
         head_probe_details = describe_commits(upstream_dir, [target_commit])
         selection.tested_commits = [target_commit]
@@ -172,7 +320,7 @@ def main() -> int:
             else:
                 selection.decision_reason = "The head probe did not produce a bisectable failure."
                 selection.next_action = "Skip the probe task and report the current head-only result."
-            result = build_result_from_tool(
+            return emit(build_result_from_tool(
                 config=config,
                 downstream_commit=downstream_commit,
                 upstream_ref=args.upstream_ref,
@@ -188,11 +336,21 @@ def main() -> int:
                 head_probe_failure_stage=selection.head_probe_failure_stage,
                 head_probe_summary=selection.head_probe_summary,
                 pinned_commit=pinned_search_base_commit,
-            )
-            write_selection(args.output_dir / "selection.json", selection)
-            write_result(args.output_dir / "result.json", result)
-            finalize_selection()
-            return 0
+            ))
+
+        result = try_skip_known_bad_bisect(
+            skip_enabled=args.skip_known_bad_bisect and config.skip_known_bad_bisect,
+            selection=selection,
+            previous=previous,
+            config=config,
+            upstream_ref=args.upstream_ref,
+            upstream_dir=upstream_dir,
+            head_probe_run=head_probe_run,
+            head_probe_state=head_probe_state,
+            head_probe_summary_text=head_probe_summary_text,
+        )
+        if result is not None:
+            return emit(result)
 
         stored_last_known_good = previous.last_known_good_commit if previous else None
 
@@ -265,9 +423,7 @@ def main() -> int:
                 f"Run the probe task in bisect mode on {len(bisect_commits)} commits from "
                 f"`{search_base_commit[:12]}` to `{target_commit[:12]}`."
             )
-            write_selection(args.output_dir / "selection.json", selection)
-            finalize_selection()
-            return 0
+            return emit()
 
         if search_base_commit is None:
             selection.decision_reason = (
@@ -310,10 +466,7 @@ def main() -> int:
         selection.next_action = "Skip the probe task and report the setup error."
         result = build_error_result(config, args.upstream_ref, str(error))
 
-    write_selection(args.output_dir / "selection.json", selection)
-    write_result(args.output_dir / "result.json", result)
-    finalize_selection()
-    return 0
+    return emit(result)
 
 
 if __name__ == "__main__":

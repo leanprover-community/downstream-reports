@@ -58,6 +58,7 @@ class DownstreamStatusRecord:
     last_known_good_commit: str | None = None
     first_known_bad_commit: str | None = None
     pinned_commit: str | None = None
+    downstream_commit: str | None = None
 
 
 @dataclass
@@ -242,6 +243,7 @@ class FilesystemBackend:
                 last_known_good_commit=data.get("last_known_good_commit"),
                 first_known_bad_commit=data.get("first_known_bad_commit"),
                 pinned_commit=data.get("pinned_commit"),
+                downstream_commit=data.get("downstream_commit"),
             )
             for name, data in payload.get("downstreams", {}).items()
         }
@@ -279,6 +281,7 @@ class FilesystemBackend:
                             "last_known_good_commit": s.last_known_good_commit,
                             "first_known_bad_commit": s.first_known_bad_commit,
                             "pinned_commit": s.pinned_commit,
+                            "downstream_commit": s.downstream_commit,
                         }
                         for name, s in sorted(updated_statuses.items())
                     },
@@ -381,6 +384,7 @@ try:
         Column("last_known_good", String),
         Column("first_known_bad", String),
         Column("pinned_commit", String),
+        Column("downstream_commit", String),
         Column("updated_at", DateTime(timezone=True), nullable=False),
     )
 
@@ -532,7 +536,8 @@ class SqlBackend:
     def load_all_statuses(self, workflow: str, upstream: str) -> dict[str, DownstreamStatusRecord]:
         t = _sa_downstream_status
         stmt = sa_select(
-            t.c.downstream, t.c.last_known_good, t.c.first_known_bad, t.c.pinned_commit
+            t.c.downstream, t.c.last_known_good, t.c.first_known_bad,
+            t.c.pinned_commit, t.c.downstream_commit,
         ).where(t.c.workflow == workflow, t.c.upstream == upstream)
         with self._engine.connect() as conn:
             rows = conn.execute(stmt).fetchall()
@@ -541,6 +546,7 @@ class SqlBackend:
                 last_known_good_commit=row[1],
                 first_known_bad_commit=row[2],
                 pinned_commit=row[3],
+                downstream_commit=row[4],
             )
             for row in rows
         }
@@ -621,10 +627,11 @@ class SqlBackend:
                         "last_known_good": s.last_known_good_commit,
                         "first_known_bad": s.first_known_bad_commit,
                         "pinned_commit": s.pinned_commit,
+                        "downstream_commit": s.downstream_commit,
                         "updated_at": reported_dt,
                     },
                     conflict_cols=["downstream", "workflow", "upstream"],
-                    update_cols=["last_known_good", "first_known_bad", "pinned_commit", "updated_at"],
+                    update_cols=["last_known_good", "first_known_bad", "pinned_commit", "downstream_commit", "updated_at"],
                 )
 
             for j in (validate_jobs or []):
@@ -824,6 +831,7 @@ class DryRunBackend:
             lines.append(f"    last_known_good_commit:  {status.last_known_good_commit}")
             lines.append(f"    first_known_bad_commit:  {status.first_known_bad_commit}")
             lines.append(f"    pinned_commit:           {status.pinned_commit}")
+            lines.append(f"    downstream_commit:       {status.downstream_commit}")
         if validate_jobs:
             for job in validate_jobs:
                 lines.append(f"  validate_job [{job.downstream}]:")

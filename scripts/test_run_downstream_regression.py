@@ -14,9 +14,10 @@ from unittest.mock import patch, Mock
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from scripts.cache import cache_env, github_cache_scope, warm_downstream_cache
-from scripts.models import CommitDetail, DownstreamConfig, WindowSelection
+from scripts.models import CommitDetail, DownstreamConfig, WindowSelection, load_inventory
 from scripts.validation import (
     append_commit_plan_artifact,
+    build_skip_result,
     classify_exit_code,
     commit_plan_artifact_path,
     invoke_tool,
@@ -27,6 +28,12 @@ from scripts.validation import (
     write_selection,
 )
 from scripts.models import Outcome
+from scripts.storage import DownstreamStatusRecord
+from scripts.select_downstream_regression_window import (
+    build_parser,
+    try_skip_already_good,
+    try_skip_known_bad_bisect,
+)
 
 
 class GitHubCacheScopeTests(unittest.TestCase):
@@ -296,6 +303,298 @@ class ClassifyExitCodeTests(unittest.TestCase):
     def test_other_codes_are_error(self) -> None:
         self.assertEqual(classify_exit_code(2), Outcome.ERROR)
         self.assertEqual(classify_exit_code(137), Outcome.ERROR)
+
+
+class BuildSkipResultTests(unittest.TestCase):
+    """Scenarios for synthetic skip results."""
+
+    def test_skip_result_has_correct_outcome_and_search_mode(self) -> None:
+        """Scenario: a synthetic skip result carries the caller-supplied outcome and search_mode tag."""
+
+        config = DownstreamConfig(
+            name="physlib",
+            repo="leanprover-community/physlib",
+            default_branch="master",
+        )
+        result = build_skip_result(
+            config=config,
+            downstream_commit="ds_abc",
+            upstream_ref="master",
+            target_commit="target_abc",
+            search_mode="skipped-already-good",
+            outcome=Outcome.PASSED,
+            last_successful_commit="target_abc",
+            summary="Skipped.",
+        )
+        self.assertEqual(result.outcome, Outcome.PASSED)
+        self.assertEqual(result.search_mode, "skipped-already-good")
+        self.assertEqual(result.downstream_commit, "ds_abc")
+        self.assertEqual(result.target_commit, "target_abc")
+        self.assertEqual(result.tested_commits, ["target_abc"])
+        self.assertIsNone(result.error)
+        self.assertIsNone(result.first_failing_commit)
+        self.assertEqual(result.last_successful_commit, "target_abc")
+
+    def test_skip_result_with_no_target_has_empty_tested_commits(self) -> None:
+        """Scenario: when no target commit is known, tested_commits is empty rather than [None]."""
+
+        config = DownstreamConfig(
+            name="physlib",
+            repo="leanprover-community/physlib",
+            default_branch="master",
+        )
+        result = build_skip_result(
+            config=config,
+            downstream_commit=None,
+            upstream_ref="master",
+            target_commit=None,
+            search_mode="skipped-cached",
+            outcome=Outcome.PASSED,
+            summary="Cached.",
+        )
+        self.assertEqual(result.tested_commits, [])
+
+
+_PHYSLIB_CONFIG = DownstreamConfig(
+    name="physlib",
+    repo="leanprover-community/physlib",
+    default_branch="master",
+)
+
+
+def _make_selection(**kwargs) -> WindowSelection:
+    """Build a WindowSelection with sensible defaults for skip-heuristic tests."""
+    defaults = dict(
+        downstream="physlib",
+        repo="leanprover-community/physlib",
+        default_branch="master",
+        upstream_ref="master",
+        target_commit="t" * 40,
+        downstream_commit="d" * 40,
+        pinned_commit="p" * 40,
+    )
+    defaults.update(kwargs)
+    return WindowSelection(**defaults)
+
+
+class TrySkipAlreadyGoodTests(unittest.TestCase):
+    """Scenarios for the already-good skip heuristic."""
+
+    def test_returns_none_when_disabled(self) -> None:
+        """Scenario: the heuristic is bypassed entirely when skip_enabled=False, even if conditions would match."""
+
+        selection = _make_selection()
+        previous = DownstreamStatusRecord(
+            last_known_good_commit=selection.target_commit,
+            downstream_commit=selection.downstream_commit,
+        )
+        result = try_skip_already_good(
+            skip_enabled=False, selection=selection, previous=previous,
+            config=_PHYSLIB_CONFIG, upstream_ref="master",
+        )
+        self.assertIsNone(result)
+
+    def test_returns_none_when_no_previous(self) -> None:
+        """Scenario: without a prior status record there is no baseline to compare against."""
+
+        result = try_skip_already_good(
+            skip_enabled=True, selection=_make_selection(), previous=None,
+            config=_PHYSLIB_CONFIG, upstream_ref="master",
+        )
+        self.assertIsNone(result)
+
+    def test_returns_none_when_target_differs(self) -> None:
+        """Scenario: the target commit has moved since the last run, so we cannot skip validation."""
+
+        selection = _make_selection()
+        previous = DownstreamStatusRecord(
+            last_known_good_commit="other" * 8,
+            downstream_commit=selection.downstream_commit,
+        )
+        result = try_skip_already_good(
+            skip_enabled=True, selection=selection, previous=previous,
+            config=_PHYSLIB_CONFIG, upstream_ref="master",
+        )
+        self.assertIsNone(result)
+
+    def test_returns_none_when_downstream_changed(self) -> None:
+        """Scenario: the downstream repo itself has new commits, so the prior result may not apply."""
+
+        selection = _make_selection()
+        previous = DownstreamStatusRecord(
+            last_known_good_commit=selection.target_commit,
+            downstream_commit="other" * 8,
+        )
+        result = try_skip_already_good(
+            skip_enabled=True, selection=selection, previous=previous,
+            config=_PHYSLIB_CONFIG, upstream_ref="master",
+        )
+        self.assertIsNone(result)
+
+    def test_returns_passing_result_when_conditions_match(self) -> None:
+        """Scenario: target equals last-known-good and downstream is unchanged — safe to skip all probes."""
+
+        selection = _make_selection()
+        previous = DownstreamStatusRecord(
+            last_known_good_commit=selection.target_commit,
+            downstream_commit=selection.downstream_commit,
+        )
+        result = try_skip_already_good(
+            skip_enabled=True, selection=selection, previous=previous,
+            config=_PHYSLIB_CONFIG, upstream_ref="master",
+        )
+        self.assertIsNotNone(result)
+        self.assertEqual(result.outcome, Outcome.PASSED)
+        self.assertEqual(result.search_mode, "skipped-already-good")
+        self.assertIn("already verified", selection.decision_reason)
+        self.assertIn("Skip all probes", selection.next_action)
+
+
+class TrySkipKnownBadBisectTests(unittest.TestCase):
+    """Scenarios for the known-bad-bisect skip heuristic."""
+
+    _head_probe_run = subprocess.CompletedProcess(["tool"], 1, stdout="failed", stderr="failed")
+    _head_probe_state: dict = {"stage": "build", "currentCommit": "t" * 40}
+
+    def _call(self, *, skip_enabled=True, previous=None, selection=None, ancestor=True):
+        selection = selection or _make_selection(
+            head_probe_outcome="failed",
+            head_probe_failure_stage="build",
+            head_probe_summary="failed",
+            tested_commit_details=[CommitDetail(sha="t" * 40, title="test")],
+        )
+        with patch(
+            "scripts.select_downstream_regression_window.is_strict_ancestor",
+            return_value=ancestor,
+        ):
+            return try_skip_known_bad_bisect(
+                skip_enabled=skip_enabled,
+                selection=selection,
+                previous=previous,
+                config=_PHYSLIB_CONFIG,
+                upstream_ref="master",
+                upstream_dir=Path("/dummy"),
+                head_probe_run=self._head_probe_run,
+                head_probe_state=self._head_probe_state,
+                head_probe_summary_text="failed",
+            ), selection
+
+    def test_returns_none_when_disabled(self) -> None:
+        """Scenario: the heuristic is bypassed entirely when skip_enabled=False, even if conditions would match."""
+
+        previous = DownstreamStatusRecord(
+            first_known_bad_commit="b" * 40,
+            downstream_commit="d" * 40,
+        )
+        result, _ = self._call(skip_enabled=False, previous=previous)
+        self.assertIsNone(result)
+
+    def test_returns_none_when_no_first_known_bad(self) -> None:
+        """Scenario: without a prior known-bad commit we have no culprit anchor to reuse."""
+
+        previous = DownstreamStatusRecord(downstream_commit="d" * 40)
+        result, _ = self._call(previous=previous)
+        self.assertIsNone(result)
+
+    def test_returns_none_when_downstream_changed(self) -> None:
+        """Scenario: the downstream has new commits since last run; the old culprit attribution may be wrong."""
+
+        previous = DownstreamStatusRecord(
+            first_known_bad_commit="b" * 40,
+            downstream_commit="other" * 8,
+        )
+        result, _ = self._call(previous=previous)
+        self.assertIsNone(result)
+
+    def test_returns_none_when_not_ancestor(self) -> None:
+        """Scenario: the prior bad commit is not an ancestor of the current target, so the episode may have healed."""
+
+        previous = DownstreamStatusRecord(
+            first_known_bad_commit="b" * 40,
+            downstream_commit="d" * 40,
+        )
+        result, _ = self._call(previous=previous, ancestor=False)
+        self.assertIsNone(result)
+
+    def test_returns_failing_result_when_conditions_match(self) -> None:
+        """Scenario: known-bad commit is still an ancestor and downstream unchanged — skip re-bisecting."""
+
+        previous = DownstreamStatusRecord(
+            first_known_bad_commit="b" * 40,
+            downstream_commit="d" * 40,
+        )
+        result, selection = self._call(previous=previous)
+        self.assertIsNotNone(result)
+        self.assertEqual(result.outcome, Outcome.FAILED)
+        self.assertEqual(result.search_mode, "head-only-known-bad")
+        self.assertIn("Re-bisecting", selection.decision_reason)
+        self.assertIn("Skip the bisect", selection.next_action)
+
+
+class SkipOptimisationFlagsTests(unittest.TestCase):
+    """Scenarios for the --skip-already-good / --skip-known-bad-bisect flags."""
+
+    def test_skip_flags_default_to_true(self) -> None:
+        """Scenario: both skip heuristics are opt-out so they engage without explicit flags."""
+
+        args = build_parser().parse_args(["--workdir", "/tmp", "--output-dir", "/tmp"])
+        self.assertTrue(args.skip_already_good)
+        self.assertTrue(args.skip_known_bad_bisect)
+
+    def test_skip_flags_can_be_disabled(self) -> None:
+        """Scenario: --no-skip-* flags force full validation regardless of cached state."""
+
+        args = build_parser().parse_args([
+            "--workdir", "/tmp",
+            "--output-dir", "/tmp",
+            "--no-skip-already-good",
+            "--no-skip-known-bad-bisect",
+        ])
+        self.assertFalse(args.skip_already_good)
+        self.assertFalse(args.skip_known_bad_bisect)
+
+    def test_skip_flags_can_be_explicitly_enabled(self) -> None:
+        """Scenario: --skip-* flags can be passed explicitly to confirm default opt-in behaviour."""
+
+        args = build_parser().parse_args([
+            "--workdir", "/tmp",
+            "--output-dir", "/tmp",
+            "--skip-already-good",
+            "--skip-known-bad-bisect",
+        ])
+        self.assertTrue(args.skip_already_good)
+        self.assertTrue(args.skip_known_bad_bisect)
+
+    def test_downstream_config_skip_flags_default_to_true(self) -> None:
+        """Scenario: a downstream with no skip overrides inherits both heuristics as enabled."""
+
+        config = DownstreamConfig(name="foo", repo="owner/foo", default_branch="main")
+        self.assertTrue(config.skip_already_good)
+        self.assertTrue(config.skip_known_bad_bisect)
+
+    def test_downstream_config_skip_flags_can_be_disabled_in_inventory(self) -> None:
+        """Scenario: an inventory entry can permanently opt a downstream out of one or both heuristics."""
+
+        import json, tempfile
+        inventory = {
+            "schema_version": 1,
+            "downstreams": [
+                {
+                    "name": "slow-downstream",
+                    "repo": "owner/slow-downstream",
+                    "default_branch": "main",
+                    "skip_already_good": False,
+                    "skip_known_bad_bisect": True,
+                    "enabled": True,
+                },
+            ],
+        }
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+            json.dump(inventory, f)
+            path = Path(f.name)
+        loaded = load_inventory(path)
+        self.assertFalse(loaded["slow-downstream"].skip_already_good)
+        self.assertTrue(loaded["slow-downstream"].skip_known_bad_bisect)
 
 
 if __name__ == "__main__":

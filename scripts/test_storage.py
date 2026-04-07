@@ -143,6 +143,49 @@ class FilesystemBackendTests(unittest.TestCase):
             self.assertEqual(loaded["TestDownstream"].last_known_good_commit, "target_abc")
             self.assertEqual(loaded["TestDownstream"].pinned_commit, "pin_abc")
 
+    def test_downstream_commit_round_trip(self) -> None:
+        """downstream_commit is persisted in the status JSON and reloaded."""
+        with tempfile.TemporaryDirectory() as tmp:
+            backend = FilesystemBackend(Path(tmp))
+            statuses = {
+                "TestDownstream": DownstreamStatusRecord(
+                    last_known_good_commit="target_abc",
+                    downstream_commit="ds_commit_abc",
+                ),
+            }
+            backend.save_run(
+                run_id="run_456",
+                workflow="regression",
+                upstream="leanprover-community/mathlib4",
+                upstream_ref="master",
+                run_url="https://example.com/run/456",
+                created_at="2026-04-02T00:00:00Z",
+                results=[],
+                updated_statuses=statuses,
+            )
+            loaded = backend.load_all_statuses("regression", "leanprover-community/mathlib4")
+            self.assertEqual(loaded["TestDownstream"].downstream_commit, "ds_commit_abc")
+
+    def test_downstream_commit_defaults_to_none(self) -> None:
+        """Existing status files without downstream_commit load as None."""
+        with tempfile.TemporaryDirectory() as tmp:
+            status_dir = Path(tmp) / "status"
+            status_dir.mkdir()
+            (status_dir / "current.json").write_text(json.dumps({
+                "schema_version": 2,
+                "reported_at": "2026-04-01T00:00:00Z",
+                "downstreams": {
+                    "OldDownstream": {
+                        "last_known_good_commit": "abc",
+                        "first_known_bad_commit": None,
+                        "pinned_commit": None,
+                    },
+                },
+            }))
+            backend = FilesystemBackend(Path(tmp))
+            loaded = backend.load_all_statuses("regression", "leanprover-community/mathlib4")
+            self.assertIsNone(loaded["OldDownstream"].downstream_commit)
+
     def test_bumping_seen_round_trip(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             backend = FilesystemBackend(Path(tmp))

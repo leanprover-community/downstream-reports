@@ -29,6 +29,8 @@ class DownstreamConfig:
     dependency_name: str = "mathlib"
     enabled: bool = True
     bumping_branch: str | None = None
+    skip_already_good: bool = True
+    skip_known_bad_bisect: bool = True
 
 
 @dataclass(frozen=True)

@@ -281,6 +281,7 @@ def apply_result(
     was_failing = current is not None and current.first_known_bad_commit is not None
 
     pin = result.pinned_commit
+    ds_commit = result.downstream_commit
 
     if result.outcome is Outcome.ERROR:
         prior = current or DownstreamStatusRecord()
@@ -288,6 +289,7 @@ def apply_result(
             last_known_good_commit=prior.last_known_good_commit,
             first_known_bad_commit=prior.first_known_bad_commit,
             pinned_commit=pin or prior.pinned_commit,
+            downstream_commit=ds_commit or prior.downstream_commit,
         ), EpisodeState.ERROR
 
     if result.outcome is Outcome.PASSED:
@@ -296,6 +298,7 @@ def apply_result(
             last_known_good_commit=result.target_commit,
             first_known_bad_commit=None,
             pinned_commit=pin,
+            downstream_commit=ds_commit,
         ), episode_state
 
     # FAILED
@@ -307,6 +310,7 @@ def apply_result(
             last_known_good_commit=last_good,
             first_known_bad_commit=current.first_known_bad_commit,
             pinned_commit=pin,
+            downstream_commit=ds_commit,
         ), EpisodeState.FAILING
 
     first_bad = result.first_failing_commit or result.target_commit
@@ -314,6 +318,7 @@ def apply_result(
         last_known_good_commit=last_good,
         first_known_bad_commit=first_bad,
         pinned_commit=pin,
+        downstream_commit=ds_commit,
     ), EpisodeState.NEW_FAILURE
 
 
