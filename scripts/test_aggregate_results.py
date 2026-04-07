@@ -184,6 +184,37 @@ class ApplyResultTests(unittest.TestCase):
         updated, _ = apply_result(current, result)
         self.assertEqual(updated.pinned_commit, "old_pin")
 
+    # -- downstream commit tracking --
+
+    def test_downstream_commit_is_propagated_on_pass(self) -> None:
+        current = DownstreamStatusRecord(last_known_good_commit="good_old")
+        result = _make_result(outcome=Outcome.PASSED, target_commit="good_new")
+        updated, _ = apply_result(current, result)
+        self.assertEqual(updated.downstream_commit, "ds_head")
+
+    def test_downstream_commit_is_propagated_on_failure(self) -> None:
+        current = DownstreamStatusRecord(last_known_good_commit="good_old")
+        result = _make_result(
+            outcome=Outcome.FAILED,
+            target_commit="bad_target",
+            first_failing_commit="bad_commit",
+        )
+        updated, _ = apply_result(current, result)
+        self.assertEqual(updated.downstream_commit, "ds_head")
+
+    def test_downstream_commit_preserved_on_error_when_result_has_none(self) -> None:
+        current = DownstreamStatusRecord(
+            last_known_good_commit="good_old",
+            downstream_commit="old_ds_head",
+        )
+        result = _make_result(
+            outcome=Outcome.ERROR,
+            target_commit="err_target",
+            downstream_commit=None,
+        )
+        updated, _ = apply_result(current, result)
+        self.assertEqual(updated.downstream_commit, "old_ds_head")
+
 
 class TruncateLogTextTests(unittest.TestCase):
     """Tests for log text truncation."""
