@@ -810,6 +810,12 @@ def render(
   }});
 
   (() => {{
+    const params = new URLSearchParams(window.location.search);
+    const q = params.get('q') || params.get('filter');
+    if (q) {{ input.value = q; input.dispatchEvent(new Event('input')); }}
+  }})();
+
+  (() => {{
     const tbody = document.querySelector('tbody');
     let sortCol = -1, sortAsc = true;
     document.querySelectorAll('th.sortable').forEach(th => {{
