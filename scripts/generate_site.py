@@ -586,14 +586,14 @@ def render_table_row(
         f'<td data-sort-val="{esc(pin or "")}">{pin_cell}</td>'
         f'<td data-sort-val="{_av}">{age_cell}</td>'
         f'<td data-sort-val="{esc(target or "")}">{target_cell}</td>'
-        f'<td data-sort-val="{esc(r.get("compatibility", ""))}">{compatibility_cell}</td>'
+        f'<td data-sort-val="{esc(r.get("outcome", ""))}">{compatibility_cell}</td>'
         f'<td data-sort-val="{esc(lkg or "")}">{lkg_cell}</td>'
         f'<td data-sort-val="{esc(fkb or "")}">{fkb_cell}</td>'
         f'<td data-sort-val="{_bv}">{bump_cell}</td>'
         f"<td>{links_cell}</td>"
     )
     ep_label = EPISODE_LABEL.get(episode_state, episode_state or "")
-    compatibility_search = {"passed": "compatible", "failed": "incompatible"}.get(r.get("compatibility", ""), r.get("compatibility", ""))
+    compatibility_search = {"passed": "compatible", "failed": "incompatible"}.get(r.get("outcome", ""), r.get("outcome", ""))
     filter_tokens = " ".join(filter(None, [
         downstream.lower(),
         repo.lower(),
