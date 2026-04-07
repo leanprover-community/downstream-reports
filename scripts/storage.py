@@ -759,6 +759,90 @@ def load_run_for_site(engine: Any, run_id: str) -> tuple[dict, list[dict]]:
 
 
 # ---------------------------------------------------------------------------
+# Dry-run backend
+# ---------------------------------------------------------------------------
+
+
+class DryRunBackend:
+    """A no-op backend that logs operations instead of persisting them.
+
+    Reads return empty state (no history).  Writes print a summary of what
+    *would* have been persisted, prefixed with ``[dry-run]``.
+    """
+
+    def load_all_statuses(self, workflow: str, upstream: str) -> dict[str, DownstreamStatusRecord]:
+        print(f"[dry-run] load_all_statuses(workflow={workflow!r}, upstream={upstream!r}) -> {{}}")
+        return {}
+
+    def save_run(
+        self,
+        *,
+        run_id: str,
+        workflow: str,
+        upstream: str,
+        upstream_ref: str,
+        run_url: str,
+        created_at: str,
+        results: list[RunResultRecord],
+        updated_statuses: dict[str, DownstreamStatusRecord],
+        report_markdown: str | None = None,
+        validate_jobs: list[ValidateJobRecord] | None = None,
+    ) -> None:
+        lines = [
+            "[dry-run] save_run:",
+            f"  run_id:       {run_id}",
+            f"  workflow:     {workflow}",
+            f"  upstream:     {upstream}",
+            f"  upstream_ref: {upstream_ref}",
+            f"  run_url:      {run_url}",
+            f"  created_at:   {created_at}",
+        ]
+        for r in results:
+            lines.append(f"  result [{r.downstream}]:")
+            lines.append(f"    repo:                    {r.repo}")
+            lines.append(f"    outcome:                 {r.outcome}")
+            lines.append(f"    episode_state:           {r.episode_state}")
+            lines.append(f"    target_commit:           {r.target_commit}")
+            lines.append(f"    downstream_commit:       {r.downstream_commit}")
+            lines.append(f"    pinned_commit:           {r.pinned_commit}")
+            lines.append(f"    previous_last_known_good:{r.previous_last_known_good}")
+            lines.append(f"    previous_first_known_bad:{r.previous_first_known_bad}")
+            lines.append(f"    last_known_good:         {r.last_known_good}")
+            lines.append(f"    first_known_bad:         {r.first_known_bad}")
+            lines.append(f"    current_last_successful: {r.current_last_successful}")
+            lines.append(f"    current_first_failing:   {r.current_first_failing}")
+            lines.append(f"    head_probe_outcome:      {r.head_probe_outcome}")
+            lines.append(f"    head_probe_failure_stage:{r.head_probe_failure_stage}")
+            lines.append(f"    failure_stage:           {r.failure_stage}")
+            lines.append(f"    search_mode:             {r.search_mode}")
+            lines.append(f"    age_commits:             {r.age_commits}")
+            lines.append(f"    bump_commits:            {r.bump_commits}")
+            lines.append(f"    commit_window_truncated: {r.commit_window_truncated}")
+            lines.append(f"    error:                   {r.error}")
+        for ds, status in updated_statuses.items():
+            lines.append(f"  updated_status [{ds}]:")
+            lines.append(f"    last_known_good_commit:  {status.last_known_good_commit}")
+            lines.append(f"    first_known_bad_commit:  {status.first_known_bad_commit}")
+            lines.append(f"    pinned_commit:           {status.pinned_commit}")
+        if validate_jobs:
+            for job in validate_jobs:
+                lines.append(f"  validate_job [{job.downstream}]:")
+                lines.append(f"    job_id:     {job.job_id}")
+                lines.append(f"    job_url:    {job.job_url}")
+                lines.append(f"    started_at: {job.started_at}")
+                lines.append(f"    finished_at:{job.finished_at}")
+                lines.append(f"    conclusion: {job.conclusion}")
+        print("\n".join(lines))
+
+    def load_bumping_seen(self) -> dict[str, str]:
+        print("[dry-run] load_bumping_seen() -> {}")
+        return {}
+
+    def save_bumping_seen(self, updates: dict[str, str]) -> None:
+        print(f"[dry-run] save_bumping_seen(updates={updates!r})")
+
+
+# ---------------------------------------------------------------------------
 # Factory
 # ---------------------------------------------------------------------------
 
@@ -767,7 +851,7 @@ def add_backend_args(parser: Any) -> None:
     """Add ``--backend``, ``--state-root``, and ``--dsn`` to an argument parser."""
 
     parser.add_argument(
-        "--backend", choices=["filesystem", "sql"], default="filesystem",
+        "--backend", choices=["filesystem", "sql", "dry-run"], default="filesystem",
         help="Storage backend to use.",
     )
     parser.add_argument(
@@ -791,6 +875,8 @@ def create_backend(
     Resolves ``--dsn`` from the ``POSTGRES_DSN`` environment variable when not
     provided directly.  Raises ``SystemExit`` on invalid combinations.
     """
+    if backend == "dry-run":
+        return DryRunBackend()
     if backend == "sql":
         dsn = dsn or os.environ.get("POSTGRES_DSN")
         if not dsn:
