@@ -2,6 +2,13 @@
   "schema_version": 1,
   "downstreams": [
     {
+      "name": "physlib",
+      "repo": "leanprover-community/physlib",
+      "default_branch": "master",
+      "dependency_name": "mathlib",
+      "enabled": true
+    },
+    {
       "name": "PrimeNumberTheoremAnd",
       "repo": "AlexKontorovich/PrimeNumberTheoremAnd",
       "default_branch": "main",
@@ -51,13 +58,6 @@
       "enabled": true
     },
     {
-      "name": "physlib",
-      "repo": "leanprover-community/physlib",
-      "default_branch": "master",
-      "dependency_name": "mathlib",
-      "enabled": true
-    },
-    {
       "name": "ClassFieldTheory",
       "repo": "kbuzzard/ClassFieldTheory",
       "default_branch": "main",
@@ -74,13 +74,6 @@
     {
       "name": "mean-fourier",
       "repo": "YaelDillies/mean-fourier",
-      "default_branch": "master",
-      "dependency_name": "mathlib",
-      "enabled": true
-    },
-    {
-      "name": "pfr",
-      "repo": "teorth/pfr",
       "default_branch": "master",
       "dependency_name": "mathlib",
       "enabled": true
@@ -130,6 +123,13 @@
     {
       "name": "misc-yd",
       "repo": "YaelDillies/misc-yd",
+      "default_branch": "master",
+      "dependency_name": "mathlib",
+      "enabled": true
+    },
+    {
+      "name": "PersistentDecomp",
+      "repo": "Paul-Lez/PersistentDecomp",
       "default_branch": "master",
       "dependency_name": "mathlib",
       "enabled": true
