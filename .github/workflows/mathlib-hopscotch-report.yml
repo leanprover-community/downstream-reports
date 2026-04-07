@@ -11,7 +11,7 @@ on:
         required: false
         type: string
       downstream:
-        description: "Single downstream name to test. Defaults to all enabled downstreams."
+        description: "Downstream name(s) to test (comma-separated). Defaults to all enabled downstreams."
         required: false
         type: string
       quiet:
@@ -57,10 +57,11 @@ jobs:
 
           payload = json.loads(Path("ci/inventory/downstreams.json").read_text())
           downstream = os.environ.get("INPUT_DOWNSTREAM", "")
+          filter_names = {s.strip() for s in downstream.replace("\n", ",").split(",") if s.strip()} if downstream else set()
           include = [
               item
               for item in payload.get("downstreams", [])
-              if item.get("enabled", True) and (not downstream or item["name"] == downstream)
+              if item.get("enabled", True) and (not filter_names or item["name"] in filter_names)
           ]
           print(json.dumps({"include": include}, sort_keys=True))
           PY
