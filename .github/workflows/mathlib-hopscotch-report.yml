@@ -19,6 +19,11 @@ on:
         required: false
         default: true
         type: boolean
+      dry_run:
+        description: "Use the dry-run backend (no database reads or writes)."
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -35,8 +40,21 @@ jobs:
       has_downstreams: ${{ steps.matrix.outputs.has_downstreams }}
       matrix: ${{ steps.matrix.outputs.matrix }}
       upstream_ref: ${{ steps.upstream_ref.outputs.value }}
+      dry_run: ${{ steps.dry_run.outputs.value }}
     steps:
       - uses: actions/checkout@v6
+      # Dry-run mode skips all database reads and writes, using the dry-run
+      # backend which only logs what operations would have been performed.
+      # It is always active on non-main branches (to avoid polluting the
+      # database during workflow development) and can also be forced on via
+      # the dry_run input even when running from main.
+      - id: dry_run
+        run: |
+          if [ "${{ inputs.dry_run }}" = "true" ] || [ "${{ github.ref_name }}" != "main" ]; then
+            echo "value=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=false" >> "$GITHUB_OUTPUT"
+          fi
       - id: upstream_ref
         env:
           INPUT_UPSTREAM_REF: ${{ inputs.upstream_ref }}
@@ -122,13 +140,16 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           UPSTREAM_REF: ${{ needs.plan.outputs.upstream_ref }}
           OUTPUT_DIR: ${{ runner.temp }}/artifacts/${{ matrix.name }}
-          POSTGRES_DSN: ${{ secrets.POSTGRES_DSN }}
+          # POSTGRES_DSN is intentionally omitted in dry-run mode so that
+          # credentials are never present in the environment when not needed.
+          POSTGRES_DSN: ${{ needs.plan.outputs.dry_run == 'true' && '' || secrets.POSTGRES_DSN }}
           PYTHONUNBUFFERED: "1"
           WORKDIR: ${{ runner.temp }}/downstream-regression
+          BACKEND: ${{ needs.plan.outputs.dry_run == 'true' && 'dry-run' || 'sql' }}
         run: |
           python3 -u scripts/select_downstream_regression_window.py \
             --inventory ci/inventory/downstreams.json \
-            --backend sql \
+            --backend "$BACKEND" \
             --workflow regression \
             --upstream leanprover-community/mathlib4 \
             --downstream "$DOWNSTREAM_NAME" \
@@ -237,14 +258,17 @@ jobs:
       - name: Aggregate results
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          POSTGRES_DSN: ${{ secrets.POSTGRES_DSN }}
+          # POSTGRES_DSN is intentionally omitted in dry-run mode so that
+          # credentials are never present in the environment when not needed.
+          POSTGRES_DSN: ${{ needs.plan.outputs.dry_run == 'true' && '' || secrets.POSTGRES_DSN }}
           RUN_ID: ${{ github.run_id }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           UPSTREAM_REF: ${{ needs.plan.outputs.upstream_ref }}
+          BACKEND: ${{ needs.plan.outputs.dry_run == 'true' && 'dry-run' || 'sql' }}
         run: |
           python3 scripts/aggregate_results.py \
             --results-dir downloaded-results \
-            --backend sql \
+            --backend "$BACKEND" \
             --workflow regression \
             --upstream leanprover-community/mathlib4 \
             --run-id "$RUN_ID" \

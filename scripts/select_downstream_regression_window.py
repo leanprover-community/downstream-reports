@@ -92,7 +92,6 @@ def main() -> int:
         )
 
     backend = create_backend(args.backend, dsn=args.dsn, state_root=args.state_root)
-
     status = backend.load_all_statuses(args.workflow, args.upstream)
     previous = status.get(config.name)
     selection = WindowSelection(
