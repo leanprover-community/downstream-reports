@@ -155,6 +155,44 @@ def try_skip_known_bad_bisect(
     )
 
 
+def run_culprit_probe(
+    *,
+    config: DownstreamConfig,
+    culprit_commit: str,
+    upstream_dir: Path,
+    project_dir: Path,
+    output_dir: Path,
+    env: dict[str, str],
+    tool_exe: Path | None,
+    quiet: bool = False,
+) -> str | None:
+    """Run the known culprit commit to capture fresh failure logs.
+
+    Called after try_skip_known_bad_bisect fires. Runs hopscotch on
+    first_known_bad_commit so the culprit log is present in this job's
+    artifacts rather than requiring a back-link to an older run.
+
+    Returns the culprit log path from the tool state, or None if the probe
+    could not be completed.
+    """
+    try:
+        _, state, _ = run_validation_attempt(
+            config=config,
+            from_ref=parent_commit(upstream_dir, culprit_commit),
+            to_ref=culprit_commit,
+            project_dir=project_dir,
+            output_dir=output_dir / "culprit-probe",
+            tested_commits=[culprit_commit],
+            env=env,
+            tool_exe=tool_exe,
+            quiet=quiet,
+        )
+        return state.get("lastLogPath")
+    except Exception as exc:
+        print(f"[{config.name}] warning: culprit probe failed: {exc}")
+        return None
+
+
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
@@ -350,6 +388,20 @@ def main() -> int:
             head_probe_summary_text=head_probe_summary_text,
         )
         if result is not None:
+            assert previous is not None  # guaranteed by try_skip_known_bad_bisect contract
+            assert previous.first_known_bad_commit is not None
+            log_path = run_culprit_probe(
+                config=config,
+                culprit_commit=previous.first_known_bad_commit,
+                upstream_dir=upstream_dir,
+                project_dir=downstream_dir,
+                output_dir=args.output_dir,
+                env=env,
+                tool_exe=args.tool_exe,
+                quiet=args.quiet,
+            )
+            if log_path:
+                result.culprit_log_path = log_path
             return emit(result)
 
         stored_last_known_good = previous.last_known_good_commit if previous else None

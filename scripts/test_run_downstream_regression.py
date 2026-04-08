@@ -31,6 +31,7 @@ from scripts.models import Outcome
 from scripts.storage import DownstreamStatusRecord
 from scripts.select_downstream_regression_window import (
     build_parser,
+    run_culprit_probe,
     try_skip_already_good,
     try_skip_known_bad_bisect,
 )
@@ -595,6 +596,70 @@ class SkipOptimisationFlagsTests(unittest.TestCase):
         loaded = load_inventory(path)
         self.assertFalse(loaded["slow-downstream"].skip_already_good)
         self.assertTrue(loaded["slow-downstream"].skip_known_bad_bisect)
+
+
+class TryCulpritProbeTests(unittest.TestCase):
+    """Scenarios for the culprit-commit re-build that follows a known-bad bisect skip."""
+
+    def test_returns_log_path_from_tool_state(self) -> None:
+        """Scenario: when the probe runs and the tool writes a log, the path is returned."""
+        with patch(
+            "scripts.select_downstream_regression_window.run_validation_attempt",
+            return_value=(Mock(), {"lastLogPath": "/some/log.txt"}, None),
+        ), patch(
+            "scripts.select_downstream_regression_window.parent_commit",
+            return_value="p" * 40,
+        ):
+            result = run_culprit_probe(
+                config=_PHYSLIB_CONFIG,
+                culprit_commit="b" * 40,
+                upstream_dir=Path("/dummy"),
+                project_dir=Path("/dummy/downstream"),
+                output_dir=Path("/dummy/output"),
+                env={},
+                tool_exe=None,
+            )
+        self.assertEqual(result, "/some/log.txt")
+
+    def test_returns_none_when_tool_state_has_no_log_path(self) -> None:
+        """Scenario: probe ran but tool did not write a log (failed before reaching that stage)."""
+        with patch(
+            "scripts.select_downstream_regression_window.run_validation_attempt",
+            return_value=(Mock(), {}, None),
+        ), patch(
+            "scripts.select_downstream_regression_window.parent_commit",
+            return_value="p" * 40,
+        ):
+            result = run_culprit_probe(
+                config=_PHYSLIB_CONFIG,
+                culprit_commit="b" * 40,
+                upstream_dir=Path("/dummy"),
+                project_dir=Path("/dummy/downstream"),
+                output_dir=Path("/dummy/output"),
+                env={},
+                tool_exe=None,
+            )
+        self.assertIsNone(result)
+
+    def test_returns_none_on_exception(self) -> None:
+        """Scenario: if the probe raises (e.g. subprocess error), None is returned without propagating."""
+        with patch(
+            "scripts.select_downstream_regression_window.run_validation_attempt",
+            side_effect=RuntimeError("tool crashed"),
+        ), patch(
+            "scripts.select_downstream_regression_window.parent_commit",
+            return_value="p" * 40,
+        ):
+            result = run_culprit_probe(
+                config=_PHYSLIB_CONFIG,
+                culprit_commit="b" * 40,
+                upstream_dir=Path("/dummy"),
+                project_dir=Path("/dummy/downstream"),
+                output_dir=Path("/dummy/output"),
+                env={},
+                tool_exe=None,
+            )
+        self.assertIsNone(result)
 
 
 if __name__ == "__main__":
