@@ -35,7 +35,6 @@ def _make_result(
         repo="owner/repo",
         downstream_commit="ds_head",
         commit_window_truncated=False,
-        summary="ok",
         error=None,
         search_mode="head-only",
     )

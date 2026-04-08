@@ -42,10 +42,8 @@ class ResultToRowTests(unittest.TestCase):
             search_mode="head-only",
             commit_window_truncated=False,
             error=None,
-            summary="ok",
             head_probe_outcome="passed",
             head_probe_failure_stage=None,
-            head_probe_summary="passed",
             culprit_log_text=None,
             pinned_commit="pin_abc",
         )
@@ -115,10 +113,8 @@ class FilesystemBackendTests(unittest.TestCase):
                 search_mode="head-only",
                 commit_window_truncated=False,
                 error=None,
-                summary="ok",
                 head_probe_outcome="passed",
                 head_probe_failure_stage=None,
-                head_probe_summary="passed",
                 culprit_log_text=None,
                 pinned_commit="pin_abc",
             )

@@ -108,14 +108,12 @@ class ValidationResult:
     failure_stage: str | None
     first_failing_commit: str | None
     commit_window_truncated: bool
-    summary: str
     error: str | None
     last_successful_commit: str | None = None
     search_mode: str = "head-only"
     tested_commit_details: list["ValidationResult.CommitDetail"] = field(default_factory=list)
     head_probe_outcome: str | None = None
     head_probe_failure_stage: str | None = None
-    head_probe_summary: str | None = None
     culprit_log_path: str | None = None
     pinned_commit: str | None = None
 
@@ -133,7 +131,6 @@ class ValidationResult:
             first_failing_commit=payload.get("first_failing_commit"),
             last_successful_commit=payload.get("last_successful_commit"),
             commit_window_truncated=payload.get("commit_window_truncated", False),
-            summary=payload.get("summary", ""),
             error=payload.get("error"),
             search_mode=payload.get("search_mode", "head-only"),
             tested_commit_details=[
@@ -141,7 +138,6 @@ class ValidationResult:
             ],
             head_probe_outcome=payload.get("head_probe_outcome"),
             head_probe_failure_stage=payload.get("head_probe_failure_stage"),
-            head_probe_summary=payload.get("head_probe_summary"),
             culprit_log_path=payload.get("culprit_log_path"),
             pinned_commit=payload.get("pinned_commit"),
         )
@@ -405,8 +401,6 @@ def render_report(
             if row["head_probe_failure_stage"] is not None:
                 head_probe = f"{head_probe} (stage={row['head_probe_failure_stage']})"
             lines.append(f"- Head probe: `{head_probe}`")
-            if row.get("head_probe_summary"):
-                lines.extend(["", "Head probe output:", "```text", row["head_probe_summary"], "```"])
         if row["tested_commit_details"]:
             if row["search_mode"] == "bisect":
                 lines.append("- Bisect window boundary:")
@@ -446,8 +440,6 @@ def render_report(
         )
         if row.get("culprit_log_text"):
             lines.extend(["", "First incompatible commit logs:", "```text", row["culprit_log_text"], "```"])
-        if row["summary"]:
-            lines.extend(["", "```text", row["summary"], "```"])
         lines.extend(["", "</details>", ""])
     return "\n".join(lines) + "\n"
 
@@ -515,10 +507,8 @@ def main() -> int:
             search_mode=result.search_mode,
             commit_window_truncated=result.commit_window_truncated,
             error=result.error,
-            summary=result.summary,
             head_probe_outcome=result.head_probe_outcome,
             head_probe_failure_stage=result.head_probe_failure_stage,
-            head_probe_summary=result.head_probe_summary,
             culprit_log_text=loaded.culprit_log_text,
             pinned_commit=result.pinned_commit,
         )

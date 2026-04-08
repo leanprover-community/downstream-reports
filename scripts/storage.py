@@ -104,10 +104,8 @@ class RunResultRecord:
     search_mode: str
     commit_window_truncated: bool
     error: str | None
-    summary: str
     head_probe_outcome: str | None
     head_probe_failure_stage: str | None
-    head_probe_summary: str | None
     culprit_log_text: str | None
     pinned_commit: str | None = None
     age_commits: int | None = None   # commits between pinned_commit and target_commit
@@ -421,10 +419,8 @@ try:
         Column("search_mode", String, nullable=False),
         Column("commit_window_truncated", Boolean, nullable=False),
         Column("error", String),
-        Column("summary", String, nullable=False),
         Column("head_probe_outcome", String),
         Column("head_probe_failure_stage", String),
-        Column("head_probe_summary", String),
         Column("pinned_commit", String),
         Column("age_commits", Integer),
         Column("bump_commits", Integer),
@@ -607,10 +603,8 @@ class SqlBackend:
                     "search_mode": r.search_mode,
                     "commit_window_truncated": r.commit_window_truncated,
                     "error": r.error,
-                    "summary": r.summary,
                     "head_probe_outcome": r.head_probe_outcome,
                     "head_probe_failure_stage": r.head_probe_failure_stage,
-                    "head_probe_summary": r.head_probe_summary,
                     "pinned_commit": r.pinned_commit,
                     "age_commits": r.age_commits,
                     "bump_commits": r.bump_commits,

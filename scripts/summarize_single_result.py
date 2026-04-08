@@ -63,10 +63,8 @@ def main() -> int:
         "search_mode": result.search_mode,
         "commit_window_truncated": result.commit_window_truncated,
         "error": result.error,
-        "summary": result.summary,
         "head_probe_outcome": result.head_probe_outcome,
         "head_probe_failure_stage": result.head_probe_failure_stage,
-        "head_probe_summary": result.head_probe_summary,
         "culprit_log_text": culprit_log_text,
         "tested_commit_details": [
             {"sha": d.sha, "title": d.title} for d in result.tested_commit_details
