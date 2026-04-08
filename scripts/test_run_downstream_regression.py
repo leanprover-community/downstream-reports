@@ -601,16 +601,17 @@ class SkipOptimisationFlagsTests(unittest.TestCase):
 class TryCulpritProbeTests(unittest.TestCase):
     """Scenarios for the culprit-commit re-build that follows a known-bad bisect skip."""
 
-    def test_returns_log_path_from_tool_state(self) -> None:
-        """Scenario: when the probe runs and the tool writes a log, the path is returned."""
+    def test_runs_validation_attempt(self) -> None:
+        """Scenario: probe invokes run_validation_attempt with culprit-probe output dir."""
+        mock_run = Mock(return_value=(Mock(), {}, None))
         with patch(
             "scripts.select_downstream_regression_window.run_validation_attempt",
-            return_value=(Mock(), {"lastLogPath": "/some/log.txt"}, None),
+            mock_run,
         ), patch(
             "scripts.select_downstream_regression_window.parent_commit",
             return_value="p" * 40,
         ):
-            result = run_culprit_probe(
+            run_culprit_probe(
                 config=_PHYSLIB_CONFIG,
                 culprit_commit="b" * 40,
                 upstream_dir=Path("/dummy"),
@@ -619,30 +620,12 @@ class TryCulpritProbeTests(unittest.TestCase):
                 env={},
                 tool_exe=None,
             )
-        self.assertEqual(result, "/some/log.txt")
+        self.assertTrue(mock_run.called)
+        call_kwargs = mock_run.call_args[1]
+        self.assertEqual(call_kwargs["output_dir"], Path("/dummy/output/culprit-probe"))
 
-    def test_returns_none_when_tool_state_has_no_log_path(self) -> None:
-        """Scenario: probe ran but tool did not write a log (failed before reaching that stage)."""
-        with patch(
-            "scripts.select_downstream_regression_window.run_validation_attempt",
-            return_value=(Mock(), {}, None),
-        ), patch(
-            "scripts.select_downstream_regression_window.parent_commit",
-            return_value="p" * 40,
-        ):
-            result = run_culprit_probe(
-                config=_PHYSLIB_CONFIG,
-                culprit_commit="b" * 40,
-                upstream_dir=Path("/dummy"),
-                project_dir=Path("/dummy/downstream"),
-                output_dir=Path("/dummy/output"),
-                env={},
-                tool_exe=None,
-            )
-        self.assertIsNone(result)
-
-    def test_returns_none_on_exception(self) -> None:
-        """Scenario: if the probe raises (e.g. subprocess error), None is returned without propagating."""
+    def test_does_not_propagate_exception(self) -> None:
+        """Scenario: if the probe raises (e.g. subprocess error), the exception is swallowed."""
         with patch(
             "scripts.select_downstream_regression_window.run_validation_attempt",
             side_effect=RuntimeError("tool crashed"),
@@ -650,7 +633,8 @@ class TryCulpritProbeTests(unittest.TestCase):
             "scripts.select_downstream_regression_window.parent_commit",
             return_value="p" * 40,
         ):
-            result = run_culprit_probe(
+            # Should not raise
+            run_culprit_probe(
                 config=_PHYSLIB_CONFIG,
                 culprit_commit="b" * 40,
                 upstream_dir=Path("/dummy"),
@@ -659,7 +643,6 @@ class TryCulpritProbeTests(unittest.TestCase):
                 env={},
                 tool_exe=None,
             )
-        self.assertIsNone(result)
 
 
 if __name__ == "__main__":

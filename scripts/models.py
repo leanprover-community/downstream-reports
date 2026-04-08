@@ -116,7 +116,6 @@ class ValidationResult:
     head_probe_outcome: str | None = None
     head_probe_failure_stage: str | None = None
     head_probe_summary: str | None = None
-    culprit_log_path: str | None = None
     pinned_commit: str | None = None
 
     def to_json(self) -> dict[str, Any]:

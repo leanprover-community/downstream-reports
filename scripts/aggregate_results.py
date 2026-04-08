@@ -114,7 +114,6 @@ class ValidationResult:
     tested_commit_details: list["ValidationResult.CommitDetail"] = field(default_factory=list)
     head_probe_outcome: str | None = None
     head_probe_failure_stage: str | None = None
-    culprit_log_path: str | None = None
     pinned_commit: str | None = None
 
     @classmethod
@@ -138,7 +137,6 @@ class ValidationResult:
             ],
             head_probe_outcome=payload.get("head_probe_outcome"),
             head_probe_failure_stage=payload.get("head_probe_failure_stage"),
-            culprit_log_path=payload.get("culprit_log_path"),
             pinned_commit=payload.get("pinned_commit"),
         )
 
@@ -225,16 +223,22 @@ def filter_culprit_log_text(text: str) -> str:
     return "\n".join(line for line in text.splitlines() if not line.strip().startswith("✔"))
 
 
-def load_culprit_log_text(artifact_root: Path, culprit_log_path: str | None) -> str | None:
-    """Load the copied log for the first bad commit when available."""
+def load_culprit_log_text(artifact_root: Path) -> str | None:
+    """Load the culprit log from the well-known hopscotch logs/culprit/ directory.
 
-    if culprit_log_path is None:
-        return None
-    basename = Path(culprit_log_path).name
-    matches = sorted(artifact_root.rglob(basename))
-    if not matches:
-        return None
-    return truncate_log_text(filter_culprit_log_text(matches[0].read_text(errors="replace")))
+    Checks the culprit-probe output first (skip-known-bad-bisect path), then the
+    main tool-state (normal bisect path).
+    """
+    candidates = [
+        artifact_root / "culprit-probe" / "tool-state" / "logs" / "culprit",
+        artifact_root / "tool-state" / "logs" / "culprit",
+    ]
+    for directory in candidates:
+        if directory.is_dir():
+            files = sorted(directory.glob("*.log"))
+            if files:
+                return truncate_log_text(filter_culprit_log_text(files[0].read_text(errors="replace")))
+    return None
 
 
 def first_bad_position(details: list[dict[str, Any]], first_bad_sha: str | None) -> tuple[int, int] | None:
@@ -257,7 +261,7 @@ def load_results(results_dir: Path) -> list[LoadedResult]:
         results.append(
             LoadedResult(
                 result=result,
-                culprit_log_text=load_culprit_log_text(path.parent, result.culprit_log_path),
+                culprit_log_text=load_culprit_log_text(path.parent),
             )
         )
     if not results:

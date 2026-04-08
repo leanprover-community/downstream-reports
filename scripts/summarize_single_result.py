@@ -37,7 +37,7 @@ def main() -> int:
         return 1
 
     result = ValidationResult.from_json(json.loads(result_file.read_text()))
-    culprit_log_text = load_culprit_log_text(args.result_dir, result.culprit_log_path)
+    culprit_log_text = load_culprit_log_text(args.result_dir)
 
     if result.outcome is Outcome.PASSED:
         episode_state = "passing"

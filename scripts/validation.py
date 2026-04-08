@@ -367,7 +367,6 @@ def build_result_from_tool(
             first_failing_commit=None,
             last_successful_commit=state.get("lastSuccessfulCommit", target_commit),
             error=None,
-            culprit_log_path=None,
         )
     elif tool_run.returncode == 1:
         base.update(
@@ -376,7 +375,6 @@ def build_result_from_tool(
             first_failing_commit=state.get("currentCommit"),
             last_successful_commit=state.get("lastSuccessfulCommit"),
             error=None,
-            culprit_log_path=state.get("lastLogPath"),
         )
     else:
         base.update(
@@ -385,7 +383,6 @@ def build_result_from_tool(
             first_failing_commit=None,
             last_successful_commit=state.get("lastSuccessfulCommit"),
             error=tool_run.stderr.strip() or tool_run.stdout.strip() or "hopscotch failed before producing state",
-            culprit_log_path=state.get("lastLogPath"),
         )
 
     return ValidationResult(**base)
@@ -418,7 +415,6 @@ def build_error_result(
         summary=error,
         error=error,
         generated_at=utc_now(),
-        culprit_log_path=None,
     )
 
 
@@ -458,7 +454,6 @@ def build_skip_result(
         summary=summary,
         error=None,
         generated_at=utc_now(),
-        culprit_log_path=None,
         pinned_commit=pinned_commit,
     )
 
@@ -492,7 +487,6 @@ def build_selection_error_result(
         head_probe_outcome=selection.head_probe_outcome,
         head_probe_failure_stage=selection.head_probe_failure_stage,
         head_probe_summary=selection.head_probe_summary,
-        culprit_log_path=None,
     )
 
 
