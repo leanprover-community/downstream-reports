@@ -229,7 +229,7 @@ def fetch_commit_titles(
     headers: dict[str, str] = {
         "Accept": "application/vnd.github+json",
         "X-GitHub-Api-Version": "2022-11-28",
-        "User-Agent": "hopscotch-reports/notifications",
+        "User-Agent": "downstream-reports/notifications",
     }
     if token:
         headers["Authorization"] = f"Bearer {token}"
@@ -270,7 +270,7 @@ def format_summary_message(
     reported_at = run_meta.get("reported_at", "")
 
     header_lines = [
-        f"**Mathlib Hopscotch — latest state** (upstream ref: `{upstream_ref}`) | [Full report](https://leanprover-community.github.io/hopscotch-reports/)",
+        f"**Mathlib Downstreams — latest state** (upstream ref: `{upstream_ref}`) | [Full report](https://leanprover-community.github.io/downstream-reports/)",
         f"Run: [{run_meta.get('run_id', '?')}]({run_url}) — reported {reported_at}",
         "",
     ]

@@ -63,7 +63,7 @@ def fetch_commit_distances(
     headers: dict[str, str] = {
         "Accept": "application/vnd.github+json",
         "X-GitHub-Api-Version": "2022-11-28",
-        "User-Agent": "hopscotch-reports/aggregate_results",
+        "User-Agent": "downstream-reports/aggregate_results",
     }
     if token:
         headers["Authorization"] = f"Bearer {token}"

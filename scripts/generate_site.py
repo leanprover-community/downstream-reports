@@ -33,7 +33,7 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 UPSTREAM_REPO = "leanprover-community/mathlib4"
-THIS_REPO = "leanprover-community/hopscotch-reports"
+THIS_REPO = "leanprover-community/downstream-reports"
 GITHUB = "https://github.com"
 GITHUB_API = "https://api.github.com"
 
@@ -109,7 +109,7 @@ def fetch_commit_titles(
     headers: dict[str, str] = {
         "Accept": "application/vnd.github+json",
         "X-GitHub-Api-Version": "2022-11-28",
-        "User-Agent": "hopscotch-reports/generate_site",
+        "User-Agent": "downstream-reports/generate_site",
     }
     if token:
         headers["Authorization"] = f"Bearer {token}"
@@ -147,7 +147,7 @@ def fetch_tags(
     headers: dict[str, str] = {
         "Accept": "application/vnd.github+json",
         "X-GitHub-Api-Version": "2022-11-28",
-        "User-Agent": "hopscotch-reports/generate_site",
+        "User-Agent": "downstream-reports/generate_site",
     }
     if token:
         headers["Authorization"] = f"Bearer {token}"
@@ -492,7 +492,7 @@ def render_run_banner(
 ) -> str:
     return (
         f'<div class="run-banner">'
-        f'<div class="run-banner-title">Mathlib Hopscotch Report</div>'
+        f'<div class="run-banner-title">Mathlib Downstream Report</div>'
         f'<div class="run-banner-meta">'
         f'<span><strong>Upstream ref:</strong>&nbsp;<code>{esc(upstream_ref)}</code></span>'
         f'<span class="divider">|</span>'
@@ -682,7 +682,7 @@ def render(
         f'</ul>'
         f'<p class="report-desc-footer">'
         f'To register a project here or learn how the workflow operates, see the '
-        f'<a href="{readme_url}" target="_blank" rel="noopener noreferrer">hopscotch-reports README</a>.'
+        f'<a href="{readme_url}" target="_blank" rel="noopener noreferrer">downstream-reports README</a>.'
         f'</p>'
         f'<details class="glossary-toggle">'
         f'<summary>Glossary</summary>'

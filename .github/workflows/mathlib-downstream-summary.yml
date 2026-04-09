@@ -1,4 +1,4 @@
-name: mathlib-hopscotch-summary
+name: mathlib-downstream-summary
 
 on:
   workflow_dispatch:

@@ -1,4 +1,4 @@
-name: mathlib-hopscotch-report
+name: mathlib-downstream-report
 
 on:
   # TODO: Enable once the manual-testing loop is stable.
@@ -30,7 +30,7 @@ permissions:
   actions: read
 
 concurrency:
-  group: mathlib-hopscotch-${{ github.ref }}
+  group: mathlib-downstream-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:

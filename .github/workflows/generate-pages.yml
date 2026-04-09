@@ -3,7 +3,7 @@ name: generate-pages
 on:
   workflow_run:
     workflows:
-      - mathlib-hopscotch-report
+      - mathlib-downstream-report
     types:
       - completed
   workflow_dispatch:

@@ -1,12 +1,14 @@
-# Hopscotch reports
+# Downstream reports
 
 [`hopscotch`](https://github.com/leanprover-community/hopscotch) is a Lean tool for stepping a downstream project through a list of commits to find the first failing one. This repository contains a GitHub Actions harness that runs it automatically against a curated set of downstream projects and reports the results.
 
+At the moment, this downstream validation is performed for the `leanprover-community/mathlib4` dependency.
+
 ## GitHub workflows
-### `mathlib-hopscotch-report.yml`
+### `mathlib-downstream-report.yml`
 
 This workflow answers the question: *does each tracked downstream
-project still build against a given mathlib commit, and if not, which mathlib
+project still build against a given `mathlib4` commit, and if not, which `mathlib4`
 commit introduced the breakage?* 
 
 **Jobs:**
@@ -89,7 +91,7 @@ appended directly to the GitHub Actions job summary. It contains:
   position, the current episode state, a filtered snippet of the culprit build
   log (capped at 200 lines / 40 KB), and the full tool summary.
 
-### `mathlib-hopscotch-summary.yml`
+### `mathlib-downstream-summary.yml`
 
 Manually dispatchable workflow that loads the latest per-downstream state from
 the database and sends a compact Markdown table to Zulip. Defaults to posting
@@ -99,11 +101,11 @@ be overridden via workflow inputs.
 ### Zulip configuration
 
 Both workflows send messages to `mathlib-initiative.zulipchat.com` via the
-`hopscotch-bot` bot. Required GitHub configuration:
+`downstream-bot` bot. Required GitHub configuration:
 
 | Type | Name | Value |
 | --- | --- | --- |
-| Variable | `ZULIP_EMAIL` | `hopscotch-bot@mathlib-initiative.zulipchat.com` |
+| Variable | `ZULIP_EMAIL` | `downstream-bot@mathlib-initiative.zulipchat.com` |
 | Secret | `ZULIP_API_KEY` | Bot API key (from Zulip bot settings) |
 
 ## Inventory
