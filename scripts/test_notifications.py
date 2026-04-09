@@ -16,8 +16,10 @@ from scripts.notifications import (
     ALERTABLE_STATES,
     AlertAction,
     DryRunSender,
+    _MATHLIB_COMMIT_URL,
     compute_alert_actions,
     execute_alerts,
+    fetch_commit_titles,
     format_new_failure_message,
     format_recovered_message,
     format_summary_message,
@@ -299,20 +301,24 @@ _SUMMARY_RUN_META = {
 
 def _make_summary_row(
     downstream: str = "physlib",
+    repo: str = "owner/physlib",
     outcome: str = "passed",
     episode_state: str = "passing",
     target_commit: str = "aabbccddee11",
     first_known_bad: str | None = None,
     last_known_good: str | None = "aabbccddee11",
+    bump_commits: int | None = None,
     **kwargs,
 ) -> dict:
     row = {
         "downstream": downstream,
+        "repo": repo,
         "outcome": outcome,
         "episode_state": episode_state,
         "target_commit": target_commit,
         "first_known_bad": first_known_bad,
         "last_known_good": last_known_good,
+        "bump_commits": bump_commits,
     }
     row.update(kwargs)
     return row
@@ -326,27 +332,45 @@ def _make_summary_row(
 class FormatSummaryMessageTests(unittest.TestCase):
     """Summary table rendering for Zulip digest messages."""
 
-    def test_renders_table_header(self) -> None:
-        """Scenario: the output contains a markdown table header with the expected columns."""
+    def test_renders_table_inside_spoiler(self) -> None:
+        """Scenario: the table is wrapped in a Zulip spoiler block so it is collapsible, with the correct columns."""
         msg = format_summary_message(_SUMMARY_RUN_META, [_make_summary_row()])
-        self.assertIn("| Downstream | Status | Target | First Bad | Last Good |", msg)
+        self.assertIn("```spoiler", msg)
+        self.assertIn("| Downstream | Status | First Bad | Bump |", msg)
+        self.assertNotIn("Target", msg)
+        self.assertNotIn("Last Good", msg)
 
-    def test_includes_all_downstreams(self) -> None:
-        """Scenario: every downstream in the input rows appears as a table row in the output."""
+    def test_includes_all_downstreams_as_short_name_links(self) -> None:
+        """Scenario: every downstream appears as a GitHub link using the short name as label, sorted case-insensitively by short name."""
         rows = [
-            _make_summary_row(downstream="physlib"),
-            _make_summary_row(downstream="other"),
+            _make_summary_row(downstream="Zeta", repo="owner/Zeta"),
+            _make_summary_row(downstream="alpha", repo="owner/alpha"),
+            _make_summary_row(downstream="Beta", repo="owner/Beta"),
         ]
         msg = format_summary_message(_SUMMARY_RUN_META, rows)
-        self.assertIn("physlib", msg)
-        self.assertIn("other", msg)
+        self.assertIn("[Zeta](https://github.com/owner/Zeta)", msg)
+        self.assertIn("[alpha](https://github.com/owner/alpha)", msg)
+        self.assertIn("[Beta](https://github.com/owner/Beta)", msg)
+        # case-insensitive: alpha < Beta < Zeta
+        self.assertLess(msg.index("alpha"), msg.index("Beta"))
+        self.assertLess(msg.index("Beta"), msg.index("Zeta"))
 
-    def test_passing_status_has_check_emoji(self) -> None:
-        """Scenario: a passing downstream shows a check emoji in the status column."""
+    def test_passing_status_shows_emoji_only(self) -> None:
+        """Scenario: a passing downstream shows a check emoji with no state label text."""
         msg = format_summary_message(
             _SUMMARY_RUN_META, [_make_summary_row(episode_state="passing")]
         )
         self.assertIn(":check:", msg)
+        self.assertNotIn("passing", msg)
+
+    def test_failing_status_shows_emoji_only(self) -> None:
+        """Scenario: a failing downstream shows a cross emoji with no state label text."""
+        msg = format_summary_message(
+            _SUMMARY_RUN_META,
+            [_make_summary_row(episode_state="failing", outcome="failed", first_known_bad="aabbccddee11")],
+        )
+        self.assertIn(":cross_mark:", msg)
+        self.assertNotIn("failing", msg)
 
     def test_new_failure_status_has_cross_emoji(self) -> None:
         """Scenario: a new_failure downstream shows a cross emoji in the status column."""
@@ -363,19 +387,58 @@ class FormatSummaryMessageTests(unittest.TestCase):
         self.assertIn(":warning:", msg)
 
     def test_missing_first_bad_shows_dash(self) -> None:
-        """Scenario: when first_known_bad is None, the column displays a dash instead."""
+        """Scenario: when first_known_bad is None, the column displays a dash instead of a link."""
         msg = format_summary_message(
             _SUMMARY_RUN_META, [_make_summary_row(first_known_bad=None)]
         )
-        # The dash should appear in the First Bad column, not wrapped in backticks.
         self.assertIn("| — |", msg)
 
-    def test_present_first_bad_shows_sha(self) -> None:
-        """Scenario: when first_known_bad is set, its short SHA appears in the column."""
+    def test_present_first_bad_is_linkified(self) -> None:
+        """Scenario: when first_known_bad is set, its short SHA appears as a GitHub commit link."""
         msg = format_summary_message(
             _SUMMARY_RUN_META, [_make_summary_row(first_known_bad="deadbeef1234")]
         )
         self.assertIn("deadbeef1234", msg)
+        self.assertIn(f"{_MATHLIB_COMMIT_URL}/deadbeef1234", msg)
+
+    def test_commit_title_appended_when_provided(self) -> None:
+        """Scenario: when commit_titles contains the first_known_bad SHA, the title is shown after the link."""
+        sha = "deadbeef1234"
+        msg = format_summary_message(
+            _SUMMARY_RUN_META,
+            [_make_summary_row(first_known_bad=sha)],
+            commit_titles={sha: "feat: add some feature"},
+        )
+        self.assertIn("feat: add some feature", msg)
+
+    def test_commit_title_truncated_at_60_chars(self) -> None:
+        """Scenario: commit titles longer than 60 characters are truncated with ellipsis."""
+        sha = "deadbeef1234"
+        long_title = "x" * 70
+        msg = format_summary_message(
+            _SUMMARY_RUN_META,
+            [_make_summary_row(first_known_bad=sha)],
+            commit_titles={sha: long_title},
+        )
+        self.assertIn("...", msg)
+        self.assertNotIn("x" * 70, msg)
+
+    def test_bump_commits_shown_when_set(self) -> None:
+        """Scenario: when bump_commits is an integer, it appears in the Bump column."""
+        msg = format_summary_message(
+            _SUMMARY_RUN_META,
+            [_make_summary_row(bump_commits=42)],
+        )
+        self.assertIn("| 42 |", msg)
+
+    def test_bump_commits_dash_when_none(self) -> None:
+        """Scenario: when bump_commits is None, the Bump column shows a dash."""
+        msg = format_summary_message(
+            _SUMMARY_RUN_META,
+            [_make_summary_row(bump_commits=None)],
+        )
+        # The last column should be a dash; check the row ends with "| — |"
+        self.assertIn("| — |", msg)
 
     def test_includes_run_metadata(self) -> None:
         """Scenario: the header includes the upstream ref, run ID, and a link to the run."""
@@ -384,22 +447,25 @@ class FormatSummaryMessageTests(unittest.TestCase):
         self.assertIn("12345", msg)
         self.assertIn(_SUMMARY_RUN_META["run_url"], msg)
 
-    def test_footer_counts(self) -> None:
-        """Scenario: the footer tallies compatible, incompatible, and error counts correctly."""
+    def test_counts_appear_before_spoiler(self) -> None:
+        """Scenario: the compatible/incompatible/error counts appear in the header, before the spoiler block."""
         rows = [
             _make_summary_row(outcome="passed"),
-            _make_summary_row(downstream="a", outcome="passed"),
-            _make_summary_row(downstream="b", outcome="failed"),
-            _make_summary_row(downstream="c", outcome="error"),
+            _make_summary_row(downstream="a", repo="owner/a", outcome="passed"),
+            _make_summary_row(downstream="b", repo="owner/b", outcome="failed"),
+            _make_summary_row(downstream="c", repo="owner/c", outcome="error"),
         ]
         msg = format_summary_message(_SUMMARY_RUN_META, rows)
         self.assertIn("2 compatible", msg)
         self.assertIn("1 incompatible", msg)
         self.assertIn("1 errors", msg)
+        # Counts should appear before the spoiler block
+        self.assertLess(msg.index("compatible"), msg.index("```spoiler"))
 
-    def test_empty_rows_produces_table_with_no_data_rows(self) -> None:
-        """Scenario: when no downstreams are present, the table header still renders with a zero-count footer."""
+    def test_empty_rows_produces_spoiler_with_no_data_rows(self) -> None:
+        """Scenario: when no downstreams are present, the spoiler still renders with the table header and zero counts."""
         msg = format_summary_message(_SUMMARY_RUN_META, [])
+        self.assertIn("```spoiler", msg)
         self.assertIn("| Downstream |", msg)
         self.assertIn("0 compatible", msg)
 

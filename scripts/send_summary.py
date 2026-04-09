@@ -19,6 +19,7 @@ from models import load_inventory
 from notifications import (
     DryRunSender,
     ZulipSender,
+    fetch_commit_titles,
     format_summary_message,
 )
 
@@ -84,7 +85,11 @@ def main() -> int:
         print("No downstream results to report.")
         return 0
 
-    message = format_summary_message(run_meta, rows)
+    bad_shas = [r["first_known_bad"] for r in rows if r.get("first_known_bad")]
+    github_token = os.environ.get("GITHUB_TOKEN")
+    titles = fetch_commit_titles(bad_shas, token=github_token) if bad_shas else {}
+
+    message = format_summary_message(run_meta, rows, commit_titles=titles)
 
     if args.backend == "zulip":
         email = os.environ.get("ZULIP_EMAIL", "")

@@ -16,7 +16,9 @@ The module is split into three layers:
 
 from __future__ import annotations
 
+import json
 import sys
+import urllib.request
 from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
 
@@ -199,6 +201,11 @@ def compute_alert_actions(
 # Summary formatting
 # ---------------------------------------------------------------------------
 
+_MATHLIB_REPO = "leanprover-community/mathlib4"
+_MATHLIB_COMMIT_URL = "https://github.com/leanprover-community/mathlib4/commit"
+_GITHUB_API = "https://api.github.com"
+_COMMIT_TITLE_MAX = 60  # truncate first-bad commit titles to this many characters
+
 # Zulip emoji for each episode state / outcome.
 _STATUS_EMOJI: dict[str, str] = {
     "passing": ":check:",
@@ -209,48 +216,106 @@ _STATUS_EMOJI: dict[str, str] = {
 }
 
 
+def fetch_commit_titles(
+    shas: list[str],
+    repo: str = _MATHLIB_REPO,
+    token: str | None = None,
+) -> dict[str, str]:
+    """Return ``{sha: first_line_of_commit_message}`` for each SHA.
+
+    Uses the GitHub Commits API.  Missing or failed lookups are omitted from
+    the result dict — callers should treat a missing key as an unknown title.
+    """
+    headers: dict[str, str] = {
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+        "User-Agent": "hopscotch-reports/notifications",
+    }
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+
+    result: dict[str, str] = {}
+    for sha in shas:
+        url = f"{_GITHUB_API}/repos/{repo}/commits/{sha}"
+        req = urllib.request.Request(url, headers=headers)
+        try:
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                data = json.loads(resp.read())
+            message = data.get("commit", {}).get("message", "")
+            first_line = message.splitlines()[0] if message else ""
+            if first_line:
+                result[sha] = first_line
+        except Exception as exc:
+            print(f"  warning: could not fetch commit title for {sha[:12]}: {exc}", file=sys.stderr)
+    return result
+
+
 def format_summary_message(
     run_meta: dict[str, Any],
     rows: list[dict[str, Any]],
+    commit_titles: dict[str, str] | None = None,
 ) -> str:
     """Render a compact Zulip markdown table summarising all downstream states.
 
     *run_meta* and *rows* are the values returned by
     ``storage.load_run_for_site()``.  The table is designed to be readable
     inline in a Zulip stream without expanding a collapsible section.
+
+    *commit_titles* is an optional ``{sha: title}`` mapping used to annotate
+    the first-known-bad column; pass the result of ``fetch_commit_titles()``
+    to populate it.
     """
     run_url = run_meta.get("run_url", "")
     upstream_ref = run_meta.get("upstream_ref", "master")
     reported_at = run_meta.get("reported_at", "")
 
     header_lines = [
-        f"**Mathlib Hopscotch — latest state** (upstream ref: `{upstream_ref}`)",
+        f"**Mathlib Hopscotch — latest state** (upstream ref: `{upstream_ref}`) | [Full report](https://leanprover-community.github.io/hopscotch-reports/)",
         f"Run: [{run_meta.get('run_id', '?')}]({run_url}) — reported {reported_at}",
         "",
     ]
 
     table_lines = [
-        "| Downstream | Status | Target | First Bad | Last Good |",
-        "|---|---|---|---|---|",
+        "| Downstream | Status | First Bad | Bump |",
+        "|---|---|---|---|",
     ]
-    for row in rows:
-        downstream = row.get("downstream", "?")
+    titles = commit_titles or {}
+    for row in sorted(rows, key=lambda r: (r.get("downstream") or "").lower()):
+        name = row.get("downstream") or "?"
+        repo = row.get("repo") or name
+        downstream_cell = f"[{name}](https://github.com/{repo})"
         episode = row.get("episode_state", "")
-        emoji = _STATUS_EMOJI.get(episode, "")
-        status = f"{emoji} {episode}" if emoji else episode
-        target = _short_sha(row.get("target_commit"))
-        first_bad = _short_sha(row.get("first_known_bad")) if row.get("first_known_bad") else "—"
-        last_good = _short_sha(row.get("last_known_good")) if row.get("last_known_good") else "—"
-        table_lines.append(
-            f"| {downstream} | {status} | `{target}` | {first_bad} | {last_good} |"
-        )
+        status = _STATUS_EMOJI.get(episode, episode)
+
+        first_bad_sha = row.get("first_known_bad")
+        if first_bad_sha:
+            short = _short_sha(first_bad_sha)
+            link = f"[{short}]({_MATHLIB_COMMIT_URL}/{first_bad_sha})"
+            title = titles.get(first_bad_sha, "")
+            if title:
+                if len(title) > _COMMIT_TITLE_MAX:
+                    title = title[:_COMMIT_TITLE_MAX - 3] + "..."
+                first_bad_cell = f"{link} {title}"
+            else:
+                first_bad_cell = link
+        else:
+            first_bad_cell = "—"
+
+        bump = row.get("bump_commits")
+        bump_cell = str(bump) if bump is not None else "—"
+
+        table_lines.append(f"| {downstream_cell} | {status} | {first_bad_cell} | {bump_cell} |")
 
     n_passed = sum(1 for r in rows if r.get("outcome") == "passed")
     n_failed = sum(1 for r in rows if r.get("outcome") == "failed")
     n_error = sum(1 for r in rows if r.get("outcome") == "error")
-    footer = f"\n{n_passed} compatible · {n_failed} incompatible · {n_error} errors"
+    counts = f"{n_passed} compatible · {n_failed} incompatible · {n_error} errors"
 
-    return "\n".join(header_lines + table_lines) + footer
+    header_lines.insert(1, counts)
+
+    spoiler = "```spoiler Details\n" + "\n".join(table_lines) + "\n```"
+
+    return "\n".join(header_lines) + "\n" + spoiler
 
 
 def execute_alerts(actions: list[AlertAction], sender: MessageSender) -> None:

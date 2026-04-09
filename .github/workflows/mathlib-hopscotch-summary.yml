@@ -43,6 +43,7 @@ jobs:
           POSTGRES_DSN: ${{ secrets.POSTGRES_DSN }}
           ZULIP_EMAIL: ${{ vars.ZULIP_EMAIL }}
           ZULIP_API_KEY: ${{ secrets.ZULIP_API_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           BACKEND="zulip"
           if [ "${{ inputs.dry_run }}" = "true" ] || [ "${{ github.ref_name }}" != "main" ]; then
