@@ -1,0 +1,55 @@
+name: mathlib-hopscotch-summary
+
+on:
+  workflow_dispatch:
+    inputs:
+      stream:
+        description: "Zulip stream to post the summary to."
+        required: false
+        default: "Hopscotch"
+        type: string
+      topic:
+        description: "Zulip topic to post the summary to."
+        required: false
+        default: "Downstream summary"
+        type: string
+      dry_run:
+        description: "Use the dry-run sender (no actual Zulip message)."
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  summary:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6.2.0
+        with:
+          python-version: '3.x'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r scripts/requirements.txt
+
+      - name: Send summary
+        env:
+          POSTGRES_DSN: ${{ secrets.POSTGRES_DSN }}
+          ZULIP_EMAIL: ${{ vars.ZULIP_EMAIL }}
+          ZULIP_API_KEY: ${{ secrets.ZULIP_API_KEY }}
+        run: |
+          BACKEND="zulip"
+          if [ "${{ inputs.dry_run }}" = "true" ] || [ "${{ github.ref_name }}" != "main" ]; then
+            BACKEND="dry-run"
+          fi
+          python3 scripts/send_summary.py \
+            --inventory ci/inventory/downstreams.json \
+            --stream "${{ inputs.stream }}" \
+            --topic "${{ inputs.topic }}" \
+            --backend "$BACKEND"

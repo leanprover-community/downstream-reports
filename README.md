@@ -67,9 +67,14 @@ commit introduced the breakage?*
    - Uploads a `result-<name>` artifact containing `result.json` and supporting
      logs.
 
-3. **`report`** — downloads all `result-*` artifacts, to updates the
-   database and renders a Markdown report that is appended to the job
-   summary.
+3. **`report`** — downloads all `result-*` artifacts, updates the
+   database, renders a Markdown report appended to the job summary, and
+   uploads an `alert-payload` artifact for the alert job.
+
+4. **`alert`** — downloads the alert payload and sends Zulip messages for
+   status changes (`NEW_FAILURE` / `RECOVERED`) to the
+   `Hopscotch > Downstream alerts` topic. Steady states (`PASSING`,
+   `FAILING`, `ERROR`) do not trigger alerts.
 
 **Job summary report.** The aggregation script renders a Markdown report that is
 appended directly to the GitHub Actions job summary. It contains:
@@ -83,6 +88,23 @@ appended directly to the GitHub Actions job summary. It contains:
   (head-only or bisect), the head-probe result, the bisect window bounds and
   position, the current episode state, a filtered snippet of the culprit build
   log (capped at 200 lines / 40 KB), and the full tool summary.
+
+### `mathlib-hopscotch-summary.yml`
+
+Manually dispatchable workflow that loads the latest per-downstream state from
+the database and sends a compact Markdown table to Zulip. Defaults to posting
+to `Hopscotch > Downstream summary`; the stream, topic, and dry-run flag can
+be overridden via workflow inputs.
+
+### Zulip configuration
+
+Both workflows send messages to `mathlib-initiative.zulipchat.com` via the
+`hopscotch-bot` bot. Required GitHub configuration:
+
+| Type | Name | Value |
+| --- | --- | --- |
+| Variable | `ZULIP_EMAIL` | `hopscotch-bot@mathlib-initiative.zulipchat.com` |
+| Secret | `ZULIP_API_KEY` | Bot API key (from Zulip bot settings) |
 
 ## Inventory
 

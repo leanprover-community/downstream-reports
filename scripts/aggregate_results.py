@@ -20,7 +20,7 @@ import os
 import sys
 import urllib.error
 import urllib.request
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from enum import Enum
 from pathlib import Path
 from typing import Any
@@ -465,6 +465,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="Path to write the markdown report; useful when --backend=sql.",
     )
     parser.add_argument(
+        "--alert-output", type=Path, default=None,
+        help="Path to write the alert payload JSON (consumed by the alert job).",
+    )
+    parser.add_argument(
         "--github-token",
         default=os.environ.get("GITHUB_TOKEN"),
         help="GitHub token for commit distance lookups (default: $GITHUB_TOKEN)",
@@ -587,6 +591,16 @@ def main() -> int:
     if args.report_output is not None:
         args.report_output.parent.mkdir(parents=True, exist_ok=True)
         args.report_output.write_text(markdown)
+
+    if args.alert_output is not None:
+        args.alert_output.parent.mkdir(parents=True, exist_ok=True)
+        alert_payload = {
+            "run_id": args.run_id,
+            "run_url": args.run_url,
+            "upstream_ref": args.upstream_ref,
+            "results": [asdict(r) for r in result_records],
+        }
+        args.alert_output.write_text(json.dumps(alert_payload, sort_keys=True))
 
     if args.workflow == "bumping":
         updates = {
