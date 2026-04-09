@@ -1,6 +1,10 @@
 name: mathlib-downstream-summary
 
 on:
+  workflow_run:
+    workflows: ["mathlib-downstream-report"]
+    types:
+      - completed
   workflow_dispatch:
     inputs:
       stream:
@@ -24,6 +28,7 @@ permissions:
 
 jobs:
   summary:
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion != 'cancelled'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
