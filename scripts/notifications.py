@@ -152,6 +152,15 @@ def format_recovered_message(record: dict[str, Any], run_url: str) -> str:
     return "\n".join(lines)
 
 
+def format_error_notice_message(n_error: int, run_url: str) -> str:
+    """Render a notice for builds that failed with unexpected errors."""
+    noun = "build" if n_error == 1 else "builds"
+    return (
+        f":warning: {n_error} {noun} failed unexpectedly. "
+        f"Please see the [CI run]({run_url}) for details."
+    )
+
+
 # ---------------------------------------------------------------------------
 # Alert computation
 # ---------------------------------------------------------------------------
@@ -276,7 +285,7 @@ def format_summary_message(
     ]
 
     table_lines = [
-        "| Downstream | Status | First Bad | Bump |",
+        "| Downstream | Status | First Bad | Safe commits |",
         "|---|---|---|---|",
     ]
     titles = commit_titles or {}

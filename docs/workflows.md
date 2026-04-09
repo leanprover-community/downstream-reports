@@ -89,9 +89,7 @@ appended directly to the GitHub Actions job summary. It contains:
 ## `mathlib-downstream-summary.yml`
 
 Manually dispatchable workflow that loads the latest per-downstream state from
-the database and sends a compact Markdown table to Zulip. Defaults to posting
-to `Hopscotch > Downstream summary`; the stream, topic, and dry-run flag can
-be overridden via workflow inputs.
+the database and sends a compact Markdown table to Zulip.
 
 ## Zulip configuration
 

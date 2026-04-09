@@ -20,6 +20,7 @@ from scripts.notifications import (
     compute_alert_actions,
     execute_alerts,
     fetch_commit_titles,
+    format_error_notice_message,
     format_new_failure_message,
     format_recovered_message,
     format_summary_message,
@@ -336,7 +337,7 @@ class FormatSummaryMessageTests(unittest.TestCase):
         """Scenario: the table is wrapped in a Zulip spoiler block so it is collapsible, with the correct columns."""
         msg = format_summary_message(_SUMMARY_RUN_META, [_make_summary_row()])
         self.assertIn("```spoiler", msg)
-        self.assertIn("| Downstream | Status | First Bad | Bump |", msg)
+        self.assertIn("| Downstream | Status | First Bad | Safe commits |", msg)
         self.assertNotIn("Target", msg)
         self.assertNotIn("Last Good", msg)
 
@@ -468,6 +469,36 @@ class FormatSummaryMessageTests(unittest.TestCase):
         self.assertIn("```spoiler", msg)
         self.assertIn("| Downstream |", msg)
         self.assertIn("0 compatible", msg)
+
+
+# ---------------------------------------------------------------------------
+# Tests: format_error_notice_message
+# ---------------------------------------------------------------------------
+
+
+class FormatErrorNoticeMessageTests(unittest.TestCase):
+    """Error notice message rendering for unexpected build failures."""
+
+    def test_includes_count(self) -> None:
+        """Scenario: the number of failed builds appears in the message."""
+        msg = format_error_notice_message(3, _RUN_URL)
+        self.assertIn("3", msg)
+
+    def test_includes_run_url(self) -> None:
+        """Scenario: a link to the CI run is included."""
+        msg = format_error_notice_message(1, _RUN_URL)
+        self.assertIn(_RUN_URL, msg)
+
+    def test_singular_noun(self) -> None:
+        """Scenario: exactly one failure uses the singular 'build'."""
+        msg = format_error_notice_message(1, _RUN_URL)
+        self.assertIn("1 build ", msg)
+        self.assertNotIn("builds", msg)
+
+    def test_plural_noun(self) -> None:
+        """Scenario: two or more failures use the plural 'builds'."""
+        msg = format_error_notice_message(2, _RUN_URL)
+        self.assertIn("builds", msg)
 
 
 if __name__ == "__main__":

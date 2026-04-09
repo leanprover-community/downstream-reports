@@ -21,6 +21,7 @@ from notifications import (
     ZulipSender,
     compute_alert_actions,
     execute_alerts,
+    format_error_notice_message,
 )
 
 
@@ -68,11 +69,14 @@ def main() -> int:
     run_url = payload.get("run_url", args.run_url)
 
     actions = compute_alert_actions(records, run_url, args.stream, args.topic)
-    if not actions:
+    n_errors = sum(1 for r in records if r.get("outcome") == "error")
+
+    if not actions and not n_errors:
         print("No alertable status changes detected.")
         return 0
 
-    print(f"{len(actions)} alert(s) to send.")
+    if actions:
+        print(f"{len(actions)} alert(s) to send.")
 
     if args.backend == "zulip":
         email = os.environ.get("ZULIP_EMAIL", "")
@@ -85,7 +89,18 @@ def main() -> int:
     else:
         sender = DryRunSender()
 
-    execute_alerts(actions, sender)
+    if actions:
+        execute_alerts(actions, sender)
+
+    if n_errors:
+        noun = "build" if n_errors == 1 else "builds"
+        print(f"Sending error notice for {n_errors} {noun}.")
+        error_msg = format_error_notice_message(n_errors, run_url)
+        try:
+            sender.send_message(args.stream, args.topic, error_msg)
+        except Exception as exc:
+            print(f"Failed to send error notice: {exc}", file=sys.stderr)
+
     return 0
 
 

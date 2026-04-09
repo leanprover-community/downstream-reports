@@ -6,12 +6,12 @@ on:
       stream:
         description: "Zulip stream to post the summary to."
         required: false
-        default: "Hopscotch"
+        default: "hopscotch"
         type: string
       topic:
         description: "Zulip topic to post the summary to."
         required: false
-        default: "Downstream summary"
+        default: "Downstream reports"
         type: string
       dry_run:
         description: "Use the dry-run sender (no actual Zulip message)."

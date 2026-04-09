@@ -20,6 +20,7 @@ from notifications import (
     DryRunSender,
     ZulipSender,
     fetch_commit_titles,
+    format_error_notice_message,
     format_summary_message,
 )
 
@@ -107,6 +108,15 @@ def main() -> int:
         print(f"Summary sent to #{args.stream} > {args.topic}")
     except Exception as exc:
         print(f"Failed to send summary: {exc}", file=sys.stderr)
+
+    n_error = sum(1 for r in rows if r.get("outcome") == "error")
+    if n_error:
+        error_msg = format_error_notice_message(n_error, run_meta.get("run_url", ""))
+        try:
+            sender.send_message(args.stream, args.topic, error_msg)
+            print(f"Error notice sent to #{args.stream} > {args.topic}")
+        except Exception as exc:
+            print(f"Failed to send error notice: {exc}", file=sys.stderr)
 
     return 0
 
