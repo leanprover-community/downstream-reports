@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Select the bisect window for a downstream bumping-branch probe."""
+"""Select the bisect window for a downstream on-demand probe."""
 
 from __future__ import annotations
 
@@ -40,23 +40,31 @@ from scripts.validation import (
 
 
 def build_parser() -> argparse.ArgumentParser:
-    """Build the CLI parser for the bumping-branch window-selection step."""
+    """Build the CLI parser for the on-demand window-selection step."""
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--inventory", type=Path, required=True)
-    parser.add_argument("--workflow", default="bumping")
+    parser.add_argument("--workflow", default="ondemand")
     parser.add_argument("--downstream", required=True)
     parser.add_argument("--workdir", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--max-commits", type=int, default=100000)
     parser.add_argument("--quiet", action="store_true")
     parser.add_argument("--tool-exe", type=Path)
+    parser.add_argument(
+        "--branch-override",
+        default="",
+        help=(
+            "Explicit branch to test instead of the downstream's configured "
+            "bumping_branch. Used by on-demand dispatch."
+        ),
+    )
     add_backend_args(parser)
     return parser
 
 
 def main() -> int:
-    """Run HEAD validation against the bumping branch and write a probe selection."""
+    """Run HEAD validation against the target branch and write a probe selection."""
 
     args = build_parser().parse_args()
     inventory = load_inventory(args.inventory)
@@ -65,10 +73,14 @@ def main() -> int:
 
     config = inventory[args.downstream]
 
-    # Downstreams without a bumping_branch are silently skipped: the plan job
-    # should never include them in the matrix, but if this script is called
-    # directly for such a downstream we write a no-op selection and exit cleanly.
-    if not config.bumping_branch:
+    # Allow an explicit branch override for on-demand dispatch.
+    effective_branch = args.branch_override or config.bumping_branch
+
+    # Downstreams without a bumping_branch (and no override) are silently
+    # skipped: the plan job should never include them in the matrix, but if
+    # this script is called directly for such a downstream we write a no-op
+    # selection and exit cleanly.
+    if not effective_branch:
         args.output_dir.mkdir(parents=True, exist_ok=True)
         selection = WindowSelection(
             downstream=config.name,
@@ -100,16 +112,16 @@ def main() -> int:
     previous = status.get(config.name)
     stored_last_known_good = previous.last_known_good_commit if previous else None
 
-    # Clone the bumping branch instead of default_branch.
-    bumping_config = dataclasses.replace(config, default_branch=config.bumping_branch)
+    # Clone the target branch instead of default_branch.
+    ondemand_config = dataclasses.replace(config, default_branch=effective_branch)
 
-    # selection.default_branch is set to bumping_branch so that the probe step
-    # (which reconstructs DownstreamConfig from selection.json) also clones the
-    # bumping branch when running the bisect.
+    # selection.default_branch is set to the target branch so that the probe
+    # step (which reconstructs DownstreamConfig from selection.json) also
+    # clones the correct branch when running the bisect.
     selection = WindowSelection(
         downstream=config.name,
         repo=config.repo,
-        default_branch=config.bumping_branch,
+        default_branch=effective_branch,
         dependency_name=config.dependency_name,
     )
     args.output_dir.mkdir(parents=True, exist_ok=True)
@@ -127,14 +139,14 @@ def main() -> int:
         env = cache_env(cache_dir)
 
         clone_upstream("leanprover-community/mathlib4", upstream_dir)
-        downstream_commit = clone_downstream(bumping_config, downstream_dir)
+        downstream_commit = clone_downstream(ondemand_config, downstream_dir)
 
-        # Derive the mathlib target from the pin in the bumping branch's lakefile.
+        # Derive the mathlib target from the pin in the target branch's lakefile.
         pinned_rev = pinned_dependency_rev(downstream_dir, config.dependency_name)
         if pinned_rev is None:
             raise RuntimeError(
-                f"could not read {config.dependency_name} pin from bumping branch "
-                f"'{config.bumping_branch}' lakefile.toml"
+                f"could not read {config.dependency_name} pin from branch "
+                f"'{effective_branch}' lakefile.toml"
             )
         target_commit = resolve_upstream_target(upstream_dir, pinned_rev)
 
@@ -209,9 +221,9 @@ def main() -> int:
             finalize_selection()
             return 0
 
-        # The bumping branch's pin equals the target, so we never use it as the
+        # The target branch's pin equals the target, so we never use it as the
         # lower bound (that would collapse the window to a single commit).  Use
-        # only the stored last-known-good from the bumping regression state.
+        # only the stored last-known-good from the ondemand regression state.
         commit_window, truncated = build_commit_window(
             upstream_dir,
             target_commit,

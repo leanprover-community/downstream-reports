@@ -471,7 +471,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--results-dir", type=Path, required=True)
-    parser.add_argument("--workflow", required=True, choices=["regression", "bumping"])
+    parser.add_argument("--workflow", required=True, choices=["regression", "ondemand"])
     parser.add_argument("--upstream", default="leanprover-community/mathlib4")
     parser.add_argument("--run-id", required=True)
     parser.add_argument("--run-url", required=True)
@@ -619,14 +619,6 @@ def main() -> int:
             "results": [asdict(r) for r in result_records],
         }
         args.alert_output.write_text(json.dumps(alert_payload, sort_keys=True))
-
-    if args.workflow == "bumping":
-        updates = {
-            r.downstream: r.downstream_commit
-            for r in result_records
-            if r.outcome in ("passed", "failed") and r.downstream_commit
-        }
-        backend.save_bumping_seen(updates)
 
     return 0
 

@@ -52,6 +52,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--backend", choices=["zulip", "dry-run"], default="dry-run",
         help="Message sender backend (default: dry-run).",
     )
+    parser.add_argument(
+        "--workflow", choices=["regression", "ondemand"], default="regression",
+        help="Workflow type: affects alert message language (default: regression).",
+    )
     return parser
 
 
@@ -109,7 +113,7 @@ def main() -> int:
     sha_to_tag = fetch_tags(token=github_token)
     print(f"  {len(sha_to_tag)} tag(s) loaded.")
 
-    actions = compute_alert_actions(records, run_url, args.stream, args.topic, commit_titles=commit_titles, sha_to_tag=sha_to_tag)
+    actions = compute_alert_actions(records, run_url, args.stream, args.topic, commit_titles=commit_titles, sha_to_tag=sha_to_tag, workflow=args.workflow)
     n_errors = sum(1 for r in records if r.get("outcome") == "error")
 
     if not actions and not n_errors:

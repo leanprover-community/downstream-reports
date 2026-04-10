@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
-"""Generate the bumping-bisect job matrix.
+"""Generate the on-demand validation job matrix.
 
-Reads bumping-seen state from the configured storage backend and queries the
+Reads tested-commit state from the configured storage backend and queries the
 GitHub API to determine which downstreams have new commits on their bumping
 branch since the last run.  Writes ``{"include": [...]}`` as JSON to
 ``--output`` (default: ``matrix.json``).
 
-This script replaces the inline Python block in the ``plan`` job of
-``downstream-bump-bisect.yml``.  The surrounding shell in that job reads the
-output file and sets the ``matrix`` and ``has_downstreams`` step outputs.
+This script is called by the ``plan`` job of
+``mathlib-downstream-ondemand.yml``.  The surrounding shell in that job reads
+the output file and sets the ``matrix`` and ``has_downstreams`` step outputs.
 
 Reads ``GITHUB_TOKEN`` from the environment.
 """
@@ -53,7 +53,7 @@ def _gh_api(path: str, token: str) -> dict | None:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Generate the bumping-bisect job matrix."
+        description="Generate the on-demand validation job matrix."
     )
     parser.add_argument("--inventory", type=Path, required=True)
     parser.add_argument(
@@ -66,6 +66,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--downstream",
         default="",
         help="Limit to a single downstream name; empty means all",
+    )
+    parser.add_argument(
+        "--branch",
+        default="",
+        help=(
+            "Explicit branch to test (on-demand mode). Requires --downstream. "
+            "Overrides the bumping_branch from inventory."
+        ),
     )
     parser.add_argument(
         "--force",
@@ -83,17 +91,32 @@ def main() -> int:
     if not token:
         raise SystemExit("GITHUB_TOKEN environment variable is required")
 
+    if args.branch and not args.downstream:
+        raise SystemExit("--branch requires --downstream")
+
     backend = create_backend(args.backend, dsn=args.dsn, state_root=args.state_root)
 
-    seen_map = backend.load_bumping_seen()  # {downstream: last_seen_sha}
+    seen = backend.load_tested_downstream_commits("ondemand")
 
     payload = json.loads(args.inventory.read_text())
-    candidates = [
-        item for item in payload.get("downstreams", [])
-        if item.get("enabled", True)
-        and item.get("bumping_branch")
-        and (not args.downstream or item["name"] == args.downstream)
-    ]
+
+    # On-demand mode: explicit --downstream + --branch bypasses inventory
+    # bumping_branch filtering — any branch on any downstream is allowed.
+    if args.branch:
+        candidates = [
+            item for item in payload.get("downstreams", [])
+            if item.get("enabled", True) and item["name"] == args.downstream
+        ]
+        # Inject the explicit branch so downstream processing uses it.
+        for item in candidates:
+            item["bumping_branch"] = args.branch
+    else:
+        candidates = [
+            item for item in payload.get("downstreams", [])
+            if item.get("enabled", True)
+            and item.get("bumping_branch")
+            and (not args.downstream or item["name"] == args.downstream)
+        ]
 
     include = []
     for item in candidates:
@@ -106,8 +129,7 @@ def main() -> int:
             continue
         head_sha = ref_data["object"]["sha"]
 
-        last_seen = seen_map.get(item["name"])
-        if not args.force and head_sha == last_seen:
+        if not args.force and (item["name"], head_sha) in seen:
             print(f"[plan] {item['name']}: no new commits on {bumping_branch}, skipping")
             continue
 

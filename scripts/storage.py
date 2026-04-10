@@ -18,9 +18,10 @@ Protocol overview
     A relational backend INSERTs into ``run`` and ``run_result``; the
     filesystem backend writes JSON and markdown files.
 
-``load_bumping_seen() / save_bumping_seen(updates)``
-    Track which bumping-branch commit was last processed per downstream, so
-    the bumping workflow can skip re-testing the same HEAD.
+``load_tested_downstream_commits(workflow)``
+    Return which (downstream, downstream_commit) pairs already have a
+    non-error result in *workflow*, so the on-demand plan step can
+    skip commits that have already been validated.
 
 Adding a new backend
 --------------------
@@ -124,7 +125,7 @@ class StorageBackend(Protocol):
     All methods use domain types (``DownstreamStatusRecord``,
     ``RunResultRecord``) rather than raw dicts or filesystem keys.  The two
     supported workflow identifiers are ``"regression"`` (the main head-tracking
-    run) and ``"bumping"`` (the downstream bumping-branch run).
+    run) and ``"ondemand"`` (the downstream on-demand/bumping-branch run).
     """
 
     def load_all_statuses(self, workflow: str, upstream: str) -> dict[str, DownstreamStatusRecord]:
@@ -162,16 +163,9 @@ class StorageBackend(Protocol):
         """
         ...
 
-    def load_bumping_seen(self) -> dict[str, str]:
-        """Return ``{downstream: last_seen_branch_commit}`` for all downstreams."""
-        ...
-
-    def save_bumping_seen(self, updates: dict[str, str]) -> None:
-        """Advance ``last_seen_branch_commit`` for the given downstreams.
-
-        Only the downstreams present in *updates* are modified; others are
-        left unchanged.
-        """
+    def load_tested_downstream_commits(self, workflow: str) -> set[tuple[str, str]]:
+        """Return ``{(downstream, downstream_commit)}`` pairs with a non-error
+        result in *workflow*, used for dedup in on-demand runs."""
         ...
 
 
@@ -181,15 +175,15 @@ class StorageBackend(Protocol):
 
 _WORKFLOW_STATUS_KEY: dict[str, str] = {
     "regression": "current",
-    "bumping": "bumping-current",
+    "ondemand": "ondemand-current",
 }
 _WORKFLOW_REPORT_KEY: dict[str, str] = {
     "regression": "latest",
-    "bumping": "bumping-latest",
+    "ondemand": "ondemand-latest",
 }
 _WORKFLOW_HISTORY_PREFIX: dict[str, str] = {
     "regression": "",
-    "bumping": "bumping",
+    "ondemand": "ondemand",
 }
 
 
@@ -210,15 +204,15 @@ class FilesystemBackend:
     .. code-block:: text
 
         status/
-            current.json          regression episode state
-            bumping-current.json  bumping episode state
-            bumping-seen.json
+            current.json           regression episode state
+            ondemand-current.json  ondemand episode state
+            (results also queried for dedup via load_tested_downstream_commits)
         reports/
             latest.json / latest.md
-            bumping-latest.json / bumping-latest.md
+            ondemand-latest.json / ondemand-latest.md
         results/
             {day}/{run_id}/{downstream}.json
-            bumping/{day}/{run_id}/{downstream}.json
+            ondemand/{day}/{run_id}/{downstream}.json
 
     The JSON files preserve the existing on-disk schema so that the git state
     branch remains readable without any migration.
@@ -328,29 +322,25 @@ class FilesystemBackend:
             report_md_path.parent.mkdir(parents=True, exist_ok=True)
             report_md_path.write_text(report_markdown)
 
-    def load_bumping_seen(self) -> dict[str, str]:
-        path = self._root / "status" / "bumping-seen.json"
-        if not path.exists():
-            return {}
-        payload = json.loads(path.read_text())
-        return {
-            name: data["last_seen_branch_commit"]
-            for name, data in payload.get("downstreams", {}).items()
-            if "last_seen_branch_commit" in data
-        }
-
-    def save_bumping_seen(self, updates: dict[str, str]) -> None:
-        path = self._root / "status" / "bumping-seen.json"
-        path.parent.mkdir(parents=True, exist_ok=True)
-        if path.exists():
-            payload = json.loads(path.read_text())
-        else:
-            payload = {"schema_version": 1, "downstreams": {}}
-        for downstream, commit in updates.items():
-            payload.setdefault("downstreams", {})[downstream] = {
-                "last_seen_branch_commit": commit
-            }
-        path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+    def load_tested_downstream_commits(self, workflow: str) -> set[tuple[str, str]]:
+        history_prefix = _WORKFLOW_HISTORY_PREFIX[workflow]
+        base = self._root / "results"
+        if history_prefix:
+            base = base / history_prefix
+        if not base.exists():
+            return set()
+        result: set[tuple[str, str]] = set()
+        for path in base.rglob("*.json"):
+            try:
+                row = json.loads(path.read_text())
+            except Exception:
+                continue
+            ds = row.get("downstream")
+            commit = row.get("downstream_commit")
+            outcome = row.get("outcome")
+            if ds and commit and outcome in ("passed", "failed"):
+                result.add((ds, commit))
+        return result
 
 
 # ---------------------------------------------------------------------------
@@ -424,14 +414,6 @@ try:
         Column("pinned_commit", String),
         Column("age_commits", Integer),
         Column("bump_commits", Integer),
-    )
-
-    _sa_bumping_seen = Table(
-        "bumping_seen",
-        _sa_metadata,
-        Column("downstream", String, primary_key=True),
-        Column("last_seen_branch_commit", String, nullable=False),
-        Column("updated_at", DateTime(timezone=True), nullable=False),
     )
 
     _sa_validate_job = Table(
@@ -641,30 +623,22 @@ class SqlBackend:
 
         # report_markdown is not persisted — regenerate from structured data as needed
 
-    def load_bumping_seen(self) -> dict[str, str]:
-        t = _sa_bumping_seen
-        stmt = sa_select(t.c.downstream, t.c.last_seen_branch_commit)
+    def load_tested_downstream_commits(self, workflow: str) -> set[tuple[str, str]]:
+        rr = _sa_run_result
+        r = _sa_run
+        stmt = (
+            sa_select(rr.c.downstream, rr.c.downstream_commit)
+            .join(r, rr.c.run_id == r.c.run_id)
+            .where(
+                r.c.workflow == workflow,
+                rr.c.downstream_commit.isnot(None),
+                rr.c.outcome.in_(["passed", "failed"]),
+            )
+            .distinct()
+        )
         with self._engine.connect() as conn:
             rows = conn.execute(stmt).fetchall()
-        return {row[0]: row[1] for row in rows}
-
-    def save_bumping_seen(self, updates: dict[str, str]) -> None:
-        from datetime import datetime, timezone
-
-        now = datetime.now(timezone.utc)
-        with self._engine.begin() as conn:
-            for downstream, commit in updates.items():
-                self._upsert(
-                    conn,
-                    _sa_bumping_seen,
-                    values={
-                        "downstream": downstream,
-                        "last_seen_branch_commit": commit,
-                        "updated_at": now,
-                    },
-                    conflict_cols=["downstream"],
-                    update_cols=["last_seen_branch_commit", "updated_at"],
-                )
+        return {(row[0], row[1]) for row in rows}
 
 
 # ---------------------------------------------------------------------------
@@ -837,12 +811,9 @@ class DryRunBackend:
                 lines.append(f"    conclusion: {job.conclusion}")
         print("\n".join(lines))
 
-    def load_bumping_seen(self) -> dict[str, str]:
-        print("[dry-run] load_bumping_seen() -> {}")
-        return {}
-
-    def save_bumping_seen(self, updates: dict[str, str]) -> None:
-        print(f"[dry-run] save_bumping_seen(updates={updates!r})")
+    def load_tested_downstream_commits(self, workflow: str) -> set[tuple[str, str]]:
+        print(f"[dry-run] load_tested_downstream_commits({workflow!r}) -> set()")
+        return set()
 
 
 # ---------------------------------------------------------------------------

@@ -232,6 +232,67 @@ def format_recovered_message(
     return "\n".join(lines)
 
 
+def format_ondemand_failure_message(
+    record: dict[str, Any],
+    run_url: str,
+    commit_titles: dict[str, str] | None = None,
+    sha_to_tag: dict[str, str] | None = None,
+) -> str:
+    """Render a Zulip message for a downstream that is incompatible with its bumped Mathlib pin."""
+    downstream = record["downstream"]
+    target_sha = record.get("target_commit")
+    first_bad_sha = record.get("first_known_bad")
+    failure_stage = record.get("failure_stage") or "unknown"
+    ds_commit = record.get("downstream_commit")
+    ds_repo = record.get("repo")
+
+    target_link = _commit_link_with_title(target_sha, commit_titles, sha_to_tag)
+    first_bad_link = _commit_link_with_title(first_bad_sha, commit_titles, sha_to_tag)
+    ds_link = _downstream_commit_link(ds_commit, ds_repo, commit_titles)
+
+    lines = [
+        f"**{downstream} is incompatible with its bumped Mathlib pin (at: {ds_link})**",
+        "",
+        f"- Target Mathlib commit: {target_link}",
+        f"- First known bad: {first_bad_link}",
+        f"- Failure stage: {failure_stage}",
+        f"- [Downstream validation run]({run_url})",
+    ]
+
+    culprit_log = record.get("culprit_log_text")
+    if culprit_log:
+        lines.extend(["", "```spoiler Failure log", culprit_log, "```"])
+
+    return "\n".join(lines)
+
+
+def format_ondemand_compatible_message(
+    record: dict[str, Any],
+    run_url: str,
+    commit_titles: dict[str, str] | None = None,
+    sha_to_tag: dict[str, str] | None = None,
+) -> str:
+    """Render a Zulip message for a downstream that is compatible with its bumped Mathlib pin."""
+    downstream = record["downstream"]
+    target_sha = record.get("target_commit")
+    prev_bad_sha = record.get("previous_first_known_bad")
+    ds_commit = record.get("downstream_commit")
+    ds_repo = record.get("repo")
+
+    target_link = _commit_link_with_title(target_sha, commit_titles, sha_to_tag)
+    prev_bad_link = _commit_link_with_title(prev_bad_sha, commit_titles, sha_to_tag)
+    ds_link = _downstream_commit_link(ds_commit, ds_repo, commit_titles)
+
+    lines = [
+        f"**{downstream} is compatible with its bumped Mathlib pin (at: {ds_link})**",
+        "",
+        f"- Target Mathlib commit: {target_link}",
+        f"- Previous known-bad: {prev_bad_link}",
+        f"- [Downstream validation run]({run_url})",
+    ]
+    return "\n".join(lines)
+
+
 def format_error_notice_message(n_error: int, run_url: str) -> str:
     """Render a notice for builds that failed with unexpected errors."""
     noun = "build" if n_error == 1 else "builds"
@@ -253,6 +314,7 @@ def compute_alert_actions(
     topic: str,
     commit_titles: dict[str, str] | None = None,
     sha_to_tag: dict[str, str] | None = None,
+    workflow: str = "regression",
 ) -> list[AlertAction]:
     """Determine which alerts to send from aggregated run results.
 
@@ -264,6 +326,9 @@ def compute_alert_actions(
     message subject lines.  *sha_to_tag* is an optional ``{full_sha: tag_name}``
     mapping; when present, tagged commits are displayed by tag name instead of
     short SHA.
+
+    *workflow* selects the message formatters: ``"regression"`` (default) uses
+    regression language; ``"ondemand"`` uses bumping-branch compatibility language.
     """
     actions: list[AlertAction] = []
     for record in records:
@@ -273,10 +338,16 @@ def compute_alert_actions(
 
         downstream_name = record.get("downstream", "")
 
-        if episode_state == "new_failure":
-            content = format_new_failure_message(record, run_url, commit_titles, sha_to_tag)
+        if workflow == "ondemand":
+            if episode_state == "new_failure":
+                content = format_ondemand_failure_message(record, run_url, commit_titles, sha_to_tag)
+            else:
+                content = format_ondemand_compatible_message(record, run_url, commit_titles, sha_to_tag)
         else:
-            content = format_recovered_message(record, run_url, commit_titles, sha_to_tag)
+            if episode_state == "new_failure":
+                content = format_new_failure_message(record, run_url, commit_titles, sha_to_tag)
+            else:
+                content = format_recovered_message(record, run_url, commit_titles, sha_to_tag)
 
         actions.append(
             AlertAction(

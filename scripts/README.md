@@ -19,9 +19,9 @@ report
   aggregate_results.py  -- apply state machine, persist results, render markdown
 ```
 
-There is also a **bumping** variant that tracks downstream bumping-branches
-instead of upstream HEAD. It uses `select_bumping_plan.py` and
-`select_bumping_bisect_window.py` in place of the regression scripts above.
+There is also an **on-demand** variant that validates downstream bumping-branches
+on request. It uses `select_ondemand_plan.py` and
+`select_ondemand_window.py` in place of the regression scripts above.
 
 ## Modules
 
@@ -42,8 +42,8 @@ instead of upstream HEAD. It uses `select_bumping_plan.py` and
 | `select_downstream_regression_window.py` | validate | Runs a HEAD probe, decides whether to bisect, writes `selection.json` and possibly `result.json`. |
 | `probe_downstream_regression_window.py` | validate | Loads `selection.json`, runs the bisect probe, writes `result.json`. |
 | `aggregate_results.py` | report | Loads all `result.json` artifacts, applies the episode state machine, persists to storage, renders a markdown report. |
-| `select_bumping_plan.py` | plan (bumping) | Queries GitHub API for new bumping-branch commits, outputs a job matrix. |
-| `select_bumping_bisect_window.py` | validate (bumping) | Like `select_downstream_regression_window.py` but for bumping branches. |
+| `select_ondemand_plan.py` | plan (ondemand) | Queries GitHub API for new bumping-branch commits, outputs a job matrix. |
+| `select_ondemand_window.py` | validate (ondemand) | Like `select_downstream_regression_window.py` but for bumping branches. |
 | `generate_site.py` | generate-pages | Generates a static HTML status page from SQL or filesystem state. |
 | `storage.py` | `create_schema(engine)` | Creates/migrates the SQL schema. See [storage backends doc](../docs/storage-backends.md) for provisioning instructions. |
 
