@@ -49,6 +49,8 @@ jobs:
           ZULIP_EMAIL: ${{ vars.ZULIP_EMAIL }}
           ZULIP_API_KEY: ${{ secrets.ZULIP_API_KEY }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ZULIP_STREAM: ${{ inputs.stream || 'hopscotch' }}
+          ZULIP_TOPIC: ${{ inputs.topic || 'Downstream reports' }}
         run: |
           BACKEND="zulip"
           if [ "${{ inputs.dry_run }}" = "true" ] || [ "${{ github.ref_name }}" != "main" ]; then
@@ -56,6 +58,6 @@ jobs:
           fi
           python3 scripts/send_summary.py \
             --inventory ci/inventory/downstreams.json \
-            --stream "${{ inputs.stream }}" \
-            --topic "${{ inputs.topic }}" \
+            --stream "$ZULIP_STREAM" \
+            --topic  "$ZULIP_TOPIC" \
             --backend "$BACKEND"
