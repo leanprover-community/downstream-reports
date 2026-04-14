@@ -217,10 +217,24 @@ def truncate_log_text(text: str, *, max_lines: int = 200, max_chars: int = 40000
     return limited
 
 
+def exclude_culprit_log_line(line: str) -> str:
+    """
+    Exclude line from the 'culprit log' that we want to show
+    We want to drop:
+        - Successful target messages
+        - The log trace
+    """
+    l = line.strip()
+    filtered_prefixes = ["✔", "trace: .>"]
+    for pfx in filtered_prefixes:
+        if l.startswith(pfx):
+            return True
+    return False
+
+
 def filter_culprit_log_text(text: str) -> str:
     """Drop successful-target lines from the embedded failing-commit log."""
-
-    return "\n".join(line for line in text.splitlines() if not line.strip().startswith("✔"))
+    return "\n".join(line for line in text.splitlines() if not exclude_culprit_log_line(line))
 
 
 def load_culprit_log_text(artifact_root: Path) -> str | None:

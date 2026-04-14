@@ -302,10 +302,9 @@ class FilterCulpritLogTextTests(unittest.TestCase):
     """Tests for culprit log filtering."""
 
     def test_successful_lines_are_removed(self) -> None:
-        text = "✔ target passed\nERROR: build failed\n✔ another pass"
+        text = "✔ target passed\ntrace: .> LEAN_PATH=/home/lean\nERROR: build failed\n✔ another pass"
         result = filter_culprit_log_text(text)
-        self.assertNotIn("✔", result)
-        self.assertIn("ERROR: build failed", result)
+        self.assertEqual("ERROR: build failed", result.strip())
 
 
 class FirstBadPositionTests(unittest.TestCase):
