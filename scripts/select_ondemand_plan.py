@@ -133,43 +133,12 @@ def main() -> int:
             print(f"[plan] {item['name']}: no new commits on {bumping_branch}, skipping")
             continue
 
-        lakefile_data = _gh_api(
-            f"repos/{owner_repo}/contents/lakefile.toml?ref={bumping_branch}",
-            token,
-        )
-        if lakefile_data is None:
-            print(f"[plan] skipping {item['name']}: could not fetch lakefile.toml", file=sys.stderr)
-            continue
-        try:
-            lakefile_text = base64.b64decode(lakefile_data["content"]).decode()
-            lakefile_parsed = tomllib.loads(lakefile_text)
-        except Exception as exc:
-            print(
-                f"[plan] skipping {item['name']}: failed to parse lakefile.toml: {exc}",
-                file=sys.stderr,
-            )
-            continue
-
-        dep_name = item.get("dependency_name", "mathlib")
-        mathlib_pin = None
-        for req in lakefile_parsed.get("require", []):
-            if req.get("name") == dep_name:
-                mathlib_pin = req.get("rev")
-                break
-        if not mathlib_pin:
-            print(
-                f"[plan] skipping {item['name']}: no {dep_name} pin found in bumping lakefile.toml",
-                file=sys.stderr,
-            )
-            continue
-
         print(
             f"[plan] {item['name']}: bumping branch {bumping_branch}"
-            f" head={head_sha[:12]} pin={mathlib_pin[:12]}"
+            f" head={head_sha[:12]}"
         )
+
         entry = dict(item)
-        entry["bumping_branch_head_commit"] = head_sha
-        entry["bumping_mathlib_pin"] = mathlib_pin
         include.append(entry)
 
     args.output.write_text(json.dumps({"include": include}, sort_keys=True))

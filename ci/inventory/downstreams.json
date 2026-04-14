@@ -27,6 +27,7 @@
       "repo": "leanprover/cslib",
       "default_branch": "main",
       "dependency_name": "mathlib",
+      "bumping_branch": "main",
       "enabled": true
     },
     {
@@ -75,6 +76,7 @@
       "name": "mean-fourier",
       "repo": "YaelDillies/mean-fourier",
       "default_branch": "master",
+      "bumping_branch": "master",
       "dependency_name": "mathlib",
       "enabled": true
     },
@@ -131,6 +133,7 @@
       "name": "PersistentDecomp",
       "repo": "Paul-Lez/PersistentDecomp",
       "default_branch": "master",
+      "bumping_branch": "master",
       "dependency_name": "mathlib",
       "enabled": true
     }

@@ -679,7 +679,7 @@ class FormatOndemandFailureMessageTests(unittest.TestCase):
     def test_incompatibility_headline(self) -> None:
         """Scenario: the headline uses incompatibility language, not regression language."""
         msg = format_ondemand_failure_message(_make_record(), _RUN_URL)
-        self.assertIn("incompatible with its bumped Mathlib pin", msg)
+        self.assertIn("incompatible with the targeted Mathlib revision", msg)
         self.assertNotIn("regression", msg)
         self.assertNotIn("New regression", msg)
 
@@ -749,7 +749,7 @@ class FormatOndemandCompatibleMessageTests(unittest.TestCase):
         msg = format_ondemand_compatible_message(
             _make_record(episode_state="recovered", outcome="passed"), _RUN_URL
         )
-        self.assertIn("compatible with its bumped Mathlib pin", msg)
+        self.assertIn("compatible with the targeted Mathlib revision", msg)
         self.assertNotIn("recovered", msg)
         self.assertNotIn("regression", msg)
 
@@ -795,7 +795,7 @@ class ComputeAlertActionsWorkflowTests(unittest.TestCase):
         records = [_make_record(episode_state="new_failure")]
         actions = compute_alert_actions(records, _RUN_URL, _STREAM, _TOPIC, workflow="ondemand")
         self.assertEqual(len(actions), 1)
-        self.assertIn("incompatible with its bumped Mathlib pin", actions[0].content)
+        self.assertIn("incompatible with the targeted Mathlib revision", actions[0].content)
         self.assertNotIn("New regression", actions[0].content)
 
     def test_ondemand_recovered_uses_compatibility_language(self) -> None:
@@ -803,7 +803,7 @@ class ComputeAlertActionsWorkflowTests(unittest.TestCase):
         records = [_make_record(episode_state="recovered", outcome="passed")]
         actions = compute_alert_actions(records, _RUN_URL, _STREAM, _TOPIC, workflow="ondemand")
         self.assertEqual(len(actions), 1)
-        self.assertIn("compatible with its bumped Mathlib pin", actions[0].content)
+        self.assertIn("compatible with the targeted Mathlib revision", actions[0].content)
         self.assertNotIn("recovered", actions[0].content)
 
     def test_regression_failure_uses_regression_language(self) -> None:

@@ -190,12 +190,14 @@ def format_new_failure_message(
     ds_link = _downstream_commit_link(ds_commit, ds_repo, commit_titles)
 
     lines = [
-        f"**New regression detected in {downstream} (at: {ds_link})**",
+        f"**New regression detected in {downstream}",
         "",
+        f"- {downstream} at: {ds_link}"
         f"- Target Mathlib commit: {target_link}",
         f"- First known bad: {first_bad_link}",
         f"- Failure stage: {failure_stage}",
-        f"- [Downstream validation run]({run_url})",
+        "",
+        f"[Downstream validation run]({run_url})",
     ]
 
     culprit_log = record.get("culprit_log_text")
@@ -227,7 +229,8 @@ def format_recovered_message(
         "",
         f"- Target Mathlib commit: {target_link}",
         f"- Previous known-bad: {prev_bad_link}",
-        f"- [Downstream validation run]({run_url})",
+        "",
+        f"[Downstream validation run]({run_url})",
     ]
     return "\n".join(lines)
 
@@ -238,7 +241,7 @@ def format_ondemand_failure_message(
     commit_titles: dict[str, str] | None = None,
     sha_to_tag: dict[str, str] | None = None,
 ) -> str:
-    """Render a Zulip message for a downstream that is incompatible with its bumped Mathlib pin."""
+    """Render a Zulip message for a downstream that is incompatible with the targeted Mathlib revision."""
     downstream = record["downstream"]
     target_sha = record.get("target_commit")
     first_bad_sha = record.get("first_known_bad")
@@ -251,12 +254,13 @@ def format_ondemand_failure_message(
     ds_link = _downstream_commit_link(ds_commit, ds_repo, commit_titles)
 
     lines = [
-        f"**{downstream} is incompatible with its bumped Mathlib pin (at: {ds_link})**",
+        f"## [On-demand hopscotch run]({run_url})",
+        f"**{downstream} is incompatible with the targeted Mathlib revision**",
         "",
+        f"- {downstream} at: {ds_link}"
         f"- Target Mathlib commit: {target_link}",
         f"- First known bad: {first_bad_link}",
-        f"- Failure stage: {failure_stage}",
-        f"- [Downstream validation run]({run_url})",
+        f"- Failure stage: {failure_stage}"
     ]
 
     culprit_log = record.get("culprit_log_text")
@@ -272,7 +276,7 @@ def format_ondemand_compatible_message(
     commit_titles: dict[str, str] | None = None,
     sha_to_tag: dict[str, str] | None = None,
 ) -> str:
-    """Render a Zulip message for a downstream that is compatible with its bumped Mathlib pin."""
+    """Render a Zulip message for a downstream that is compatible with the targeted Mathlib revision."""
     downstream = record["downstream"]
     target_sha = record.get("target_commit")
     prev_bad_sha = record.get("previous_first_known_bad")
@@ -284,11 +288,12 @@ def format_ondemand_compatible_message(
     ds_link = _downstream_commit_link(ds_commit, ds_repo, commit_titles)
 
     lines = [
-        f"**{downstream} is compatible with its bumped Mathlib pin (at: {ds_link})**",
+        f"## [On-demand hopscotch run]({run_url})",
+        f"**{downstream} is compatible with the targeted Mathlib revision**",
         "",
+        f"- {downstream} at: {ds_link}"
         f"- Target Mathlib commit: {target_link}",
-        f"- Previous known-bad: {prev_bad_link}",
-        f"- [Downstream validation run]({run_url})",
+        f"- Previous known-bad: {prev_bad_link}"
     ]
     return "\n".join(lines)
 

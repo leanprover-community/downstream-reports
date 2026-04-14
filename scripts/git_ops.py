@@ -218,7 +218,6 @@ def pinned_commit_from_manifest(project_dir: Path, dependency_name: str) -> str 
             return rev if isinstance(rev, str) and rev else None
     return None
 
-
 def git_url_from_manifest(project_dir: Path, dependency_name: str) -> str | None:
     """Return the git URL for `dependency_name` from `lake-manifest.json`.
 
@@ -243,25 +242,6 @@ def git_url_from_manifest(project_dir: Path, dependency_name: str) -> str | None
             return url if isinstance(url, str) and url else None
     return None
 
-
-def pinned_dependency_rev(project_dir: Path, dependency_name: str) -> str | None:
-    """Return the dependency rev from `lakefile.toml`, if one is explicitly set.
-
-    This is a fallback for repositories that do not have a `lake-manifest.json`.
-    The value may be a branch name or tag rather than a SHA, so callers must
-    resolve it via git before use.
-    """
-    lakefile_path = project_dir / "lakefile.toml"
-    if not lakefile_path.exists():
-        return None
-    payload = tomllib.loads(lakefile_path.read_text())
-    for requirement in payload.get("require", []):
-        if requirement.get("name") == dependency_name:
-            rev = requirement.get("rev")
-            return rev if isinstance(rev, str) and rev else None
-    return None
-
-
 def resolve_search_base_commit(
     *,
     project_dir: Path,
@@ -273,22 +253,13 @@ def resolve_search_base_commit(
 
     Checks sources in order of reliability:
     1. `lake-manifest.json` — Lake's lock file; always a full resolved SHA.
-    2. `lakefile.toml` `rev` field — explicit pin, may be a branch/tag name
-       that needs git resolution.
-    3. `last_known_good` — stored episode state, used when no pin is available.
+    2. `last_known_good` — stored episode state, used when no pin is available.
     """
     manifest_sha = pinned_commit_from_manifest(project_dir, dependency_name)
     if manifest_sha is not None:
         return manifest_sha
 
-    pinned_rev = pinned_dependency_rev(project_dir, dependency_name)
-    if pinned_rev is None:
-        return last_known_good
-    try:
-        return resolve_upstream_target(upstream_dir, pinned_rev)
-    except subprocess.CalledProcessError:
-        return last_known_good
-
+    return last_known_good
 
 def should_verify_stored_last_known_good(
     *,
