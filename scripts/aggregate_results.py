@@ -227,11 +227,15 @@ def load_culprit_log_text(artifact_root: Path) -> str | None:
     """Load the culprit log from the well-known hopscotch logs/culprit/ directory.
 
     Checks the culprit-probe output first (skip-known-bad-bisect path), then the
-    main tool-state (normal bisect path).
+    bisect probe output, then the head probe output.  The tool writes
+    ``build.log`` or ``update.log`` under ``.lake/hopscotch/logs/culprit/``;
+    ``copy_tool_artifacts`` mirrors that tree under the per-step ``tool-state``
+    subdirectory, hence the path prefixes below.
     """
     candidates = [
         artifact_root / "culprit-probe" / "tool-state" / "logs" / "culprit",
-        artifact_root / "tool-state" / "logs" / "culprit",
+        artifact_root / "bisect" / "tool-state" / "logs" / "culprit",
+        artifact_root / "head-probe" / "tool-state" / "logs" / "culprit",
     ]
     for directory in candidates:
         if directory.is_dir():

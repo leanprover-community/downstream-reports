@@ -14,6 +14,7 @@ from scripts.aggregate_results import (
     Outcome,
     ValidationResult,
     apply_result,
+    load_culprit_log_text,
     truncate_log_text,
     filter_culprit_log_text,
     first_bad_position,
@@ -234,6 +235,67 @@ class TruncateLogTextTests(unittest.TestCase):
         result = truncate_log_text(text, max_chars=40000)
         self.assertIn("[log truncated]", result)
         self.assertLessEqual(len(result), 40020)  # some slack for the notice
+
+
+class LoadCulpritLogTextTests(unittest.TestCase):
+    """Tests for locating the culprit log in the artifact directory tree."""
+
+    def _write_log(self, root: Path, *parts: str, content: str = "build failed\n") -> Path:
+        log_dir = root.joinpath(*parts)
+        log_dir.mkdir(parents=True, exist_ok=True)
+        log_file = log_dir / "build.log"
+        log_file.write_text(content)
+        return log_file
+
+    def test_culprit_probe_takes_priority(self) -> None:
+        """Scenario: culprit-probe log is preferred over other locations."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write_log(root, "culprit-probe", "tool-state", "logs", "culprit", content="culprit log\n")
+            self._write_log(root, "bisect", "tool-state", "logs", "culprit", content="bisect log\n")
+            result = load_culprit_log_text(root)
+            self.assertIsNotNone(result)
+            self.assertIn("culprit log", result)
+
+    def test_bisect_log_found(self) -> None:
+        """Scenario: bisect probe log is found when no culprit-probe log exists."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write_log(root, "bisect", "tool-state", "logs", "culprit", content="bisect failed\n")
+            result = load_culprit_log_text(root)
+            self.assertIsNotNone(result)
+            self.assertIn("bisect failed", result)
+
+    def test_head_probe_log_found(self) -> None:
+        """Scenario: head probe log is found for head-only failing runs."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write_log(root, "head-probe", "tool-state", "logs", "culprit", content="head probe failed\n")
+            result = load_culprit_log_text(root)
+            self.assertIsNotNone(result)
+            self.assertIn("head probe failed", result)
+
+    def test_returns_none_when_no_logs_found(self) -> None:
+        """Scenario: None returned when no culprit log exists anywhere."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            result = load_culprit_log_text(Path(tmp))
+            self.assertIsNone(result)
+
+    def test_update_log_is_found(self) -> None:
+        """Scenario: update.log (not build.log) is found in the culprit directory."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            log_dir = root / "bisect" / "tool-state" / "logs" / "culprit"
+            log_dir.mkdir(parents=True)
+            (log_dir / "update.log").write_text("update failed\n")
+            result = load_culprit_log_text(root)
+            self.assertIsNotNone(result)
+            self.assertIn("update failed", result)
 
 
 class FilterCulpritLogTextTests(unittest.TestCase):
