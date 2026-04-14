@@ -1,4 +1,5 @@
 # Virtual-environment artifacts (originally created by venv).
+.venv/
 bin/
 lib/
 include/

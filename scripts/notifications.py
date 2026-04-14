@@ -100,54 +100,134 @@ class AlertAction:
 # Message formatting
 # ---------------------------------------------------------------------------
 
+_MATHLIB_COMMIT_URL = "https://github.com/leanprover-community/mathlib4/commit"
+_COMMIT_TITLE_MAX = 60  # truncate commit titles to this many characters
+
 
 def _short_sha(sha: str | None) -> str:
     """Return the first 12 characters of a SHA, or '(unknown)'."""
     return sha[:12] if sha else "(unknown)"
 
 
-def format_new_failure_message(record: dict[str, Any], run_url: str) -> str:
+def _commit_link_with_title(
+    sha: str | None,
+    commit_titles: dict[str, str] | None = None,
+    sha_to_tag: dict[str, str] | None = None,
+) -> str:
+    """Return a Zulip markdown link for a mathlib commit SHA.
+
+    If *sha* is None, returns the placeholder ``(unknown)``.  When *sha_to_tag*
+    maps the SHA to a tag name (e.g. ``v4.19.0``), the tag is used as the
+    display label and no commit title is appended (the tag is self-descriptive).
+    Otherwise, the short SHA is shown and *commit_titles* is consulted for an
+    optional title suffix, truncated to ``_COMMIT_TITLE_MAX`` characters.
+    """
+    if sha is None:
+        return "(unknown)"
+    url = f"{_MATHLIB_COMMIT_URL}/{sha}"
+    tags = sha_to_tag or {}
+    tag = tags.get(sha)
+    if tag:
+        return f"[`{tag}`]({url})"
+    short = _short_sha(sha)
+    link = f"[`{short}`]({url})"
+    titles = commit_titles or {}
+    title = titles.get(sha, "")
+    if title:
+        if len(title) > _COMMIT_TITLE_MAX:
+            title = title[:_COMMIT_TITLE_MAX - 3] + "..."
+        return f"{link} {title}"
+    return link
+
+
+def _downstream_commit_link(
+    sha: str | None,
+    repo: str | None,
+    commit_titles: dict[str, str] | None = None,
+) -> str:
+    """Return a Zulip markdown link for a downstream commit SHA with optional title.
+
+    Links to ``https://github.com/{repo}/commit/{sha}``.  Title (if found in
+    *commit_titles*) is appended after a `` - `` separator.
+    """
+    if not sha:
+        return "(unknown)"
+    short = _short_sha(sha)
+    if not repo:
+        return f"`{short}`"
+    url = f"https://github.com/{repo}/commit/{sha}"
+    link = f"[`{short}`]({url})"
+    titles = commit_titles or {}
+    title = titles.get(sha, "")
+    if title:
+        if len(title) > _COMMIT_TITLE_MAX:
+            title = title[:_COMMIT_TITLE_MAX - 3] + "..."
+        return f"{link} - {title}"
+    return link
+
+
+def format_new_failure_message(
+    record: dict[str, Any],
+    run_url: str,
+    commit_titles: dict[str, str] | None = None,
+    sha_to_tag: dict[str, str] | None = None,
+) -> str:
     """Render a Zulip message for a newly opened regression episode.
 
-    Includes the culprit commit, failure stage, and a link to the CI run.
+    Includes linked commit SHAs with optional titles, failure stage, a link to
+    the downstream validation run, and a spoiler block with the failure log when
+    one is present.
     """
     downstream = record["downstream"]
-    target = _short_sha(record.get("target_commit"))
-    first_bad = _short_sha(record.get("first_known_bad"))
+    target_sha = record.get("target_commit")
+    first_bad_sha = record.get("first_known_bad")
     failure_stage = record.get("failure_stage") or "unknown"
+    ds_commit = record.get("downstream_commit")
+    ds_repo = record.get("repo")
+
+    target_link = _commit_link_with_title(target_sha, commit_titles, sha_to_tag)
+    first_bad_link = _commit_link_with_title(first_bad_sha, commit_titles, sha_to_tag)
+    ds_link = _downstream_commit_link(ds_commit, ds_repo, commit_titles)
 
     lines = [
-        f"**New regression detected in {downstream}**",
+        f"**New regression detected in {downstream} (at: {ds_link})**",
         "",
-        f"- Target commit: `{target}`",
-        f"- First known bad: `{first_bad}`",
+        f"- Target Mathlib commit: {target_link}",
+        f"- First known bad: {first_bad_link}",
         f"- Failure stage: {failure_stage}",
-        f"- [CI run]({run_url})",
+        f"- [Downstream validation run]({run_url})",
     ]
 
     culprit_log = record.get("culprit_log_text")
     if culprit_log:
-        # Truncate long logs to keep the message readable.
-        truncated = culprit_log[:2000]
-        if len(culprit_log) > 2000:
-            truncated += "\n… (truncated)"
-        lines.extend(["", "```", truncated, "```"])
+        lines.extend(["", "```spoiler Failure log", culprit_log, "```"])
 
     return "\n".join(lines)
 
 
-def format_recovered_message(record: dict[str, Any], run_url: str) -> str:
+def format_recovered_message(
+    record: dict[str, Any],
+    run_url: str,
+    commit_titles: dict[str, str] | None = None,
+    sha_to_tag: dict[str, str] | None = None,
+) -> str:
     """Render a Zulip message for a downstream that has recovered."""
     downstream = record["downstream"]
-    target = _short_sha(record.get("target_commit"))
-    prev_bad = _short_sha(record.get("previous_first_known_bad"))
+    target_sha = record.get("target_commit")
+    prev_bad_sha = record.get("previous_first_known_bad")
+    ds_commit = record.get("downstream_commit")
+    ds_repo = record.get("repo")
+
+    target_link = _commit_link_with_title(target_sha, commit_titles, sha_to_tag)
+    prev_bad_link = _commit_link_with_title(prev_bad_sha, commit_titles, sha_to_tag)
+    ds_link = _downstream_commit_link(ds_commit, ds_repo, commit_titles)
 
     lines = [
-        f"**{downstream} has recovered**",
+        f"**{downstream} has recovered (at: {ds_link})**",
         "",
-        f"- Target commit: `{target}`",
-        f"- Previous first known bad: `{prev_bad}`",
-        f"- [CI run]({run_url})",
+        f"- Target Mathlib commit: {target_link}",
+        f"- Previous known-bad: {prev_bad_link}",
+        f"- [Downstream validation run]({run_url})",
     ]
     return "\n".join(lines)
 
@@ -171,11 +251,19 @@ def compute_alert_actions(
     run_url: str,
     stream: str,
     topic: str,
+    commit_titles: dict[str, str] | None = None,
+    sha_to_tag: dict[str, str] | None = None,
 ) -> list[AlertAction]:
     """Determine which alerts to send from aggregated run results.
 
     Only ``new_failure`` and ``recovered`` transitions produce alerts.
     All alerts are sent to the same *stream* / *topic*.
+
+    *commit_titles* is an optional ``{full_sha: title}`` mapping; pass the
+    result of ``fetch_commit_titles()`` to annotate SHAs with their commit
+    message subject lines.  *sha_to_tag* is an optional ``{full_sha: tag_name}``
+    mapping; when present, tagged commits are displayed by tag name instead of
+    short SHA.
     """
     actions: list[AlertAction] = []
     for record in records:
@@ -186,9 +274,9 @@ def compute_alert_actions(
         downstream_name = record.get("downstream", "")
 
         if episode_state == "new_failure":
-            content = format_new_failure_message(record, run_url)
+            content = format_new_failure_message(record, run_url, commit_titles, sha_to_tag)
         else:
-            content = format_recovered_message(record, run_url)
+            content = format_recovered_message(record, run_url, commit_titles, sha_to_tag)
 
         actions.append(
             AlertAction(
@@ -211,9 +299,7 @@ def compute_alert_actions(
 # ---------------------------------------------------------------------------
 
 _MATHLIB_REPO = "leanprover-community/mathlib4"
-_MATHLIB_COMMIT_URL = "https://github.com/leanprover-community/mathlib4/commit"
 _GITHUB_API = "https://api.github.com"
-_COMMIT_TITLE_MAX = 60  # truncate first-bad commit titles to this many characters
 
 # Zulip emoji for each episode state / outcome.
 _STATUS_EMOJI: dict[str, str] = {
@@ -223,6 +309,44 @@ _STATUS_EMOJI: dict[str, str] = {
     "recovered": ":check:",
     "error": ":warning:",
 }
+
+
+def fetch_tags(
+    repo: str = _MATHLIB_REPO,
+    token: str | None = None,
+    max_pages: int = 5,
+) -> dict[str, str]:
+    """Return ``{full_sha: tag_name}`` for the most recent tags in *repo*.
+
+    Fetches up to *max_pages* × 100 tags (newest first).  On any error the
+    partial result collected so far is returned so callers degrade gracefully.
+    """
+    headers: dict[str, str] = {
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+        "User-Agent": "downstream-reports/notifications",
+    }
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+
+    result: dict[str, str] = {}
+    for page in range(1, max_pages + 1):
+        url = f"{_GITHUB_API}/repos/{repo}/tags?per_page=100&page={page}"
+        req = urllib.request.Request(url, headers=headers)
+        try:
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                data = json.loads(resp.read())
+            if not data:
+                break
+            for tag in data:
+                sha = tag.get("commit", {}).get("sha")
+                name = tag.get("name")
+                if sha and name and sha not in result:
+                    result[sha] = name
+        except Exception as exc:
+            print(f"  warning: could not fetch tags for {repo} (page {page}): {exc}", file=sys.stderr)
+            break
+    return result
 
 
 def fetch_commit_titles(

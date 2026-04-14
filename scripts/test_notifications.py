@@ -24,6 +24,7 @@ from scripts.notifications import (
     format_new_failure_message,
     format_recovered_message,
     format_summary_message,
+    _commit_link_with_title,
 )
 
 
@@ -40,6 +41,8 @@ _TOPIC = "Downstream alerts"
 
 def _make_record(
     downstream: str = "physlib",
+    repo: str = "owner/physlib",
+    downstream_commit: str | None = "ds1234ds5678",
     episode_state: str = "new_failure",
     outcome: str = "failed",
     target_commit: str = "abc123def456",
@@ -53,6 +56,8 @@ def _make_record(
     """Build a minimal serialized RunResultRecord dict."""
     record = {
         "downstream": downstream,
+        "repo": repo,
+        "downstream_commit": downstream_commit,
         "episode_state": episode_state,
         "outcome": outcome,
         "target_commit": target_commit,
@@ -125,6 +130,49 @@ class ComputeAlertActionsTests(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# Tests: _commit_link_with_title (tag display)
+# ---------------------------------------------------------------------------
+
+
+class CommitLinkWithTagTests(unittest.TestCase):
+    """Tag-name display logic in _commit_link_with_title."""
+
+    def test_tag_used_as_display_label(self) -> None:
+        """Scenario: when sha_to_tag maps the SHA, the tag name is shown instead of the short SHA."""
+        sha = "abc123def456" + "0" * 16
+        link = _commit_link_with_title(sha, sha_to_tag={sha: "v4.19.0"})
+        self.assertIn("[`v4.19.0`]", link)
+        self.assertNotIn(f"[`{sha[:12]}`]", link)
+
+    def test_tag_link_points_to_commit_url(self) -> None:
+        """Scenario: a tagged commit still links to the GitHub commit URL."""
+        sha = "abc123def456" + "0" * 16
+        link = _commit_link_with_title(sha, sha_to_tag={sha: "v4.19.0"})
+        self.assertIn(f"{_MATHLIB_COMMIT_URL}/{sha}", link)
+
+    def test_tag_suppresses_commit_title(self) -> None:
+        """Scenario: when a tag is present, the commit title is not appended."""
+        sha = "abc123def456" + "0" * 16
+        link = _commit_link_with_title(
+            sha,
+            commit_titles={sha: "feat: some feature"},
+            sha_to_tag={sha: "v4.19.0"},
+        )
+        self.assertNotIn("feat: some feature", link)
+
+    def test_no_tag_falls_back_to_short_sha_and_title(self) -> None:
+        """Scenario: when sha_to_tag has no entry, the short SHA and title are used as normal."""
+        sha = "abc123def456" + "0" * 16
+        link = _commit_link_with_title(
+            sha,
+            commit_titles={sha: "feat: some feature"},
+            sha_to_tag={},
+        )
+        self.assertIn(f"[`{sha[:12]}`]", link)
+        self.assertIn("feat: some feature", link)
+
+
+# ---------------------------------------------------------------------------
 # Tests: format_new_failure_message
 # ---------------------------------------------------------------------------
 
@@ -157,21 +205,17 @@ class FormatNewFailureMessageTests(unittest.TestCase):
         self.assertIn(_RUN_URL, msg)
 
     def test_includes_culprit_log_when_present(self) -> None:
-        """Scenario: the culprit log excerpt is embedded in the message."""
+        """Scenario: the culprit log excerpt is embedded in a spoiler block."""
         msg = format_new_failure_message(
             _make_record(culprit_log_text="error: type mismatch"), _RUN_URL
         )
         self.assertIn("error: type mismatch", msg)
+        self.assertIn("```spoiler", msg)
 
-    def test_truncates_long_culprit_log(self) -> None:
-        """Scenario: a very long culprit log is truncated."""
-        long_log = "x" * 3000
-        msg = format_new_failure_message(
-            _make_record(culprit_log_text=long_log), _RUN_URL
-        )
-        self.assertIn("… (truncated)", msg)
-        # The full 3000-char log should not appear.
-        self.assertNotIn(long_log, msg)
+    def test_culprit_log_absent_means_no_spoiler(self) -> None:
+        """Scenario: when culprit_log_text is None, no spoiler block is added."""
+        msg = format_new_failure_message(_make_record(culprit_log_text=None), _RUN_URL)
+        self.assertNotIn("```spoiler", msg)
 
     def test_missing_fields_use_placeholders(self) -> None:
         """Scenario: missing commit fields display as '(unknown)'."""
@@ -179,6 +223,68 @@ class FormatNewFailureMessageTests(unittest.TestCase):
             _make_record(first_known_bad=None, target_commit=None), _RUN_URL
         )
         self.assertIn("(unknown)", msg)
+
+    def test_target_commit_is_linked_sha(self) -> None:
+        """Scenario: the target commit SHA is rendered as a clickable GitHub link."""
+        sha = "deadbeefcafe1234abcd5678"
+        msg = format_new_failure_message(_make_record(target_commit=sha), _RUN_URL)
+        self.assertIn(f"{_MATHLIB_COMMIT_URL}/{sha}", msg)
+
+    def test_first_known_bad_is_linked_sha(self) -> None:
+        """Scenario: the first known bad commit SHA is rendered as a clickable GitHub link."""
+        sha = "cafebabe123456abcdef7890"
+        msg = format_new_failure_message(_make_record(first_known_bad=sha), _RUN_URL)
+        self.assertIn(f"{_MATHLIB_COMMIT_URL}/{sha}", msg)
+
+    def test_includes_commit_title_when_provided(self) -> None:
+        """Scenario: when commit_titles supplies a title for first_known_bad, it appears after the link."""
+        sha = "cafebabe123456abcdef7890"
+        msg = format_new_failure_message(
+            _make_record(first_known_bad=sha),
+            _RUN_URL,
+            commit_titles={sha: "feat: add some feature"},
+        )
+        self.assertIn("feat: add some feature", msg)
+
+    def test_run_link_uses_downstream_validation_run_label(self) -> None:
+        """Scenario: the CI run link reads 'Downstream validation run', not 'CI run'."""
+        msg = format_new_failure_message(_make_record(), _RUN_URL)
+        self.assertIn("Downstream validation run", msg)
+        self.assertNotIn("CI run", msg)
+
+    def test_title_includes_downstream_commit_link(self) -> None:
+        """Scenario: the downstream commit SHA is linked in the message title."""
+        sha = "ds1234ds5678abcdef90"
+        msg = format_new_failure_message(
+            _make_record(downstream_commit=sha, repo="owner/physlib"), _RUN_URL
+        )
+        self.assertIn(f"https://github.com/owner/physlib/commit/{sha}", msg)
+
+    def test_uses_target_mathlib_commit_label(self) -> None:
+        """Scenario: the target commit bullet is labelled 'Target Mathlib commit'."""
+        msg = format_new_failure_message(_make_record(), _RUN_URL)
+        self.assertIn("Target Mathlib commit", msg)
+
+    def test_downstream_commit_title_shown_when_provided(self) -> None:
+        """Scenario: when commit_titles has a title for the downstream commit, it appears after a dash."""
+        sha = "ds1234ds5678abcdef90"
+        msg = format_new_failure_message(
+            _make_record(downstream_commit=sha, repo="owner/physlib"),
+            _RUN_URL,
+            commit_titles={sha: "chore: bump mathlib"},
+        )
+        self.assertIn("chore: bump mathlib", msg)
+
+    def test_tagged_commit_shows_tag_name(self) -> None:
+        """Scenario: when sha_to_tag maps the first_known_bad SHA, the tag name appears instead of the short SHA."""
+        sha = "bad123bad456" + "0" * 16
+        msg = format_new_failure_message(
+            _make_record(first_known_bad=sha),
+            _RUN_URL,
+            sha_to_tag={sha: "v4.19.0"},
+        )
+        self.assertIn("[`v4.19.0`]", msg)
+        self.assertNotIn(f"[`{sha[:12]}`]", msg)
 
 
 # ---------------------------------------------------------------------------
@@ -207,6 +313,60 @@ class FormatRecoveredMessageTests(unittest.TestCase):
         """Scenario: a link to the CI run is included."""
         msg = format_recovered_message(_make_record(), _RUN_URL)
         self.assertIn(_RUN_URL, msg)
+
+    def test_target_commit_is_linked_sha(self) -> None:
+        """Scenario: the target commit SHA is rendered as a clickable GitHub link."""
+        sha = "deadbeefcafe1234abcd5678"
+        msg = format_recovered_message(_make_record(target_commit=sha), _RUN_URL)
+        self.assertIn(f"{_MATHLIB_COMMIT_URL}/{sha}", msg)
+
+    def test_previous_first_known_bad_is_linked_sha(self) -> None:
+        """Scenario: the previous first known bad commit SHA is rendered as a clickable GitHub link."""
+        sha = "cafebabe123456abcdef7890"
+        msg = format_recovered_message(
+            _make_record(previous_first_known_bad=sha), _RUN_URL
+        )
+        self.assertIn(f"{_MATHLIB_COMMIT_URL}/{sha}", msg)
+
+    def test_run_link_uses_downstream_validation_run_label(self) -> None:
+        """Scenario: the CI run link reads 'Downstream validation run', not 'CI run'."""
+        msg = format_recovered_message(_make_record(), _RUN_URL)
+        self.assertIn("Downstream validation run", msg)
+        self.assertNotIn("CI run", msg)
+
+    def test_title_includes_downstream_commit_link(self) -> None:
+        """Scenario: the downstream commit SHA is linked in the message title."""
+        sha = "ds1234ds5678abcdef90"
+        msg = format_recovered_message(
+            _make_record(downstream_commit=sha, repo="owner/physlib", episode_state="recovered", outcome="passed"),
+            _RUN_URL,
+        )
+        self.assertIn(f"https://github.com/owner/physlib/commit/{sha}", msg)
+
+    def test_uses_target_mathlib_commit_label(self) -> None:
+        """Scenario: the target commit bullet is labelled 'Target Mathlib commit'."""
+        msg = format_recovered_message(
+            _make_record(episode_state="recovered", outcome="passed"), _RUN_URL
+        )
+        self.assertIn("Target Mathlib commit", msg)
+
+    def test_uses_previous_known_bad_label(self) -> None:
+        """Scenario: the previous failure commit bullet is labelled 'Previous known-bad'."""
+        msg = format_recovered_message(
+            _make_record(episode_state="recovered", outcome="passed"), _RUN_URL
+        )
+        self.assertIn("Previous known-bad", msg)
+
+    def test_tagged_commit_shows_tag_name(self) -> None:
+        """Scenario: when sha_to_tag maps the previous_first_known_bad SHA, the tag name appears instead of the short SHA."""
+        sha = "oldbadbad123" + "0" * 16
+        msg = format_recovered_message(
+            _make_record(previous_first_known_bad=sha, episode_state="recovered", outcome="passed"),
+            _RUN_URL,
+            sha_to_tag={sha: "v4.18.0"},
+        )
+        self.assertIn("[`v4.18.0`]", msg)
+        self.assertNotIn(f"[`{sha[:12]}`]", msg)
 
 
 # ---------------------------------------------------------------------------

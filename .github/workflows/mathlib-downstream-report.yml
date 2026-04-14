@@ -314,6 +314,7 @@ jobs:
 
       - name: Send alerts
         env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ZULIP_EMAIL: ${{ vars.ZULIP_EMAIL }}
           ZULIP_API_KEY: ${{ secrets.ZULIP_API_KEY }}
           BACKEND: ${{ needs.plan.outputs.dry_run == 'true' && 'dry-run' || 'zulip' }}

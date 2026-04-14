@@ -196,7 +196,7 @@ COMPATIBILITY_LABEL = {
 COMPATIBILITY_TOOLTIP = {
     "passed": "Compatible with the target Mathlib commit",
     "failed": "Incompatible with the target Mathlib commit",
-    "error":  "CI job encountered an unexpected error",
+    "error":  "Validation job encountered an unexpected error",
 }
 EPISODE_CLASS = {
     "passing":     "badge-green",
@@ -217,7 +217,7 @@ EPISODE_TOOLTIP = {
     "recovered":   "Was incompatible but is now compatible",
     "new_failure": "Newly incompatible — was compatible in the previous run",
     "failing":     "Has been incompatible across multiple runs",
-    "error":       "CI job has been erroring across multiple runs",
+    "error":       "Validation job has been erroring across multiple runs",
 }
 
 
@@ -574,9 +574,9 @@ def render_table_row(
     row_run_url = r.get("run_url") or run_url
     btns: list[str] = []
     if r.get("job_url"):
-        btns.append(f'<a href="{esc(r["job_url"])}" class="btn" target="_blank" rel="noopener noreferrer">CI job&nbsp;↗</a>')
+        btns.append(f'<a href="{esc(r["job_url"])}" class="btn" target="_blank" rel="noopener noreferrer">Validation job&nbsp;↗</a>')
     if row_run_url:
-        btns.append(f'<a href="{esc(row_run_url)}" class="btn" target="_blank" rel="noopener noreferrer">Run&nbsp;↗</a>')
+        btns.append(f'<a href="{esc(row_run_url)}" class="btn" target="_blank" rel="noopener noreferrer">Full run&nbsp;↗</a>')
     links_cell = f'<div class="links">{"".join(btns)}</div>'
 
     _av = str(age_days) if age_days is not None else (str(age_val) if age_val is not None else "-1")

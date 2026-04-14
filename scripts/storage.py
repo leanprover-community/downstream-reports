@@ -738,6 +738,7 @@ def load_run_for_site(engine: Any, run_id: str) -> tuple[dict, list[dict]]:
                 _sa_run_result.c.pinned_commit,
                 _sa_run_result.c.age_commits,
                 _sa_run_result.c.bump_commits,
+                _sa_run.c.run_url,
                 _sa_validate_job.c.job_url,
                 _sa_validate_job.c.started_at.label("job_started_at"),
                 _sa_validate_job.c.finished_at.label("job_finished_at"),

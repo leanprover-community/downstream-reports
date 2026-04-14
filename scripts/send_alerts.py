@@ -17,10 +17,13 @@ import sys
 from pathlib import Path
 
 from notifications import (
+    ALERTABLE_STATES,
     DryRunSender,
     ZulipSender,
     compute_alert_actions,
     execute_alerts,
+    fetch_commit_titles,
+    fetch_tags,
     format_error_notice_message,
 )
 
@@ -68,7 +71,45 @@ def main() -> int:
     records = payload.get("results", [])
     run_url = payload.get("run_url", args.run_url)
 
-    actions = compute_alert_actions(records, run_url, args.stream, args.topic)
+    github_token = os.environ.get("GITHUB_TOKEN") or None
+
+    # Collect mathlib commit SHAs that need title lookups (only for alertable records).
+    shas_to_fetch: set[str] = set()
+    for r in records:
+        state = r.get("episode_state", "")
+        if state not in ALERTABLE_STATES:
+            continue
+        if r.get("target_commit"):
+            shas_to_fetch.add(r["target_commit"])
+        if state == "new_failure" and r.get("first_known_bad"):
+            shas_to_fetch.add(r["first_known_bad"])
+        elif state == "recovered" and r.get("previous_first_known_bad"):
+            shas_to_fetch.add(r["previous_first_known_bad"])
+
+    commit_titles: dict[str, str] = {}
+    if shas_to_fetch:
+        print(f"Fetching commit titles for {len(shas_to_fetch)} SHA(s)…")
+        commit_titles = fetch_commit_titles(list(shas_to_fetch), token=github_token)
+
+    # Also fetch downstream commit titles (used in the alert message header).
+    downstream_shas_by_repo: dict[str, list[str]] = {}
+    for r in records:
+        if r.get("episode_state", "") not in ALERTABLE_STATES:
+            continue
+        repo = r.get("repo", "")
+        ds_commit = r.get("downstream_commit")
+        if repo and ds_commit and ds_commit not in downstream_shas_by_repo.get(repo, []):
+            downstream_shas_by_repo.setdefault(repo, []).append(ds_commit)
+    if downstream_shas_by_repo:
+        print(f"Fetching downstream commit titles for {len(downstream_shas_by_repo)} repo(s)…")
+        for repo, shas in downstream_shas_by_repo.items():
+            commit_titles.update(fetch_commit_titles(shas, repo=repo, token=github_token))
+
+    print("Fetching mathlib tags…")
+    sha_to_tag = fetch_tags(token=github_token)
+    print(f"  {len(sha_to_tag)} tag(s) loaded.")
+
+    actions = compute_alert_actions(records, run_url, args.stream, args.topic, commit_titles=commit_titles, sha_to_tag=sha_to_tag)
     n_errors = sum(1 for r in records if r.get("outcome") == "error")
 
     if not actions and not n_errors:
