@@ -10,11 +10,17 @@ At the moment, this downstream validation is performed for the `leanprover-commu
 
 Runs on a schedule against the latest mathlib commit. For each tracked downstream, it probes the downstream against that commit and — if it fails — bisects the mathlib history to identify the first bad commit. Results are persisted to a database and a summary is appended to the GitHub Actions job summary. Status changes (`NEW_FAILURE` / `RECOVERED`) trigger Zulip alerts.
 
+### `mathlib-downstream-ondemand.yml`
+
+Manually dispatchable. Tests one or more downstreams against the current HEAD of their configured mathlib bumping branch. Deduplicates automatically — a downstream is skipped if its branch HEAD has not changed since the last run. Reports every result to Zulip (compatibility, failure, or skipped), rather than only state-change transitions.
+
+See [`docs/ondemand-workflow.md`](docs/ondemand-workflow.md) for a detailed description, including deduplication logic, stored state, and how it differs from the scheduled regression workflow.
+
 ### `mathlib-downstream-summary.yml`
 
 Loads the latest per-downstream state from the database and sends a compact Markdown table to Zulip.
 
-See [`docs/workflows.md`](docs/workflows.md) for a detailed description of both workflows, including job structure, window selection algorithm, and Zulip configuration.
+See [`docs/workflows.md`](docs/workflows.md) for a detailed description of the scheduled regression and summary workflows, including job structure, window selection algorithm, and Zulip configuration.
 
 ## Inventory
 
