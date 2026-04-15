@@ -55,6 +55,7 @@ also supports `workflow_dispatch` for on-demand publishing.
 
 ```
 on:
+  push:
   workflow_dispatch:
   workflow_run:
     workflows: ["mathlib-downstream-report"]
@@ -62,8 +63,14 @@ on:
     branches: [main]
 ```
 
-The job condition gates on `head_branch == 'main'` (for `workflow_run`) or
-`event_name == 'workflow_dispatch'`. Authentication to Azure uses OIDC — no
+The job condition allows all non-`workflow_run` triggers through, and for
+`workflow_run` gates on `head_branch == 'main'` and `conclusion == 'success'`:
+
+```
+if: github.event_name != 'workflow_run' ||
+    (github.event.workflow_run.head_branch == 'main' &&
+     github.event.workflow_run.conclusion == 'success')
+``` Authentication to Azure uses OIDC — no
 long-lived secrets — via `azure/login@v2` with a federated credential scoped to
 `refs/heads/main`.
 
@@ -151,11 +158,14 @@ Required GitHub configuration:
 
 | Type | Name | Value |
 |------|------|-------|
-| Secret | `AZURE_CLIENT_ID` | App registration `appId` |
+| Secret | `DOWNSTREAM_REPORTS_WRITER_AZ_CLIENT_ID` | App registration `appId` |
 | Secret | `AZURE_TENANT_ID` | Entra tenant ID |
-| Secret | `AZURE_SUBSCRIPTION_ID` | Azure subscription ID |
 | Variable | `AZURE_STORAGE_ACCOUNT` | `downstreamreports` |
 | Variable | `AZURE_STORAGE_CONTAINER` | `$web` |
+
+No subscription ID is needed — `azure/login` is called with
+`allow-no-subscriptions: true` since the role is scoped to a single storage
+container and no subscription-level operations are performed.
 
 ---
 
