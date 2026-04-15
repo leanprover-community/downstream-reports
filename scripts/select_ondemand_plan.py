@@ -80,6 +80,12 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Include all matching downstreams even if no new bumping-branch commits",
     )
+    parser.add_argument(
+        "--skipped-output",
+        type=Path,
+        default=Path("skipped.json"),
+        help="Path to write skipped-downstream details JSON (default: skipped.json)",
+    )
     add_backend_args(parser)
     return parser
 
@@ -97,6 +103,7 @@ def main() -> int:
     backend = create_backend(args.backend, dsn=args.dsn, state_root=args.state_root)
 
     seen = backend.load_tested_downstream_commits("ondemand")
+    prior_details = backend.load_prior_results("ondemand", seen)
 
     payload = json.loads(args.inventory.read_text())
 
@@ -119,6 +126,7 @@ def main() -> int:
         ]
 
     include = []
+    skipped = []
     for item in candidates:
         owner_repo = item["repo"]
         bumping_branch = item["bumping_branch"]
@@ -131,6 +139,19 @@ def main() -> int:
 
         if not args.force and (item["name"], head_sha) in seen:
             print(f"[plan] {item['name']}: no new commits on {bumping_branch}, skipping")
+            prior = prior_details.get((item["name"], head_sha), {})
+            skipped.append({
+                "downstream": item["name"],
+                "repo": item["repo"],
+                "downstream_commit": head_sha,
+                "outcome": prior.get("outcome"),
+                "episode_state": prior.get("episode_state"),
+                "first_known_bad": prior.get("first_known_bad"),
+                "target_commit": prior.get("target_commit"),
+                "failure_stage": prior.get("failure_stage"),
+                "previous_run_url": prior.get("run_url"),
+                "previous_job_url": prior.get("job_url"),
+            })
             continue
 
         print(
@@ -142,6 +163,7 @@ def main() -> int:
         include.append(entry)
 
     args.output.write_text(json.dumps({"include": include}, sort_keys=True))
+    args.skipped_output.write_text(json.dumps(skipped, sort_keys=True))
     return 0
 
 

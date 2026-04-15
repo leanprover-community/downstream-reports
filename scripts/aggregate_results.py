@@ -282,8 +282,6 @@ def load_results(results_dir: Path) -> list[LoadedResult]:
                 culprit_log_text=load_culprit_log_text(path.parent),
             )
         )
-    if not results:
-        raise ValueError(f"no result.json files found under {results_dir}")
     return results
 
 
@@ -349,6 +347,7 @@ def render_report(
     run_url: str,
     rows: list[dict[str, Any]],
     job_urls: dict[str, str] | None = None,
+    skipped_rows: list[dict[str, Any]] | None = None,
 ) -> str:
     """Render the human-readable markdown report used in GitHub summaries."""
 
@@ -463,6 +462,56 @@ def render_report(
         if row.get("culprit_log_text"):
             lines.extend(["", "First incompatible commit logs:", "```text", row["culprit_log_text"], "```"])
         lines.extend(["", "</details>", ""])
+
+    if skipped_rows:
+        _outcome_label_skip = {"passed": "compatible", "failed": "incompatible"}
+        lines.extend([
+            "## Previously Tested (Skipped This Run)",
+            "",
+            "These downstreams had no new commits on their bumping branch since the last test.",
+            "",
+            "| Downstream | Previous Outcome | Previous Status | First known bad | Previous Run |",
+            "| --- | --- | --- | --- | --- |",
+        ])
+        for srow in skipped_rows:
+            prev_url = srow.get("previous_job_url") or srow.get("previous_run_url")
+            prev_link = f"[previous run]({prev_url})" if prev_url else "-"
+            lines.append(
+                "| {downstream} | {outcome} | {status} | {fkb} | {prev} |".format(
+                    downstream=srow.get("downstream", "?"),
+                    outcome=_outcome_label_skip.get(srow.get("outcome", ""), srow.get("outcome") or "-"),
+                    status=srow.get("episode_state") or "-",
+                    fkb=render_commit_link(srow.get("first_known_bad"), upstream),
+                    prev=prev_link,
+                )
+            )
+        lines.append("")
+        for srow in skipped_rows:
+            downstream_name = srow.get("downstream", "?")
+            prev_job_url = srow.get("previous_job_url")
+            prev_run_url = srow.get("previous_run_url")
+            name_html = (
+                f'<a href="{prev_job_url}"><strong>{downstream_name}</strong></a>'
+                if prev_job_url
+                else f"<strong>{downstream_name}</strong>"
+            )
+            outcome_label = _outcome_label_skip.get(srow.get("outcome", ""), srow.get("outcome") or "?")
+            lines.extend([
+                "<details>",
+                f"<summary>{name_html} &mdash; <code>{outcome_label}</code> (skipped, same commit as previous run)</summary>",
+                "",
+                f"- Downstream commit: `{srow.get('downstream_commit', '?')[:12]}`",
+                f"- Previous outcome: `{srow.get('outcome') or '-'}`",
+                f"- Previous status: `{srow.get('episode_state') or '-'}`",
+                "- Target Mathlib commit: " + render_commit_link(srow.get("target_commit"), upstream),
+                "- First known bad: " + render_commit_link(srow.get("first_known_bad"), upstream),
+            ])
+            if prev_job_url:
+                lines.append(f"- Previous validate job: [link]({prev_job_url})")
+            elif prev_run_url:
+                lines.append(f"- Previous run: [link]({prev_run_url})")
+            lines.extend(["", "</details>", ""])
+
     return "\n".join(lines) + "\n"
 
 
@@ -491,6 +540,10 @@ def build_parser() -> argparse.ArgumentParser:
         default=os.environ.get("GITHUB_TOKEN"),
         help="GitHub token for commit distance lookups (default: $GITHUB_TOKEN)",
     )
+    parser.add_argument(
+        "--skipped", type=Path, default=None,
+        help="Path to skipped.json from the plan job (on-demand skipped downstreams).",
+    )
     return parser
 
 
@@ -503,7 +556,10 @@ def main() -> int:
     backend = create_backend(args.backend, dsn=args.dsn, state_root=args.state_root)
 
     prior_statuses = backend.load_all_statuses(args.workflow, args.upstream)
-    loaded_results = load_results(args.results_dir)
+    if args.results_dir.exists():
+        loaded_results = load_results(args.results_dir)
+    else:
+        loaded_results = []
 
     updated_statuses: dict[str, DownstreamStatusRecord] = {}
     result_records: list[RunResultRecord] = []
@@ -583,6 +639,10 @@ def main() -> int:
                     finished_at=entry.get("finished_at"),
                     conclusion=entry.get("conclusion"),
                 ))
+    skipped_rows: list[dict[str, Any]] = []
+    if args.skipped and args.skipped.exists():
+        skipped_rows = json.loads(args.skipped.read_text())
+
     markdown = render_report(
         recorded_at=recorded_at,
         upstream_ref=args.upstream_ref,
@@ -591,20 +651,22 @@ def main() -> int:
         run_url=args.run_url,
         rows=render_rows,
         job_urls=job_urls,
+        skipped_rows=skipped_rows or None,
     )
 
-    backend.save_run(
-        run_id=args.run_id,
-        workflow=args.workflow,
-        upstream=args.upstream,
-        upstream_ref=args.upstream_ref,
-        run_url=args.run_url,
-        created_at=recorded_at,
-        results=result_records,
-        updated_statuses=updated_statuses,
-        report_markdown=markdown,
-        validate_jobs=validate_jobs or None,
-    )
+    if result_records:
+        backend.save_run(
+            run_id=args.run_id,
+            workflow=args.workflow,
+            upstream=args.upstream,
+            upstream_ref=args.upstream_ref,
+            run_url=args.run_url,
+            created_at=recorded_at,
+            results=result_records,
+            updated_statuses=updated_statuses,
+            report_markdown=markdown,
+            validate_jobs=validate_jobs or None,
+        )
 
     if args.report_output is not None:
         args.report_output.parent.mkdir(parents=True, exist_ok=True)
@@ -612,12 +674,14 @@ def main() -> int:
 
     if args.alert_output is not None:
         args.alert_output.parent.mkdir(parents=True, exist_ok=True)
-        alert_payload = {
+        alert_payload: dict[str, Any] = {
             "run_id": args.run_id,
             "run_url": args.run_url,
             "upstream_ref": args.upstream_ref,
             "results": [asdict(r) for r in result_records],
         }
+        if skipped_rows:
+            alert_payload["skipped"] = skipped_rows
         args.alert_output.write_text(json.dumps(alert_payload, sort_keys=True))
 
     return 0

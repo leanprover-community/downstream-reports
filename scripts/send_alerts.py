@@ -73,22 +73,30 @@ def main() -> int:
 
     payload = json.loads(raw)
     records = payload.get("results", [])
+    skipped = payload.get("skipped", [])
     run_url = payload.get("run_url", args.run_url)
 
     github_token = os.environ.get("GITHUB_TOKEN") or None
 
-    # Collect mathlib commit SHAs that need title lookups (only for alertable records).
+    # For on-demand, fetch titles for ALL records; for regression, only alertable ones.
+    is_ondemand = args.workflow == "ondemand"
+
     shas_to_fetch: set[str] = set()
     for r in records:
         state = r.get("episode_state", "")
-        if state not in ALERTABLE_STATES:
+        if not is_ondemand and state not in ALERTABLE_STATES:
             continue
         if r.get("target_commit"):
             shas_to_fetch.add(r["target_commit"])
-        if state == "new_failure" and r.get("first_known_bad"):
+        if r.get("first_known_bad"):
             shas_to_fetch.add(r["first_known_bad"])
-        elif state == "recovered" and r.get("previous_first_known_bad"):
+        if r.get("previous_first_known_bad"):
             shas_to_fetch.add(r["previous_first_known_bad"])
+    for s in skipped:
+        if s.get("target_commit"):
+            shas_to_fetch.add(s["target_commit"])
+        if s.get("first_known_bad"):
+            shas_to_fetch.add(s["first_known_bad"])
 
     commit_titles: dict[str, str] = {}
     if shas_to_fetch:
@@ -97,8 +105,8 @@ def main() -> int:
 
     # Also fetch downstream commit titles (used in the alert message header).
     downstream_shas_by_repo: dict[str, list[str]] = {}
-    for r in records:
-        if r.get("episode_state", "") not in ALERTABLE_STATES:
+    for r in records + skipped:
+        if not is_ondemand and r.get("episode_state", "") not in ALERTABLE_STATES:
             continue
         repo = r.get("repo", "")
         ds_commit = r.get("downstream_commit")
@@ -113,7 +121,11 @@ def main() -> int:
     sha_to_tag = fetch_tags(token=github_token)
     print(f"  {len(sha_to_tag)} tag(s) loaded.")
 
-    actions = compute_alert_actions(records, run_url, args.stream, args.topic, commit_titles=commit_titles, sha_to_tag=sha_to_tag, workflow=args.workflow)
+    actions = compute_alert_actions(
+        records, run_url, args.stream, args.topic,
+        commit_titles=commit_titles, sha_to_tag=sha_to_tag,
+        workflow=args.workflow, skipped=skipped or None,
+    )
     n_errors = sum(1 for r in records if r.get("outcome") == "error")
 
     if not actions and not n_errors:

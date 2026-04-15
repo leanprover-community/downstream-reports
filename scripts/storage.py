@@ -23,6 +23,10 @@ Protocol overview
     non-error result in *workflow*, so the on-demand plan step can
     skip commits that have already been validated.
 
+``load_prior_results(workflow, pairs)``
+    Return rich prior-result details for specific (downstream, commit) pairs.
+    Used to annotate skipped on-demand downstreams with their previous outcome.
+
 Adding a new backend
 --------------------
 1.  Implement a class whose public methods match ``StorageBackend``.
@@ -166,6 +170,20 @@ class StorageBackend(Protocol):
     def load_tested_downstream_commits(self, workflow: str) -> set[tuple[str, str]]:
         """Return ``{(downstream, downstream_commit)}`` pairs with a non-error
         result in *workflow*, used for dedup in on-demand runs."""
+        ...
+
+    def load_prior_results(
+        self, workflow: str, pairs: set[tuple[str, str]]
+    ) -> dict[tuple[str, str], dict[str, Any]]:
+        """Return rich prior-result details for ``(downstream, downstream_commit)`` pairs.
+
+        Used by the on-demand plan step to annotate skipped downstreams with
+        their previous outcome, first-known-bad, and links to the original run.
+
+        Returns ``{(downstream, downstream_commit): {...}}`` where each value
+        contains at minimum: ``outcome``, ``episode_state``, ``first_known_bad``,
+        ``target_commit``, ``failure_stage``, ``repo``, ``run_url``, ``job_url``.
+        """
         ...
 
 
@@ -341,6 +359,53 @@ class FilesystemBackend:
             if ds and commit and outcome in ("passed", "failed"):
                 result.add((ds, commit))
         return result
+
+    def load_prior_results(
+        self, workflow: str, pairs: set[tuple[str, str]]
+    ) -> dict[tuple[str, str], dict[str, Any]]:
+        if not pairs:
+            return {}
+        history_prefix = _WORKFLOW_HISTORY_PREFIX[workflow]
+        base = self._root / "results"
+        if history_prefix:
+            base = base / history_prefix
+        if not base.exists():
+            return {}
+        # Collect the newest result per (downstream, commit) pair.
+        # File paths contain dates (results/{prefix}/{date}/{run_id}/{ds}.json)
+        # so lexicographic path ordering approximates recency.
+        best: dict[tuple[str, str], tuple[str, dict[str, Any]]] = {}
+        for path in base.rglob("*.json"):
+            try:
+                row = json.loads(path.read_text())
+            except Exception:
+                continue
+            ds = row.get("downstream")
+            commit = row.get("downstream_commit")
+            outcome = row.get("outcome")
+            if not (ds and commit and outcome in ("passed", "failed")):
+                continue
+            key = (ds, commit)
+            if key not in pairs:
+                continue
+            # Use directory path as a recency proxy (date/run_id ordering).
+            path_key = str(path)
+            existing = best.get(key)
+            if existing is None or path_key > existing[0]:
+                best[key] = (path_key, row)
+        return {
+            key: {
+                "outcome": row.get("outcome"),
+                "episode_state": row.get("episode_state"),
+                "first_known_bad": row.get("first_known_bad"),
+                "target_commit": row.get("target_commit"),
+                "failure_stage": row.get("failure_stage"),
+                "repo": row.get("repo"),
+                "run_url": None,   # filesystem backend doesn't store run_url per result
+                "job_url": None,   # filesystem backend doesn't store job metadata
+            }
+            for key, (_, row) in best.items()
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -640,6 +705,87 @@ class SqlBackend:
             rows = conn.execute(stmt).fetchall()
         return {(row[0], row[1]) for row in rows}
 
+    def load_prior_results(
+        self, workflow: str, pairs: set[tuple[str, str]]
+    ) -> dict[tuple[str, str], dict[str, Any]]:
+        if not pairs:
+            return {}
+        rr = _sa_run_result
+        r = _sa_run
+        vj = _sa_validate_job
+
+        # Build a subquery that ranks results by recency per (downstream, commit).
+        ranked = (
+            sa_select(
+                rr.c.downstream,
+                rr.c.downstream_commit,
+                rr.c.outcome,
+                rr.c.episode_state,
+                rr.c.first_known_bad,
+                rr.c.target_commit,
+                rr.c.failure_stage,
+                rr.c.repo,
+                rr.c.run_id,
+                r.c.run_url,
+                func.row_number()
+                .over(
+                    partition_by=[rr.c.downstream, rr.c.downstream_commit],
+                    order_by=r.c.reported_at.desc(),
+                )
+                .label("rn"),
+            )
+            .join(r, rr.c.run_id == r.c.run_id)
+            .where(
+                r.c.workflow == workflow,
+                rr.c.downstream_commit.isnot(None),
+                rr.c.outcome.in_(["passed", "failed"]),
+            )
+            .subquery()
+        )
+
+        stmt = (
+            sa_select(
+                ranked.c.downstream,
+                ranked.c.downstream_commit,
+                ranked.c.outcome,
+                ranked.c.episode_state,
+                ranked.c.first_known_bad,
+                ranked.c.target_commit,
+                ranked.c.failure_stage,
+                ranked.c.repo,
+                ranked.c.run_url,
+                vj.c.job_url,
+            )
+            .outerjoin(
+                vj,
+                and_(
+                    ranked.c.run_id == vj.c.run_id,
+                    ranked.c.downstream == vj.c.downstream,
+                ),
+            )
+            .where(ranked.c.rn == 1)
+        )
+
+        with self._engine.connect() as conn:
+            rows = conn.execute(stmt).fetchall()
+
+        result: dict[tuple[str, str], dict[str, Any]] = {}
+        for row in rows:
+            key = (row[0], row[1])
+            if key not in pairs:
+                continue
+            result[key] = {
+                "outcome": row[2],
+                "episode_state": row[3],
+                "first_known_bad": row[4],
+                "target_commit": row[5],
+                "failure_stage": row[6],
+                "repo": row[7],
+                "run_url": row[8],
+                "job_url": row[9],
+            }
+        return result
+
 
 # ---------------------------------------------------------------------------
 # Site-generation read-only queries
@@ -814,6 +960,12 @@ class DryRunBackend:
     def load_tested_downstream_commits(self, workflow: str) -> set[tuple[str, str]]:
         print(f"[dry-run] load_tested_downstream_commits({workflow!r}) -> set()")
         return set()
+
+    def load_prior_results(
+        self, workflow: str, pairs: set[tuple[str, str]]
+    ) -> dict[tuple[str, str], dict[str, Any]]:
+        print(f"[dry-run] load_prior_results({workflow!r}, {len(pairs)} pair(s)) -> {{}}")
+        return {}
 
 
 # ---------------------------------------------------------------------------

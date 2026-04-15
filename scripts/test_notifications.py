@@ -24,6 +24,7 @@ from scripts.notifications import (
     format_new_failure_message,
     format_ondemand_compatible_message,
     format_ondemand_failure_message,
+    format_ondemand_skipped_message,
     format_recovered_message,
     format_summary_message,
     _commit_link_with_title,
@@ -820,16 +821,129 @@ class ComputeAlertActionsWorkflowTests(unittest.TestCase):
         self.assertEqual(len(actions), 1)
         self.assertIn("New regression detected", actions[0].content)
 
-    def test_ondemand_non_alertable_states_still_filtered(self) -> None:
-        """Scenario: workflow='ondemand' still filters out non-alertable states."""
+    def test_ondemand_reports_all_non_error_states(self) -> None:
+        """Scenario: workflow='ondemand' reports all non-error states."""
         records = [
             _make_record(episode_state="passing"),
             _make_record(downstream="b", episode_state="failing"),
             _make_record(downstream="c", episode_state="new_failure"),
         ]
         actions = compute_alert_actions(records, _RUN_URL, _STREAM, _TOPIC, workflow="ondemand")
+        self.assertEqual(len(actions), 3)
+        self.assertEqual(
+            [a.downstream for a in actions],
+            ["physlib", "b", "c"],
+        )
+
+    def test_ondemand_errors_still_filtered(self) -> None:
+        """Scenario: workflow='ondemand' still filters out error states."""
+        records = [
+            _make_record(episode_state="passing"),
+            _make_record(downstream="b", episode_state="error"),
+        ]
+        actions = compute_alert_actions(records, _RUN_URL, _STREAM, _TOPIC, workflow="ondemand")
         self.assertEqual(len(actions), 1)
-        self.assertEqual(actions[0].downstream, "c")
+        self.assertEqual(actions[0].downstream, "physlib")
+
+    def test_ondemand_includes_skipped_downstreams(self) -> None:
+        """Scenario: workflow='ondemand' includes skipped downstreams in alerts."""
+        records = [_make_record(episode_state="passing")]
+        skipped = [
+            {
+                "downstream": "skipped-ds",
+                "repo": "owner/skipped-ds",
+                "downstream_commit": "abc123",
+                "outcome": "failed",
+                "first_known_bad": "bad456",
+                "target_commit": "target789",
+            }
+        ]
+        actions = compute_alert_actions(
+            records, _RUN_URL, _STREAM, _TOPIC, workflow="ondemand", skipped=skipped,
+        )
+        self.assertEqual(len(actions), 2)
+        self.assertEqual(actions[1].downstream, "skipped-ds")
+        self.assertIn("was not retested", actions[1].content)
+
+
+class FormatOndemandSkippedMessageTests(unittest.TestCase):
+    """Tests for format_ondemand_skipped_message."""
+
+    def test_includes_downstream_name(self) -> None:
+        """Scenario: message contains the downstream name."""
+        record = {
+            "downstream": "MyProject",
+            "repo": "owner/MyProject",
+            "downstream_commit": "abc123def456",
+            "outcome": "passed",
+            "target_commit": "target789",
+        }
+        msg = format_ondemand_skipped_message(record, _RUN_URL)
+        self.assertIn("MyProject", msg)
+
+    def test_compatible_outcome_label(self) -> None:
+        """Scenario: passed outcome shows 'compatible'."""
+        record = {
+            "downstream": "ds",
+            "repo": "owner/ds",
+            "downstream_commit": "abc",
+            "outcome": "passed",
+            "target_commit": "target",
+        }
+        msg = format_ondemand_skipped_message(record, _RUN_URL)
+        self.assertIn("compatible", msg)
+        self.assertNotIn("incompatible", msg)
+
+    def test_incompatible_outcome_label(self) -> None:
+        """Scenario: failed outcome shows 'incompatible'."""
+        record = {
+            "downstream": "ds",
+            "repo": "owner/ds",
+            "downstream_commit": "abc",
+            "outcome": "failed",
+            "first_known_bad": "bad123",
+            "target_commit": "target",
+        }
+        msg = format_ondemand_skipped_message(record, _RUN_URL)
+        self.assertIn("incompatible", msg)
+
+    def test_includes_first_known_bad_when_failed(self) -> None:
+        """Scenario: first known bad is shown when outcome is failed."""
+        record = {
+            "downstream": "ds",
+            "repo": "owner/ds",
+            "downstream_commit": "abc",
+            "outcome": "failed",
+            "first_known_bad": "bad123456789",
+            "target_commit": "target",
+        }
+        msg = format_ondemand_skipped_message(record, _RUN_URL)
+        self.assertIn("bad123456789", msg)
+
+    def test_includes_previous_job_url(self) -> None:
+        """Scenario: previous validation link is shown when available."""
+        record = {
+            "downstream": "ds",
+            "repo": "owner/ds",
+            "downstream_commit": "abc",
+            "outcome": "passed",
+            "target_commit": "target",
+            "previous_job_url": "https://example.com/job/42",
+        }
+        msg = format_ondemand_skipped_message(record, _RUN_URL)
+        self.assertIn("https://example.com/job/42", msg)
+
+    def test_skipped_headline(self) -> None:
+        """Scenario: message headline indicates downstream was not retested."""
+        record = {
+            "downstream": "ds",
+            "repo": "owner/ds",
+            "downstream_commit": "abc",
+            "outcome": "passed",
+            "target_commit": "target",
+        }
+        msg = format_ondemand_skipped_message(record, _RUN_URL)
+        self.assertIn("was not retested", msg)
 
 
 if __name__ == "__main__":
