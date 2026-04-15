@@ -1,0 +1,240 @@
+name: 'Bump to LKG'
+description: >
+  Fetch the hopscotch-reports LKG snapshot and bump the mathlib dependency
+  to the latest known-good commit via hopscotch. On success the working tree
+  contains modified lakefile and lake-manifest.json ready to commit.
+
+inputs:
+  downstream:
+    required: true
+    description: 'Downstream name as registered in the hopscotch-reports inventory'
+  project-dir:
+    required: false
+    default: '.'
+    description: 'Path to the downstream project root (default: repo root)'
+  dependency-name:
+    required: false
+    default: 'mathlib'
+    description: 'Name of the dependency in the lakefile'
+  hopscotch-version:
+    required: false
+    default: 'v1.3.0'
+    description: 'Hopscotch release tag to download'
+  snapshot-url:
+    required: false
+    default: 'https://downstreamreports.z13.web.core.windows.net/lkg/latest.json'
+    description: >
+      Full URL of the LKG snapshot JSON blob. Override for testing against
+      a staging blob; leave empty to use the production URL.
+
+outputs:
+  lkg-commit:
+    description: 'The LKG commit SHA from the snapshot'
+    value: ${{ steps.resolve-outputs.outputs.lkg_commit }}
+  current-pin:
+    description: 'The commit the project was pinned to before this action ran'
+    value: ${{ steps.resolve-outputs.outputs.current_pin }}
+  updated:
+    description: '"true" if hopscotch successfully bumped the project'
+    value: ${{ steps.resolve-outputs.outputs.updated }}
+  skipped:
+    description: '"true" if the project was already at the LKG commit'
+    value: ${{ steps.resolve-outputs.outputs.skipped }}
+  build-failed:
+    description: '"true" if hopscotch ran but the build failed'
+    value: ${{ steps.resolve-outputs.outputs.build_failed }}
+
+runs:
+  using: 'composite'
+  steps:
+    # ------------------------------------------------------------------
+    # Step 1: Fetch the LKG snapshot and extract the entry for this
+    # downstream. Fails fast with a helpful error if the downstream is
+    # not found.
+    # ------------------------------------------------------------------
+    - name: Fetch LKG snapshot
+      id: fetch-snapshot
+      shell: bash
+      env:
+        DOWNSTREAM: ${{ inputs.downstream }}
+        SNAPSHOT_URL: ${{ inputs.snapshot-url }}
+      run: |
+        set -euo pipefail
+
+        echo "Fetching LKG snapshot from $SNAPSHOT_URL"
+        curl --retry 3 --retry-delay 5 --fail --silent --show-error \
+          -o /tmp/lkg-snapshot.json "$SNAPSHOT_URL"
+
+        # Validate schema_version (warn on unknown versions but continue).
+        SCHEMA_VERSION=$(jq -r '.schema_version // empty' /tmp/lkg-snapshot.json)
+        if [ -z "$SCHEMA_VERSION" ]; then
+          echo "Error: snapshot JSON is missing schema_version field."
+          exit 1
+        fi
+        if [ "$SCHEMA_VERSION" -lt 1 ] 2>/dev/null; then
+          echo "Warning: unexpected schema_version=$SCHEMA_VERSION (expected >= 1), continuing."
+        fi
+
+        # Extract the LKG commit for this downstream.
+        LKG_COMMIT=$(jq -r --arg ds "$DOWNSTREAM" \
+          '.downstreams[$ds].last_known_good_commit // empty' \
+          /tmp/lkg-snapshot.json)
+
+        if [ -z "$LKG_COMMIT" ]; then
+          echo "Error: downstream '$DOWNSTREAM' not found in snapshot."
+          echo "Available downstreams:"
+          jq -r '.downstreams | keys[]' /tmp/lkg-snapshot.json
+          exit 1
+        fi
+
+        echo "LKG commit for '$DOWNSTREAM': $LKG_COMMIT"
+        echo "lkg_commit=$LKG_COMMIT" >> "$GITHUB_OUTPUT"
+
+    # ------------------------------------------------------------------
+    # Step 2: Read the current mathlib pin from lake-manifest.json.
+    # ------------------------------------------------------------------
+    - name: Read current pin from lake-manifest.json
+      id: read-manifest
+      shell: bash
+      env:
+        PROJECT_DIR: ${{ inputs.project-dir }}
+        DEPENDENCY_NAME: ${{ inputs.dependency-name }}
+      run: |
+        set -euo pipefail
+
+        MANIFEST="$PROJECT_DIR/lake-manifest.json"
+        if [ ! -f "$MANIFEST" ]; then
+          echo "Error: $MANIFEST not found in project-dir '$PROJECT_DIR'."
+          exit 1
+        fi
+
+        CURRENT_PIN=$(jq -r --arg dep "$DEPENDENCY_NAME" \
+          '.packages[] | select(.name == $dep) | .rev' \
+          "$MANIFEST")
+
+        if [ -z "$CURRENT_PIN" ]; then
+          echo "Error: dependency '$DEPENDENCY_NAME' not found in $MANIFEST."
+          echo "Packages present:"
+          jq -r '.packages[].name' "$MANIFEST"
+          exit 1
+        fi
+
+        echo "Current pin for '$DEPENDENCY_NAME': $CURRENT_PIN"
+        echo "current_pin=$CURRENT_PIN" >> "$GITHUB_OUTPUT"
+
+    # ------------------------------------------------------------------
+    # Step 3: Compare pins. If already at LKG, skip the build steps.
+    # ------------------------------------------------------------------
+    - name: Compare pins
+      id: compare
+      shell: bash
+      env:
+        LKG_COMMIT: ${{ steps.fetch-snapshot.outputs.lkg_commit }}
+        CURRENT_PIN: ${{ steps.read-manifest.outputs.current_pin }}
+      run: |
+        if [ "$CURRENT_PIN" = "$LKG_COMMIT" ]; then
+          echo "Already at LKG commit $LKG_COMMIT — nothing to do."
+          echo "skipped=true" >> "$GITHUB_OUTPUT"
+        else
+          echo "Pin needs update: $CURRENT_PIN → $LKG_COMMIT"
+          echo "skipped=false" >> "$GITHUB_OUTPUT"
+        fi
+
+    # ------------------------------------------------------------------
+    # Step 4–6 only run when an update is needed.
+    # ------------------------------------------------------------------
+
+    - name: Install Lean (elan)
+      if: steps.compare.outputs.skipped != 'true'
+      shell: bash
+      run: |
+        curl https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh \
+          -sSf | sh -s -- -y --default-toolchain none
+        echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+
+    - name: Download hopscotch binary
+      if: steps.compare.outputs.skipped != 'true'
+      shell: bash
+      env:
+        HOPSCOTCH_VERSION: ${{ inputs.hopscotch-version }}
+      run: |
+        set -euo pipefail
+        TOOL_DIR="$RUNNER_TEMP/hopscotch-bin"
+        mkdir -p "$TOOL_DIR"
+        curl -L \
+          "https://github.com/leanprover-community/hopscotch/releases/download/${HOPSCOTCH_VERSION}/hopscotch-linux-x86_64" \
+          -o "$TOOL_DIR/hopscotch"
+        chmod +x "$TOOL_DIR/hopscotch"
+        echo "$TOOL_DIR" >> "$GITHUB_PATH"
+
+    - name: Clean any stale hopscotch session
+      if: steps.compare.outputs.skipped != 'true'
+      shell: bash
+      env:
+        PROJECT_DIR: ${{ inputs.project-dir }}
+      run: |
+        # Ignore errors — clean is a best-effort guard against leftover state.
+        hopscotch clean --project-dir "$PROJECT_DIR" || true
+
+    # ------------------------------------------------------------------
+    # Step 7: Run hopscotch to bump and build.
+    #
+    # Exit codes:
+    #   0 → bumped and built successfully (lakefile updated)
+    #   1 → build failed (lakefile left at original pin by --keep-last-good)
+    #   2+ → tool error (fail the step)
+    # ------------------------------------------------------------------
+    - name: Run hopscotch dep
+      id: run-hopscotch
+      if: steps.compare.outputs.skipped != 'true'
+      shell: bash
+      env:
+        DEPENDENCY_NAME: ${{ inputs.dependency-name }}
+        CURRENT_PIN: ${{ steps.read-manifest.outputs.current_pin }}
+        LKG_COMMIT: ${{ steps.fetch-snapshot.outputs.lkg_commit }}
+        PROJECT_DIR: ${{ inputs.project-dir }}
+      run: |
+        set +e
+        hopscotch dep "$DEPENDENCY_NAME" \
+          --from "$CURRENT_PIN" \
+          --to "$LKG_COMMIT" \
+          --project-dir "$PROJECT_DIR" \
+          --scan-mode linear \
+          --keep-last-good \
+          --allow-dirty-workspace
+        EXIT_CODE=$?
+        set -e
+
+        if [ "$EXIT_CODE" -eq 0 ]; then
+          echo "hopscotch: bump succeeded."
+          echo "updated=true" >> "$GITHUB_OUTPUT"
+          echo "build_failed=false" >> "$GITHUB_OUTPUT"
+        elif [ "$EXIT_CODE" -eq 1 ]; then
+          echo "hopscotch: build failed (lakefile unchanged due to --keep-last-good)."
+          echo "updated=false" >> "$GITHUB_OUTPUT"
+          echo "build_failed=true" >> "$GITHUB_OUTPUT"
+        else
+          echo "hopscotch: tool error (exit $EXIT_CODE)."
+          exit "$EXIT_CODE"
+        fi
+
+    # ------------------------------------------------------------------
+    # Final step: consolidate outputs with safe defaults so callers never
+    # see empty strings for boolean-valued outputs.
+    # ------------------------------------------------------------------
+    - name: Resolve outputs
+      id: resolve-outputs
+      if: always()
+      shell: bash
+      env:
+        LKG_COMMIT: ${{ steps.fetch-snapshot.outputs.lkg_commit }}
+        CURRENT_PIN: ${{ steps.read-manifest.outputs.current_pin }}
+        SKIPPED: ${{ steps.compare.outputs.skipped }}
+        UPDATED: ${{ steps.run-hopscotch.outputs.updated }}
+        BUILD_FAILED: ${{ steps.run-hopscotch.outputs.build_failed }}
+      run: |
+        echo "lkg_commit=${LKG_COMMIT:-}"         >> "$GITHUB_OUTPUT"
+        echo "current_pin=${CURRENT_PIN:-}"        >> "$GITHUB_OUTPUT"
+        echo "skipped=${SKIPPED:-false}"           >> "$GITHUB_OUTPUT"
+        echo "updated=${UPDATED:-false}"           >> "$GITHUB_OUTPUT"
+        echo "build_failed=${BUILD_FAILED:-false}" >> "$GITHUB_OUTPUT"

@@ -1,0 +1,73 @@
+name: publish-lkg
+
+# Publishes the per-downstream LKG snapshot to Azure Blob Storage after each
+# successful regression report run on main. The snapshot is read from the
+# database (full accumulated state, not just the latest run) and uploaded as
+# a publicly-readable JSON file that downstream repos consume to discover the
+# latest known-good mathlib commit.
+#
+# Runs only on completion of mathlib-downstream-report on the main branch,
+# matching the federated credential subject claim.
+#
+# Required GitHub configuration (one-time setup):
+#   Secrets:   AZURE_CLIENT_ID, AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID, POSTGRES_DSN
+#   Variables: AZURE_STORAGE_ACCOUNT, AZURE_STORAGE_CONTAINER
+
+on:
+  workflow_dispatch:
+  workflow_run:
+    workflows: ["mathlib-downstream-report"]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  contents: read
+  id-token: write   # Required for Azure OIDC token minting.
+
+jobs:
+  publish-lkg:
+    # On workflow_run: only publish when the regression report ran on main and succeeded.
+    # On workflow_dispatch: always run (dispatching from main is enforced by the OIDC federated credential).
+    if: github.event_name == 'workflow_dispatch' || (github.event.workflow_run.head_branch == 'main' && github.event.workflow_run.conclusion == 'success')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6.2.0
+        with:
+          python-version: '3.x'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r scripts/requirements.txt
+
+      - name: Export LKG snapshot
+        env:
+          POSTGRES_DSN: ${{ secrets.POSTGRES_DSN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          python3 scripts/export_lkg_snapshot.py \
+            --backend sql \
+            --upstream leanprover-community/mathlib4 \
+            --inventory ci/inventory/downstreams.json \
+            --output /tmp/lkg-snapshot.json
+
+      - name: Log in to Azure (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.DOWNSTREAM_REPORTS_WRITER_AZ_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Upload LKG snapshot to Azure Blob Storage
+        run: |
+          az storage blob upload \
+            --account-name "${{ vars.AZURE_STORAGE_ACCOUNT }}" \
+            --container-name "${{ vars.AZURE_STORAGE_CONTAINER }}" \
+            --name "lkg/latest.json" \
+            --file /tmp/lkg-snapshot.json \
+            --content-type "application/json" \
+            --overwrite \
+            --auth-mode login

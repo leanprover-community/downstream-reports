@@ -1,0 +1,229 @@
+name: 'Open Bump PR'
+description: >
+  Commit working-tree changes and create or update a pull request. Generic
+  commit-and-PR action; LKG-aware inputs enrich the default title/body when
+  provided (designed to accept outputs from the bump-to-lkg action).
+
+inputs:
+  branch:
+    required: false
+    default: 'hopscotch/lkg-bump'
+    description: 'Branch name for the PR (force-pushed on every run)'
+  base:
+    required: false
+    default: ''
+    description: 'Base branch for the PR (defaults to the repo default branch)'
+  title:
+    required: false
+    default: ''
+    description: 'PR title (auto-generated from lkg-commit if not provided)'
+  body:
+    required: false
+    default: ''
+    description: 'PR body (auto-generated if not provided)'
+  commit-message:
+    required: false
+    default: ''
+    description: 'Commit message (auto-generated from lkg-commit if not provided)'
+  labels:
+    required: false
+    default: ''
+    description: 'Comma-separated labels to apply to the PR'
+  lkg-commit:
+    required: false
+    default: ''
+    description: 'LKG commit SHA — used to generate default title/body'
+  previous-pin:
+    required: false
+    default: ''
+    description: 'Previous pin SHA — included in the default PR body'
+  source-run-url:
+    required: false
+    default: ''
+    description: 'URL of the regression run that produced the LKG — linked in the default body'
+
+outputs:
+  pr-number:
+    description: 'PR number (empty if action=noop)'
+    value: ${{ steps.resolve-outputs.outputs.pr_number }}
+  pr-url:
+    description: 'PR URL (empty if action=noop)'
+    value: ${{ steps.resolve-outputs.outputs.pr_url }}
+  action:
+    description: '"created", "updated", or "noop" (no changes to commit)'
+    value: ${{ steps.resolve-outputs.outputs.action }}
+
+runs:
+  using: 'composite'
+  steps:
+    # ------------------------------------------------------------------
+    # Step 1: Check whether there are any file changes to commit.
+    # ------------------------------------------------------------------
+    - name: Check for working-tree changes
+      id: check-changes
+      shell: bash
+      run: |
+        if git diff --quiet && git diff --cached --quiet; then
+          echo "No file changes detected — nothing to commit."
+          echo "no_changes=true" >> "$GITHUB_OUTPUT"
+        else
+          echo "no_changes=false" >> "$GITHUB_OUTPUT"
+        fi
+
+    # ------------------------------------------------------------------
+    # Step 2: Create the branch, commit, and force-push.
+    # ------------------------------------------------------------------
+    - name: Commit and push branch
+      id: commit-and-push
+      if: steps.check-changes.outputs.no_changes != 'true'
+      shell: bash
+      env:
+        BRANCH: ${{ inputs.branch }}
+        LKG_COMMIT: ${{ inputs.lkg-commit }}
+        COMMIT_MESSAGE: ${{ inputs.commit-message }}
+      run: |
+        set -euo pipefail
+
+        # Determine commit message.
+        if [ -n "$COMMIT_MESSAGE" ]; then
+          MSG="$COMMIT_MESSAGE"
+        elif [ -n "$LKG_COMMIT" ]; then
+          SHORT="${LKG_COMMIT:0:7}"
+          MSG="chore: bump mathlib to ${SHORT}"
+        else
+          MSG="chore: dependency update"
+        fi
+
+        git config user.name  "github-actions[bot]"
+        git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+        git checkout -B "$BRANCH"
+        git add -A
+        git commit -m "$MSG"
+        git push --force origin "$BRANCH"
+
+    # ------------------------------------------------------------------
+    # Step 3: Create or update the PR.
+    # ------------------------------------------------------------------
+    - name: Create or update PR
+      id: create-or-update-pr
+      if: steps.check-changes.outputs.no_changes != 'true'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        BRANCH: ${{ inputs.branch }}
+        BASE: ${{ inputs.base }}
+        TITLE: ${{ inputs.title }}
+        BODY: ${{ inputs.body }}
+        LABELS: ${{ inputs.labels }}
+        LKG_COMMIT: ${{ inputs.lkg-commit }}
+        PREVIOUS_PIN: ${{ inputs.previous-pin }}
+        SOURCE_RUN_URL: ${{ inputs.source-run-url }}
+      run: |
+        set -euo pipefail
+
+        # Generate default title.
+        if [ -n "$TITLE" ]; then
+          PR_TITLE="$TITLE"
+        elif [ -n "$LKG_COMMIT" ]; then
+          SHORT="${LKG_COMMIT:0:7}"
+          PR_TITLE="chore: bump mathlib to ${SHORT}"
+        else
+          PR_TITLE="chore: dependency update"
+        fi
+
+        # Generate default body.
+        if [ -n "$BODY" ]; then
+          PR_BODY="$BODY"
+        elif [ -n "$LKG_COMMIT" ]; then
+          MATHLIB_URL="https://github.com/leanprover-community/mathlib4/commit/${LKG_COMMIT}"
+          SHORT="${LKG_COMMIT:0:7}"
+          PR_BODY="Bump mathlib dependency to [${SHORT}](${MATHLIB_URL})."
+          if [ -n "$PREVIOUS_PIN" ]; then
+            PREV_SHORT="${PREVIOUS_PIN:0:7}"
+            PREV_URL="https://github.com/leanprover-community/mathlib4/commit/${PREVIOUS_PIN}"
+            PR_BODY="${PR_BODY}
+
+Previous pin: [${PREV_SHORT}](${PREV_URL})"
+          fi
+          if [ -n "$SOURCE_RUN_URL" ]; then
+            PR_BODY="${PR_BODY}
+
+Source: [regression run](${SOURCE_RUN_URL})"
+          fi
+          PR_BODY="${PR_BODY}
+
+---
+*Automated bump via [hopscotch-reports](https://github.com/leanprover-community/hopscotch-reports).*"
+        else
+          PR_BODY="Automated dependency update."
+        fi
+
+        # Build optional gh flag arrays.
+        BASE_ARGS=()
+        if [ -n "$BASE" ]; then
+          BASE_ARGS=(--base "$BASE")
+        fi
+
+        LABEL_ARGS=()
+        if [ -n "$LABELS" ]; then
+          IFS=',' read -ra LABEL_LIST <<< "$LABELS"
+          for label in "${LABEL_LIST[@]}"; do
+            trimmed="${label#"${label%%[![:space:]]*}"}"  # ltrim
+            trimmed="${trimmed%"${trimmed##*[![:space:]]}"}"  # rtrim
+            if [ -n "$trimmed" ]; then
+              LABEL_ARGS+=(--label "$trimmed")
+            fi
+          done
+        fi
+
+        # Check for an existing open PR on this branch.
+        EXISTING=$(gh pr list \
+          --head "$BRANCH" \
+          --state open \
+          --json number,url \
+          --jq '.[0] // empty')
+
+        if [ -n "$EXISTING" ]; then
+          PR_NUMBER=$(echo "$EXISTING" | jq -r '.number')
+          PR_URL=$(echo "$EXISTING" | jq -r '.url')
+          gh pr edit "$PR_NUMBER" --title "$PR_TITLE" --body "$PR_BODY"
+          echo "PR #${PR_NUMBER} updated: $PR_URL"
+          echo "pr_action=updated" >> "$GITHUB_OUTPUT"
+        else
+          PR_URL=$(gh pr create \
+            --head "$BRANCH" \
+            "${BASE_ARGS[@]}" \
+            --title "$PR_TITLE" \
+            --body "$PR_BODY" \
+            "${LABEL_ARGS[@]}")
+          PR_NUMBER="${PR_URL##*/}"
+          echo "PR #${PR_NUMBER} created: $PR_URL"
+          echo "pr_action=created" >> "$GITHUB_OUTPUT"
+        fi
+
+        echo "pr_number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
+        echo "pr_url=$PR_URL"       >> "$GITHUB_OUTPUT"
+
+    # ------------------------------------------------------------------
+    # Final step: consolidate outputs.
+    # ------------------------------------------------------------------
+    - name: Resolve outputs
+      id: resolve-outputs
+      if: always()
+      shell: bash
+      env:
+        NO_CHANGES: ${{ steps.check-changes.outputs.no_changes }}
+        PR_NUMBER: ${{ steps.create-or-update-pr.outputs.pr_number }}
+        PR_URL: ${{ steps.create-or-update-pr.outputs.pr_url }}
+        PR_ACTION: ${{ steps.create-or-update-pr.outputs.pr_action }}
+      run: |
+        if [ "${NO_CHANGES:-}" = "true" ]; then
+          echo "action=noop"   >> "$GITHUB_OUTPUT"
+          echo "pr_number="    >> "$GITHUB_OUTPUT"
+          echo "pr_url="       >> "$GITHUB_OUTPUT"
+        else
+          echo "action=${PR_ACTION:-created}"  >> "$GITHUB_OUTPUT"
+          echo "pr_number=${PR_NUMBER:-}"      >> "$GITHUB_OUTPUT"
+          echo "pr_url=${PR_URL:-}"            >> "$GITHUB_OUTPUT"
+        fi
