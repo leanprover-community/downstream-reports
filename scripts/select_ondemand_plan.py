@@ -103,7 +103,6 @@ def main() -> int:
     backend = create_backend(args.backend, dsn=args.dsn, state_root=args.state_root)
 
     seen = backend.load_tested_downstream_commits("ondemand")
-    prior_details = backend.load_prior_results("ondemand", seen)
 
     payload = json.loads(args.inventory.read_text())
 
@@ -126,7 +125,10 @@ def main() -> int:
         ]
 
     include = []
-    skipped = []
+    # First pass: separate candidates into include vs skipped (deduped).
+    # Collect skipped (downstream, commit) pairs so we can batch-load their
+    # prior details in a single query instead of eagerly loading everything.
+    skipped_pairs: list[tuple[str, str, dict]] = []  # (name, head_sha, item)
     for item in candidates:
         owner_repo = item["repo"]
         bumping_branch = item["bumping_branch"]
@@ -139,9 +141,26 @@ def main() -> int:
 
         if not args.force and (item["name"], head_sha) in seen:
             print(f"[plan] {item['name']}: no new commits on {bumping_branch}, skipping")
-            prior = prior_details.get((item["name"], head_sha), {})
+            skipped_pairs.append((item["name"], head_sha, item))
+            continue
+
+        print(
+            f"[plan] {item['name']}: bumping branch {bumping_branch}"
+            f" head={head_sha[:12]}"
+        )
+
+        entry = dict(item)
+        include.append(entry)
+
+    # Second pass: load prior details only for the pairs that were skipped.
+    skipped: list[dict] = []
+    if skipped_pairs:
+        pairs_to_load = {(name, sha) for name, sha, _ in skipped_pairs}
+        prior_details = backend.load_prior_results("ondemand", pairs_to_load)
+        for name, head_sha, item in skipped_pairs:
+            prior = prior_details.get((name, head_sha), {})
             skipped.append({
-                "downstream": item["name"],
+                "downstream": name,
                 "repo": item["repo"],
                 "downstream_commit": head_sha,
                 "outcome": prior.get("outcome"),
@@ -152,15 +171,6 @@ def main() -> int:
                 "previous_run_url": prior.get("run_url"),
                 "previous_job_url": prior.get("job_url"),
             })
-            continue
-
-        print(
-            f"[plan] {item['name']}: bumping branch {bumping_branch}"
-            f" head={head_sha[:12]}"
-        )
-
-        entry = dict(item)
-        include.append(entry)
 
     args.output.write_text(json.dumps({"include": include}, sort_keys=True))
     args.skipped_output.write_text(json.dumps(skipped, sort_keys=True))

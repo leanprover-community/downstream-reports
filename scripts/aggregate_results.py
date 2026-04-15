@@ -282,6 +282,8 @@ def load_results(results_dir: Path) -> list[LoadedResult]:
                 culprit_log_text=load_culprit_log_text(path.parent),
             )
         )
+    if not results:
+        print(f"[aggregate] Warning: no result.json files found under {results_dir}")
     return results
 
 
@@ -667,6 +669,8 @@ def main() -> int:
             report_markdown=markdown,
             validate_jobs=validate_jobs or None,
         )
+    else:
+        print("[aggregate] No result records to persist — skipping save_run.")
 
     if args.report_output is not None:
         args.report_output.parent.mkdir(parents=True, exist_ok=True)

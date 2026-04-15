@@ -424,6 +424,7 @@ try:
         and_,
         func,
         select as sa_select,
+        tuple_,
     )
 
     _sa_metadata = MetaData()
@@ -714,7 +715,9 @@ class SqlBackend:
         r = _sa_run
         vj = _sa_validate_job
 
-        # Build a subquery that ranks results by recency per (downstream, commit).
+        # Build a subquery that ranks results by recency per (downstream, commit),
+        # restricted to only the requested pairs.
+        pair_values = list(pairs)
         ranked = (
             sa_select(
                 rr.c.downstream,
@@ -739,6 +742,7 @@ class SqlBackend:
                 r.c.workflow == workflow,
                 rr.c.downstream_commit.isnot(None),
                 rr.c.outcome.in_(["passed", "failed"]),
+                tuple_(rr.c.downstream, rr.c.downstream_commit).in_(pair_values),
             )
             .subquery()
         )
@@ -772,8 +776,6 @@ class SqlBackend:
         result: dict[tuple[str, str], dict[str, Any]] = {}
         for row in rows:
             key = (row[0], row[1])
-            if key not in pairs:
-                continue
             result[key] = {
                 "outcome": row[2],
                 "episode_state": row[3],

@@ -242,6 +242,7 @@ def git_url_from_manifest(project_dir: Path, dependency_name: str) -> str | None
             return url if isinstance(url, str) and url else None
     return None
 
+
 def resolve_search_base_commit(
     *,
     project_dir: Path,
@@ -260,6 +261,7 @@ def resolve_search_base_commit(
         return manifest_sha
 
     return last_known_good
+
 
 def should_verify_stored_last_known_good(
     *,

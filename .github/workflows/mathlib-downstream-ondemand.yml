@@ -1,7 +1,6 @@
 name: mathlib-downstream-ondemand
 
 on:
-  push:
   workflow_dispatch:
     inputs:
       downstream:

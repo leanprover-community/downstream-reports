@@ -190,15 +190,18 @@ def format_new_failure_message(
     ds_link = _downstream_commit_link(ds_commit, ds_repo, commit_titles)
 
     lines = [
-        f"**New regression detected in {downstream}",
+        f"**New regression detected in {downstream}**",
         "",
         f"- {downstream} at: {ds_link}",
         f"- Target Mathlib commit: {target_link}",
         f"- First known bad: {first_bad_link}",
-        f"- Failure stage: {failure_stage}" if failure_stage != "build" else "",
+    ]
+    if failure_stage != "build":
+        lines.append(f"- Failure stage: {failure_stage}")
+    lines.extend([
         "",
         f"[Downstream validation run]({run_url})",
-    ]
+    ])
 
     culprit_log = record.get("culprit_log_text")
     if culprit_log:
@@ -260,8 +263,9 @@ def format_ondemand_failure_message(
         f"- {downstream} at: {ds_link}",
         f"- Target Mathlib commit: {target_link}",
         f"- First known bad: {first_bad_link}",
-        f"- Failure stage: {failure_stage}" if failure_stage != "build" else ""
     ]
+    if failure_stage != "build":
+        lines.append(f"- Failure stage: {failure_stage}")
 
     culprit_log = record.get("culprit_log_text")
     if culprit_log:

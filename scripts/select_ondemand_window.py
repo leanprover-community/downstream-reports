@@ -145,7 +145,7 @@ def main() -> int:
             downstream_dir, config.dependency_name
         )
 
-        # TODO: Derive the mathlib target
+        # TODO: Derive the mathlib target from a parameter
         target_commit = resolve_upstream_target(upstream_dir, "master")
 
         selection.upstream_ref = target_commit
