@@ -190,13 +190,18 @@ def format_new_failure_message(
     ds_link = _downstream_commit_link(ds_commit, ds_repo, commit_titles)
 
     lines = [
-        f"**New regression detected in {downstream} (at: {ds_link})**",
+        f"**New regression detected in {downstream}**",
         "",
+        f"- {downstream} at: {ds_link}",
         f"- Target Mathlib commit: {target_link}",
         f"- First known bad: {first_bad_link}",
-        f"- Failure stage: {failure_stage}",
-        f"- [Downstream validation run]({run_url})",
     ]
+    if failure_stage != "build":
+        lines.append(f"- Failure stage: {failure_stage}")
+    lines.extend([
+        "",
+        f"[Downstream validation run]({run_url})",
+    ])
 
     culprit_log = record.get("culprit_log_text")
     if culprit_log:
@@ -227,8 +232,108 @@ def format_recovered_message(
         "",
         f"- Target Mathlib commit: {target_link}",
         f"- Previous known-bad: {prev_bad_link}",
-        f"- [Downstream validation run]({run_url})",
+        "",
+        f"[Downstream validation run]({run_url})",
     ]
+    return "\n".join(lines)
+
+
+def format_ondemand_failure_message(
+    record: dict[str, Any],
+    run_url: str,
+    commit_titles: dict[str, str] | None = None,
+    sha_to_tag: dict[str, str] | None = None,
+) -> str:
+    """Render a Zulip message for a downstream that is incompatible with the targeted Mathlib revision."""
+    downstream = record["downstream"]
+    target_sha = record.get("target_commit")
+    first_bad_sha = record.get("first_known_bad")
+    failure_stage = record.get("failure_stage") or "unknown"
+    ds_commit = record.get("downstream_commit")
+    ds_repo = record.get("repo")
+
+    target_link = _commit_link_with_title(target_sha, commit_titles, sha_to_tag)
+    first_bad_link = _commit_link_with_title(first_bad_sha, commit_titles, sha_to_tag)
+    ds_link = _downstream_commit_link(ds_commit, ds_repo, commit_titles)
+
+    lines = [
+        f"## [On-demand hopscotch run]({run_url})",
+        f"**{downstream} is incompatible with the targeted Mathlib revision**",
+        "",
+        f"- {downstream} at: {ds_link}",
+        f"- Target Mathlib commit: {target_link}",
+        f"- First known bad: {first_bad_link}",
+    ]
+    if failure_stage != "build":
+        lines.append(f"- Failure stage: {failure_stage}")
+
+    culprit_log = record.get("culprit_log_text")
+    if culprit_log:
+        lines.extend(["", "```spoiler Failure log", culprit_log, "```"])
+
+    return "\n".join(lines)
+
+
+def format_ondemand_compatible_message(
+    record: dict[str, Any],
+    run_url: str,
+    commit_titles: dict[str, str] | None = None,
+    sha_to_tag: dict[str, str] | None = None,
+) -> str:
+    """Render a Zulip message for a downstream that is compatible with the targeted Mathlib revision."""
+    downstream = record["downstream"]
+    target_sha = record.get("target_commit")
+    prev_bad_sha = record.get("previous_first_known_bad")
+    ds_commit = record.get("downstream_commit")
+    ds_repo = record.get("repo")
+
+    target_link = _commit_link_with_title(target_sha, commit_titles, sha_to_tag)
+    prev_bad_link = _commit_link_with_title(prev_bad_sha, commit_titles, sha_to_tag)
+    ds_link = _downstream_commit_link(ds_commit, ds_repo, commit_titles)
+
+    lines = [
+        f"## [On-demand hopscotch run]({run_url})",
+        f"**{downstream} is compatible with the targeted Mathlib revision**",
+        "",
+        f"- {downstream} at: {ds_link}",
+        f"- Target Mathlib commit: {target_link}",
+        f"- Previous known-bad: {prev_bad_link}"
+    ]
+    return "\n".join(lines)
+
+
+def format_ondemand_skipped_message(
+    record: dict[str, Any],
+    run_url: str,
+    commit_titles: dict[str, str] | None = None,
+    sha_to_tag: dict[str, str] | None = None,
+) -> str:
+    """Render a Zulip message for a downstream skipped because the same commit was already tested."""
+    downstream = record.get("downstream", "?")
+    ds_commit = record.get("downstream_commit")
+    ds_repo = record.get("repo")
+    outcome = record.get("outcome")
+    first_bad_sha = record.get("first_known_bad")
+    target_sha = record.get("target_commit")
+
+    ds_link = _downstream_commit_link(ds_commit, ds_repo, commit_titles)
+    target_link = _commit_link_with_title(target_sha, commit_titles, sha_to_tag)
+    first_bad_link = _commit_link_with_title(first_bad_sha, commit_titles, sha_to_tag)
+
+    outcome_label = "compatible" if outcome == "passed" else "incompatible" if outcome == "failed" else (outcome or "unknown")
+    prev_job_url = record.get("previous_job_url") or record.get("previous_run_url")
+
+    lines = [
+        f"## [On-demand hopscotch run]({run_url})",
+        f"**{downstream} was not retested** (same commit as previous run: {outcome_label})",
+        "",
+        f"- {downstream} at: {ds_link}",
+        f"- Target Mathlib commit: {target_link}",
+    ]
+    if outcome == "failed" and first_bad_sha:
+        lines.append(f"- First known bad: {first_bad_link}")
+    if prev_job_url:
+        lines.append(f"- Previous validation: [link]({prev_job_url})")
     return "\n".join(lines)
 
 
@@ -253,10 +358,16 @@ def compute_alert_actions(
     topic: str,
     commit_titles: dict[str, str] | None = None,
     sha_to_tag: dict[str, str] | None = None,
+    workflow: str = "regression",
+    skipped: list[dict[str, Any]] | None = None,
 ) -> list[AlertAction]:
     """Determine which alerts to send from aggregated run results.
 
-    Only ``new_failure`` and ``recovered`` transitions produce alerts.
+    For the ``"regression"`` workflow, only ``new_failure`` and ``recovered``
+    transitions produce alerts.  For the ``"ondemand"`` workflow, **all**
+    results (including skipped downstreams) produce alerts so that every
+    on-demand run reports back a complete picture.
+
     All alerts are sent to the same *stream* / *topic*.
 
     *commit_titles* is an optional ``{full_sha: title}`` mapping; pass the
@@ -264,19 +375,32 @@ def compute_alert_actions(
     message subject lines.  *sha_to_tag* is an optional ``{full_sha: tag_name}``
     mapping; when present, tagged commits are displayed by tag name instead of
     short SHA.
+
+    *workflow* selects the message formatters: ``"regression"`` (default) uses
+    regression language; ``"ondemand"`` uses bumping-branch compatibility language.
+
+    *skipped* is an optional list of skipped-downstream dicts from the plan job
+    (only used when *workflow* is ``"ondemand"``).
     """
     actions: list[AlertAction] = []
     for record in records:
         episode_state = record.get("episode_state", "")
-        if episode_state not in ALERTABLE_STATES:
-            continue
-
         downstream_name = record.get("downstream", "")
 
-        if episode_state == "new_failure":
-            content = format_new_failure_message(record, run_url, commit_titles, sha_to_tag)
+        if workflow == "ondemand":
+            if episode_state == "error":
+                continue  # errors are handled separately via format_error_notice_message
+            if episode_state in ("new_failure", "failing"):
+                content = format_ondemand_failure_message(record, run_url, commit_titles, sha_to_tag)
+            else:
+                content = format_ondemand_compatible_message(record, run_url, commit_titles, sha_to_tag)
         else:
-            content = format_recovered_message(record, run_url, commit_titles, sha_to_tag)
+            if episode_state not in ALERTABLE_STATES:
+                continue
+            if episode_state == "new_failure":
+                content = format_new_failure_message(record, run_url, commit_titles, sha_to_tag)
+            else:
+                content = format_recovered_message(record, run_url, commit_titles, sha_to_tag)
 
         actions.append(
             AlertAction(
@@ -286,6 +410,19 @@ def compute_alert_actions(
                 content=content,
             )
         )
+
+    if workflow == "ondemand" and skipped:
+        for record in skipped:
+            content = format_ondemand_skipped_message(record, run_url, commit_titles, sha_to_tag)
+            actions.append(
+                AlertAction(
+                    downstream=record.get("downstream", ""),
+                    stream=stream,
+                    topic=topic,
+                    content=content,
+                )
+            )
+
     return actions
 
 

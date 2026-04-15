@@ -15,6 +15,7 @@ from scripts.aggregate_results import (
     ValidationResult,
     apply_result,
     load_culprit_log_text,
+    render_report,
     truncate_log_text,
     filter_culprit_log_text,
     first_bad_position,
@@ -324,6 +325,64 @@ class FirstBadPositionTests(unittest.TestCase):
     def test_returns_none_for_none_sha(self) -> None:
         details = [{"sha": "a"}]
         self.assertIsNone(first_bad_position(details, None))
+
+
+class RenderReportSkippedTests(unittest.TestCase):
+    """Tests for skipped-downstream rendering in render_report."""
+
+    _COMMON_KWARGS = dict(
+        recorded_at="2026-04-15T00:00:00Z",
+        upstream_ref="ondemand",
+        run_id="run_1",
+        run_url="https://example.com/run/1",
+        rows=[],
+    )
+
+    def test_no_skipped_section_when_none(self) -> None:
+        """Scenario: no skipped section when skipped_rows is None."""
+        md = render_report(**self._COMMON_KWARGS, skipped_rows=None)
+        self.assertNotIn("Previously Tested", md)
+
+    def test_no_skipped_section_when_empty(self) -> None:
+        """Scenario: no skipped section when skipped_rows is empty."""
+        md = render_report(**self._COMMON_KWARGS, skipped_rows=[])
+        self.assertNotIn("Previously Tested", md)
+
+    def test_skipped_section_rendered(self) -> None:
+        """Scenario: skipped downstreams appear in the report."""
+        skipped = [{
+            "downstream": "TestProject",
+            "repo": "owner/TestProject",
+            "downstream_commit": "abc123def456",
+            "outcome": "passed",
+            "episode_state": "passing",
+            "first_known_bad": None,
+            "target_commit": "target789",
+            "previous_run_url": "https://example.com/run/old",
+            "previous_job_url": "https://example.com/job/42",
+        }]
+        md = render_report(**self._COMMON_KWARGS, skipped_rows=skipped)
+        self.assertIn("Previously Tested", md)
+        self.assertIn("TestProject", md)
+        self.assertIn("compatible", md)
+        self.assertIn("https://example.com/job/42", md)
+
+    def test_skipped_failed_shows_first_known_bad(self) -> None:
+        """Scenario: skipped downstream with failed outcome shows first_known_bad."""
+        skipped = [{
+            "downstream": "FailProject",
+            "repo": "owner/FailProject",
+            "downstream_commit": "abc",
+            "outcome": "failed",
+            "episode_state": "failing",
+            "first_known_bad": "bad123456789abcdef",
+            "target_commit": "target",
+            "previous_run_url": None,
+            "previous_job_url": None,
+        }]
+        md = render_report(**self._COMMON_KWARGS, skipped_rows=skipped)
+        self.assertIn("bad123456789", md)
+        self.assertIn("incompatible", md)
 
 
 if __name__ == "__main__":

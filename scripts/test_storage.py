@@ -20,6 +20,36 @@ from scripts.storage import (
 )
 
 
+def _make_run_result(
+    downstream: str,
+    downstream_commit: str,
+    outcome: str,
+) -> RunResultRecord:
+    """Build a minimal RunResultRecord for testing."""
+    return RunResultRecord(
+        upstream="leanprover-community/mathlib4",
+        downstream=downstream,
+        repo="owner/repo",
+        downstream_commit=downstream_commit,
+        outcome=outcome,
+        episode_state="passing" if outcome == "passed" else "error",
+        target_commit="target_abc",
+        previous_last_known_good=None,
+        previous_first_known_bad=None,
+        last_known_good="target_abc" if outcome == "passed" else None,
+        first_known_bad=None,
+        current_last_successful=None,
+        current_first_failing=None,
+        failure_stage=None,
+        search_mode="head-only",
+        commit_window_truncated=False,
+        error=None,
+        head_probe_outcome=outcome,
+        head_probe_failure_stage=None,
+        culprit_log_text=None,
+    )
+
+
 class ResultToRowTests(unittest.TestCase):
     """Test that result_to_row() faithfully serializes a RunResultRecord."""
 
@@ -182,17 +212,156 @@ class FilesystemBackendTests(unittest.TestCase):
             loaded = backend.load_all_statuses("regression", "leanprover-community/mathlib4")
             self.assertIsNone(loaded["OldDownstream"].downstream_commit)
 
-    def test_bumping_seen_round_trip(self) -> None:
+    def test_load_tested_downstream_commits_empty(self) -> None:
+        """Scenario: no results yet returns empty set."""
         with tempfile.TemporaryDirectory() as tmp:
             backend = FilesystemBackend(Path(tmp))
-            self.assertEqual(backend.load_bumping_seen(), {})
-            backend.save_bumping_seen({"TestDownstream": "abc123"})
-            loaded = backend.load_bumping_seen()
-            self.assertEqual(loaded, {"TestDownstream": "abc123"})
-            # Update with a new value
-            backend.save_bumping_seen({"TestDownstream": "def456"})
-            loaded = backend.load_bumping_seen()
-            self.assertEqual(loaded, {"TestDownstream": "def456"})
+            self.assertEqual(backend.load_tested_downstream_commits("ondemand"), set())
+
+    def test_load_tested_downstream_commits_from_saved_run(self) -> None:
+        """Scenario: passed/failed results are discoverable via load_tested_downstream_commits."""
+        with tempfile.TemporaryDirectory() as tmp:
+            backend = FilesystemBackend(Path(tmp))
+            results = [
+                _make_run_result("ProjectA", "commit_aaa", "passed"),
+                _make_run_result("ProjectB", "commit_bbb", "failed"),
+                _make_run_result("ProjectC", "commit_ccc", "error"),
+            ]
+            backend.save_run(
+                run_id="run_1",
+                workflow="ondemand",
+                upstream="leanprover-community/mathlib4",
+                upstream_ref="ondemand",
+                run_url="https://example.com/run/1",
+                created_at="2026-04-01T00:00:00Z",
+                results=results,
+                updated_statuses={},
+            )
+            seen = backend.load_tested_downstream_commits("ondemand")
+            self.assertIn(("ProjectA", "commit_aaa"), seen)
+            self.assertIn(("ProjectB", "commit_bbb"), seen)
+            # error outcomes are excluded from dedup
+            self.assertNotIn(("ProjectC", "commit_ccc"), seen)
+
+    def test_load_tested_downstream_commits_scoped_by_workflow(self) -> None:
+        """Scenario: results from a different workflow are not returned."""
+        with tempfile.TemporaryDirectory() as tmp:
+            backend = FilesystemBackend(Path(tmp))
+            backend.save_run(
+                run_id="run_reg",
+                workflow="regression",
+                upstream="leanprover-community/mathlib4",
+                upstream_ref="master",
+                run_url="https://example.com/run/reg",
+                created_at="2026-04-01T00:00:00Z",
+                results=[_make_run_result("ProjectA", "commit_aaa", "passed")],
+                updated_statuses={},
+            )
+            # ondemand workflow should not see regression results
+            self.assertEqual(backend.load_tested_downstream_commits("ondemand"), set())
+
+
+class LoadPriorResultsTests(unittest.TestCase):
+    """Tests for StorageBackend.load_prior_results."""
+
+    def test_empty_pairs_returns_empty(self) -> None:
+        """Scenario: passing an empty set returns empty dict."""
+        with tempfile.TemporaryDirectory() as tmp:
+            backend = FilesystemBackend(Path(tmp))
+            self.assertEqual(backend.load_prior_results("ondemand", set()), {})
+
+    def test_returns_matching_results(self) -> None:
+        """Scenario: returns rich data for matching (downstream, commit) pairs."""
+        with tempfile.TemporaryDirectory() as tmp:
+            backend = FilesystemBackend(Path(tmp))
+            results = [
+                _make_run_result("ProjectA", "commit_aaa", "passed"),
+                _make_run_result("ProjectB", "commit_bbb", "failed"),
+            ]
+            backend.save_run(
+                run_id="run_1",
+                workflow="ondemand",
+                upstream="leanprover-community/mathlib4",
+                upstream_ref="ondemand",
+                run_url="https://example.com/run/1",
+                created_at="2026-04-01T00:00:00Z",
+                results=results,
+                updated_statuses={},
+            )
+            pairs = {("ProjectA", "commit_aaa"), ("ProjectB", "commit_bbb")}
+            prior = backend.load_prior_results("ondemand", pairs)
+            self.assertIn(("ProjectA", "commit_aaa"), prior)
+            self.assertIn(("ProjectB", "commit_bbb"), prior)
+            self.assertEqual(prior[("ProjectA", "commit_aaa")]["outcome"], "passed")
+            self.assertEqual(prior[("ProjectB", "commit_bbb")]["outcome"], "failed")
+
+    def test_excludes_error_outcomes(self) -> None:
+        """Scenario: error outcomes are not included in prior results."""
+        with tempfile.TemporaryDirectory() as tmp:
+            backend = FilesystemBackend(Path(tmp))
+            backend.save_run(
+                run_id="run_1",
+                workflow="ondemand",
+                upstream="leanprover-community/mathlib4",
+                upstream_ref="ondemand",
+                run_url="https://example.com/run/1",
+                created_at="2026-04-01T00:00:00Z",
+                results=[_make_run_result("ProjectC", "commit_ccc", "error")],
+                updated_statuses={},
+            )
+            pairs = {("ProjectC", "commit_ccc")}
+            prior = backend.load_prior_results("ondemand", pairs)
+            self.assertEqual(prior, {})
+
+    def test_only_returns_requested_pairs(self) -> None:
+        """Scenario: results not in the pairs set are excluded."""
+        with tempfile.TemporaryDirectory() as tmp:
+            backend = FilesystemBackend(Path(tmp))
+            backend.save_run(
+                run_id="run_1",
+                workflow="ondemand",
+                upstream="leanprover-community/mathlib4",
+                upstream_ref="ondemand",
+                run_url="https://example.com/run/1",
+                created_at="2026-04-01T00:00:00Z",
+                results=[
+                    _make_run_result("ProjectA", "commit_aaa", "passed"),
+                    _make_run_result("ProjectB", "commit_bbb", "failed"),
+                ],
+                updated_statuses={},
+            )
+            pairs = {("ProjectA", "commit_aaa")}
+            prior = backend.load_prior_results("ondemand", pairs)
+            self.assertIn(("ProjectA", "commit_aaa"), prior)
+            self.assertNotIn(("ProjectB", "commit_bbb"), prior)
+
+    def test_returns_newest_result_per_pair(self) -> None:
+        """Scenario: when multiple runs match, the newest result is returned."""
+        with tempfile.TemporaryDirectory() as tmp:
+            backend = FilesystemBackend(Path(tmp))
+            backend.save_run(
+                run_id="run_old",
+                workflow="ondemand",
+                upstream="leanprover-community/mathlib4",
+                upstream_ref="ondemand",
+                run_url="https://example.com/run/old",
+                created_at="2026-04-01T00:00:00Z",
+                results=[_make_run_result("ProjectA", "commit_aaa", "failed")],
+                updated_statuses={},
+            )
+            backend.save_run(
+                run_id="run_new",
+                workflow="ondemand",
+                upstream="leanprover-community/mathlib4",
+                upstream_ref="ondemand",
+                run_url="https://example.com/run/new",
+                created_at="2026-04-02T00:00:00Z",
+                results=[_make_run_result("ProjectA", "commit_aaa", "passed")],
+                updated_statuses={},
+            )
+            pairs = {("ProjectA", "commit_aaa")}
+            prior = backend.load_prior_results("ondemand", pairs)
+            self.assertEqual(prior[("ProjectA", "commit_aaa")]["outcome"], "passed")
 
 
 if __name__ == "__main__":

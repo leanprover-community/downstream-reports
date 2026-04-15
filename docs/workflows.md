@@ -86,6 +86,15 @@ appended directly to the GitHub Actions job summary. It contains:
   position, the current episode state, a filtered snippet of the culprit build
   log (capped at 200 lines / 40 KB), and the full tool summary.
 
+## `mathlib-downstream-ondemand.yml`
+
+See [`docs/ondemand-workflow.md`](ondemand-workflow.md) for a full description.
+This workflow is manually triggered to test one or more downstreams against the
+current HEAD of their configured mathlib bumping branch. It deduplicates runs
+automatically (skips if the branch HEAD is unchanged) and reports every result
+— compatibility, failure, or skipped — to the `Hopscotch > On demand runs`
+Zulip topic.
+
 ## `mathlib-downstream-summary.yml`
 
 Manually dispatchable workflow that loads the latest per-downstream state from

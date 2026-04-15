@@ -18,9 +18,14 @@ Protocol overview
     A relational backend INSERTs into ``run`` and ``run_result``; the
     filesystem backend writes JSON and markdown files.
 
-``load_bumping_seen() / save_bumping_seen(updates)``
-    Track which bumping-branch commit was last processed per downstream, so
-    the bumping workflow can skip re-testing the same HEAD.
+``load_tested_downstream_commits(workflow)``
+    Return which (downstream, downstream_commit) pairs already have a
+    non-error result in *workflow*, so the on-demand plan step can
+    skip commits that have already been validated.
+
+``load_prior_results(workflow, pairs)``
+    Return rich prior-result details for specific (downstream, commit) pairs.
+    Used to annotate skipped on-demand downstreams with their previous outcome.
 
 Adding a new backend
 --------------------
@@ -124,7 +129,7 @@ class StorageBackend(Protocol):
     All methods use domain types (``DownstreamStatusRecord``,
     ``RunResultRecord``) rather than raw dicts or filesystem keys.  The two
     supported workflow identifiers are ``"regression"`` (the main head-tracking
-    run) and ``"bumping"`` (the downstream bumping-branch run).
+    run) and ``"ondemand"`` (the downstream on-demand/bumping-branch run).
     """
 
     def load_all_statuses(self, workflow: str, upstream: str) -> dict[str, DownstreamStatusRecord]:
@@ -162,15 +167,22 @@ class StorageBackend(Protocol):
         """
         ...
 
-    def load_bumping_seen(self) -> dict[str, str]:
-        """Return ``{downstream: last_seen_branch_commit}`` for all downstreams."""
+    def load_tested_downstream_commits(self, workflow: str) -> set[tuple[str, str]]:
+        """Return ``{(downstream, downstream_commit)}`` pairs with a non-error
+        result in *workflow*, used for dedup in on-demand runs."""
         ...
 
-    def save_bumping_seen(self, updates: dict[str, str]) -> None:
-        """Advance ``last_seen_branch_commit`` for the given downstreams.
+    def load_prior_results(
+        self, workflow: str, pairs: set[tuple[str, str]]
+    ) -> dict[tuple[str, str], dict[str, Any]]:
+        """Return rich prior-result details for ``(downstream, downstream_commit)`` pairs.
 
-        Only the downstreams present in *updates* are modified; others are
-        left unchanged.
+        Used by the on-demand plan step to annotate skipped downstreams with
+        their previous outcome, first-known-bad, and links to the original run.
+
+        Returns ``{(downstream, downstream_commit): {...}}`` where each value
+        contains at minimum: ``outcome``, ``episode_state``, ``first_known_bad``,
+        ``target_commit``, ``failure_stage``, ``repo``, ``run_url``, ``job_url``.
         """
         ...
 
@@ -181,15 +193,15 @@ class StorageBackend(Protocol):
 
 _WORKFLOW_STATUS_KEY: dict[str, str] = {
     "regression": "current",
-    "bumping": "bumping-current",
+    "ondemand": "ondemand-current",
 }
 _WORKFLOW_REPORT_KEY: dict[str, str] = {
     "regression": "latest",
-    "bumping": "bumping-latest",
+    "ondemand": "ondemand-latest",
 }
 _WORKFLOW_HISTORY_PREFIX: dict[str, str] = {
     "regression": "",
-    "bumping": "bumping",
+    "ondemand": "ondemand",
 }
 
 
@@ -210,15 +222,15 @@ class FilesystemBackend:
     .. code-block:: text
 
         status/
-            current.json          regression episode state
-            bumping-current.json  bumping episode state
-            bumping-seen.json
+            current.json           regression episode state
+            ondemand-current.json  ondemand episode state
+            (results also queried for dedup via load_tested_downstream_commits)
         reports/
             latest.json / latest.md
-            bumping-latest.json / bumping-latest.md
+            ondemand-latest.json / ondemand-latest.md
         results/
             {day}/{run_id}/{downstream}.json
-            bumping/{day}/{run_id}/{downstream}.json
+            ondemand/{day}/{run_id}/{downstream}.json
 
     The JSON files preserve the existing on-disk schema so that the git state
     branch remains readable without any migration.
@@ -328,29 +340,72 @@ class FilesystemBackend:
             report_md_path.parent.mkdir(parents=True, exist_ok=True)
             report_md_path.write_text(report_markdown)
 
-    def load_bumping_seen(self) -> dict[str, str]:
-        path = self._root / "status" / "bumping-seen.json"
-        if not path.exists():
-            return {}
-        payload = json.loads(path.read_text())
-        return {
-            name: data["last_seen_branch_commit"]
-            for name, data in payload.get("downstreams", {}).items()
-            if "last_seen_branch_commit" in data
-        }
+    def load_tested_downstream_commits(self, workflow: str) -> set[tuple[str, str]]:
+        history_prefix = _WORKFLOW_HISTORY_PREFIX[workflow]
+        base = self._root / "results"
+        if history_prefix:
+            base = base / history_prefix
+        if not base.exists():
+            return set()
+        result: set[tuple[str, str]] = set()
+        for path in base.rglob("*.json"):
+            try:
+                row = json.loads(path.read_text())
+            except Exception:
+                continue
+            ds = row.get("downstream")
+            commit = row.get("downstream_commit")
+            outcome = row.get("outcome")
+            if ds and commit and outcome in ("passed", "failed"):
+                result.add((ds, commit))
+        return result
 
-    def save_bumping_seen(self, updates: dict[str, str]) -> None:
-        path = self._root / "status" / "bumping-seen.json"
-        path.parent.mkdir(parents=True, exist_ok=True)
-        if path.exists():
-            payload = json.loads(path.read_text())
-        else:
-            payload = {"schema_version": 1, "downstreams": {}}
-        for downstream, commit in updates.items():
-            payload.setdefault("downstreams", {})[downstream] = {
-                "last_seen_branch_commit": commit
+    def load_prior_results(
+        self, workflow: str, pairs: set[tuple[str, str]]
+    ) -> dict[tuple[str, str], dict[str, Any]]:
+        if not pairs:
+            return {}
+        history_prefix = _WORKFLOW_HISTORY_PREFIX[workflow]
+        base = self._root / "results"
+        if history_prefix:
+            base = base / history_prefix
+        if not base.exists():
+            return {}
+        # Collect the newest result per (downstream, commit) pair.
+        # File paths contain dates (results/{prefix}/{date}/{run_id}/{ds}.json)
+        # so lexicographic path ordering approximates recency.
+        best: dict[tuple[str, str], tuple[str, dict[str, Any]]] = {}
+        for path in base.rglob("*.json"):
+            try:
+                row = json.loads(path.read_text())
+            except Exception:
+                continue
+            ds = row.get("downstream")
+            commit = row.get("downstream_commit")
+            outcome = row.get("outcome")
+            if not (ds and commit and outcome in ("passed", "failed")):
+                continue
+            key = (ds, commit)
+            if key not in pairs:
+                continue
+            # Use directory path as a recency proxy (date/run_id ordering).
+            path_key = str(path)
+            existing = best.get(key)
+            if existing is None or path_key > existing[0]:
+                best[key] = (path_key, row)
+        return {
+            key: {
+                "outcome": row.get("outcome"),
+                "episode_state": row.get("episode_state"),
+                "first_known_bad": row.get("first_known_bad"),
+                "target_commit": row.get("target_commit"),
+                "failure_stage": row.get("failure_stage"),
+                "repo": row.get("repo"),
+                "run_url": None,   # filesystem backend doesn't store run_url per result
+                "job_url": None,   # filesystem backend doesn't store job metadata
             }
-        path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+            for key, (_, row) in best.items()
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -369,6 +424,7 @@ try:
         and_,
         func,
         select as sa_select,
+        tuple_,
     )
 
     _sa_metadata = MetaData()
@@ -424,14 +480,6 @@ try:
         Column("pinned_commit", String),
         Column("age_commits", Integer),
         Column("bump_commits", Integer),
-    )
-
-    _sa_bumping_seen = Table(
-        "bumping_seen",
-        _sa_metadata,
-        Column("downstream", String, primary_key=True),
-        Column("last_seen_branch_commit", String, nullable=False),
-        Column("updated_at", DateTime(timezone=True), nullable=False),
     )
 
     _sa_validate_job = Table(
@@ -641,30 +689,104 @@ class SqlBackend:
 
         # report_markdown is not persisted — regenerate from structured data as needed
 
-    def load_bumping_seen(self) -> dict[str, str]:
-        t = _sa_bumping_seen
-        stmt = sa_select(t.c.downstream, t.c.last_seen_branch_commit)
+    def load_tested_downstream_commits(self, workflow: str) -> set[tuple[str, str]]:
+        rr = _sa_run_result
+        r = _sa_run
+        stmt = (
+            sa_select(rr.c.downstream, rr.c.downstream_commit)
+            .join(r, rr.c.run_id == r.c.run_id)
+            .where(
+                r.c.workflow == workflow,
+                rr.c.downstream_commit.isnot(None),
+                rr.c.outcome.in_(["passed", "failed"]),
+            )
+            .distinct()
+        )
         with self._engine.connect() as conn:
             rows = conn.execute(stmt).fetchall()
-        return {row[0]: row[1] for row in rows}
+        return {(row[0], row[1]) for row in rows}
 
-    def save_bumping_seen(self, updates: dict[str, str]) -> None:
-        from datetime import datetime, timezone
+    def load_prior_results(
+        self, workflow: str, pairs: set[tuple[str, str]]
+    ) -> dict[tuple[str, str], dict[str, Any]]:
+        if not pairs:
+            return {}
+        rr = _sa_run_result
+        r = _sa_run
+        vj = _sa_validate_job
 
-        now = datetime.now(timezone.utc)
-        with self._engine.begin() as conn:
-            for downstream, commit in updates.items():
-                self._upsert(
-                    conn,
-                    _sa_bumping_seen,
-                    values={
-                        "downstream": downstream,
-                        "last_seen_branch_commit": commit,
-                        "updated_at": now,
-                    },
-                    conflict_cols=["downstream"],
-                    update_cols=["last_seen_branch_commit", "updated_at"],
+        # Build a subquery that ranks results by recency per (downstream, commit),
+        # restricted to only the requested pairs.
+        pair_values = list(pairs)
+        ranked = (
+            sa_select(
+                rr.c.downstream,
+                rr.c.downstream_commit,
+                rr.c.outcome,
+                rr.c.episode_state,
+                rr.c.first_known_bad,
+                rr.c.target_commit,
+                rr.c.failure_stage,
+                rr.c.repo,
+                rr.c.run_id,
+                r.c.run_url,
+                func.row_number()
+                .over(
+                    partition_by=[rr.c.downstream, rr.c.downstream_commit],
+                    order_by=r.c.reported_at.desc(),
                 )
+                .label("rn"),
+            )
+            .join(r, rr.c.run_id == r.c.run_id)
+            .where(
+                r.c.workflow == workflow,
+                rr.c.downstream_commit.isnot(None),
+                rr.c.outcome.in_(["passed", "failed"]),
+                tuple_(rr.c.downstream, rr.c.downstream_commit).in_(pair_values),
+            )
+            .subquery()
+        )
+
+        stmt = (
+            sa_select(
+                ranked.c.downstream,
+                ranked.c.downstream_commit,
+                ranked.c.outcome,
+                ranked.c.episode_state,
+                ranked.c.first_known_bad,
+                ranked.c.target_commit,
+                ranked.c.failure_stage,
+                ranked.c.repo,
+                ranked.c.run_url,
+                vj.c.job_url,
+            )
+            .outerjoin(
+                vj,
+                and_(
+                    ranked.c.run_id == vj.c.run_id,
+                    ranked.c.downstream == vj.c.downstream,
+                ),
+            )
+            .where(ranked.c.rn == 1)
+        )
+
+        with self._engine.connect() as conn:
+            rows = conn.execute(stmt).fetchall()
+
+        result: dict[tuple[str, str], dict[str, Any]] = {}
+        for row in rows:
+            key = (row[0], row[1])
+            result[key] = {
+                "outcome": row[2],
+                "episode_state": row[3],
+                "first_known_bad": row[4],
+                "target_commit": row[5],
+                "failure_stage": row[6],
+                "repo": row[7],
+                "run_url": row[8],
+                "job_url": row[9],
+            }
+        return result
 
 
 # ---------------------------------------------------------------------------
@@ -837,12 +959,15 @@ class DryRunBackend:
                 lines.append(f"    conclusion: {job.conclusion}")
         print("\n".join(lines))
 
-    def load_bumping_seen(self) -> dict[str, str]:
-        print("[dry-run] load_bumping_seen() -> {}")
-        return {}
+    def load_tested_downstream_commits(self, workflow: str) -> set[tuple[str, str]]:
+        print(f"[dry-run] load_tested_downstream_commits({workflow!r}) -> set()")
+        return set()
 
-    def save_bumping_seen(self, updates: dict[str, str]) -> None:
-        print(f"[dry-run] save_bumping_seen(updates={updates!r})")
+    def load_prior_results(
+        self, workflow: str, pairs: set[tuple[str, str]]
+    ) -> dict[tuple[str, str], dict[str, Any]]:
+        print(f"[dry-run] load_prior_results({workflow!r}, {len(pairs)} pair(s)) -> {{}}")
+        return {}
 
 
 # ---------------------------------------------------------------------------

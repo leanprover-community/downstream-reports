@@ -22,6 +22,9 @@ from scripts.notifications import (
     fetch_commit_titles,
     format_error_notice_message,
     format_new_failure_message,
+    format_ondemand_compatible_message,
+    format_ondemand_failure_message,
+    format_ondemand_skipped_message,
     format_recovered_message,
     format_summary_message,
     _commit_link_with_title,
@@ -659,6 +662,288 @@ class FormatErrorNoticeMessageTests(unittest.TestCase):
         """Scenario: two or more failures use the plural 'builds'."""
         msg = format_error_notice_message(2, _RUN_URL)
         self.assertIn("builds", msg)
+
+
+# ---------------------------------------------------------------------------
+# Tests: format_ondemand_failure_message
+# ---------------------------------------------------------------------------
+
+
+class FormatOndemandFailureMessageTests(unittest.TestCase):
+    """Message rendering for on-demand incompatibility alerts."""
+
+    def test_includes_downstream_name(self) -> None:
+        """Scenario: the message mentions which downstream is incompatible."""
+        msg = format_ondemand_failure_message(_make_record(), _RUN_URL)
+        self.assertIn("physlib", msg)
+
+    def test_incompatibility_headline(self) -> None:
+        """Scenario: the headline uses incompatibility language, not regression language."""
+        msg = format_ondemand_failure_message(_make_record(), _RUN_URL)
+        self.assertIn("incompatible with the targeted Mathlib revision", msg)
+        self.assertNotIn("regression", msg)
+        self.assertNotIn("New regression", msg)
+
+    def test_includes_first_known_bad(self) -> None:
+        """Scenario: the culprit commit SHA is included."""
+        msg = format_ondemand_failure_message(
+            _make_record(first_known_bad="deadbeef1234"), _RUN_URL
+        )
+        self.assertIn("deadbeef1234", msg)
+
+    def test_includes_failure_stage(self) -> None:
+        """Scenario: the failure stage is mentioned."""
+        msg = format_ondemand_failure_message(
+            _make_record(failure_stage="test"), _RUN_URL
+        )
+        self.assertIn("test", msg)
+
+    def test_includes_run_url(self) -> None:
+        """Scenario: a link to the CI run is included."""
+        msg = format_ondemand_failure_message(_make_record(), _RUN_URL)
+        self.assertIn(_RUN_URL, msg)
+
+    def test_includes_culprit_log_when_present(self) -> None:
+        """Scenario: the culprit log excerpt is embedded in a spoiler block."""
+        msg = format_ondemand_failure_message(
+            _make_record(culprit_log_text="error: type mismatch"), _RUN_URL
+        )
+        self.assertIn("error: type mismatch", msg)
+        self.assertIn("```spoiler", msg)
+
+    def test_culprit_log_absent_means_no_spoiler(self) -> None:
+        """Scenario: when culprit_log_text is None, no spoiler block is added."""
+        msg = format_ondemand_failure_message(_make_record(culprit_log_text=None), _RUN_URL)
+        self.assertNotIn("```spoiler", msg)
+
+    def test_includes_downstream_commit_link(self) -> None:
+        """Scenario: the downstream commit SHA is linked in the message headline."""
+        sha = "ds1234ds5678abcdef90"
+        msg = format_ondemand_failure_message(
+            _make_record(downstream_commit=sha, repo="owner/physlib"), _RUN_URL
+        )
+        self.assertIn(f"https://github.com/owner/physlib/commit/{sha}", msg)
+
+    def test_uses_target_mathlib_commit_label(self) -> None:
+        """Scenario: the target commit bullet is labelled 'Target Mathlib commit'."""
+        msg = format_ondemand_failure_message(_make_record(), _RUN_URL)
+        self.assertIn("Target Mathlib commit", msg)
+
+
+# ---------------------------------------------------------------------------
+# Tests: format_ondemand_compatible_message
+# ---------------------------------------------------------------------------
+
+
+class FormatOndemandCompatibleMessageTests(unittest.TestCase):
+    """Message rendering for on-demand compatibility (recovered) alerts."""
+
+    def test_includes_downstream_name(self) -> None:
+        """Scenario: the message mentions which downstream is compatible."""
+        msg = format_ondemand_compatible_message(
+            _make_record(episode_state="recovered", outcome="passed"), _RUN_URL
+        )
+        self.assertIn("physlib", msg)
+
+    def test_compatibility_headline(self) -> None:
+        """Scenario: the headline uses compatibility language, not recovery language."""
+        msg = format_ondemand_compatible_message(
+            _make_record(episode_state="recovered", outcome="passed"), _RUN_URL
+        )
+        self.assertIn("compatible with the targeted Mathlib revision", msg)
+        self.assertNotIn("recovered", msg)
+        self.assertNotIn("regression", msg)
+
+    def test_includes_run_url(self) -> None:
+        """Scenario: a link to the CI run is included."""
+        msg = format_ondemand_compatible_message(_make_record(), _RUN_URL)
+        self.assertIn(_RUN_URL, msg)
+
+    def test_includes_previous_first_known_bad(self) -> None:
+        """Scenario: the previously-bad commit is referenced."""
+        msg = format_ondemand_compatible_message(
+            _make_record(previous_first_known_bad="oldbadbad123"), _RUN_URL
+        )
+        self.assertIn("oldbadbad123", msg)
+
+    def test_uses_previous_known_bad_label(self) -> None:
+        """Scenario: the previous failure commit bullet is labelled 'Previous known-bad'."""
+        msg = format_ondemand_compatible_message(
+            _make_record(episode_state="recovered", outcome="passed"), _RUN_URL
+        )
+        self.assertIn("Previous known-bad", msg)
+
+    def test_includes_downstream_commit_link(self) -> None:
+        """Scenario: the downstream commit SHA is linked in the message headline."""
+        sha = "ds1234ds5678abcdef90"
+        msg = format_ondemand_compatible_message(
+            _make_record(downstream_commit=sha, repo="owner/physlib", episode_state="recovered", outcome="passed"),
+            _RUN_URL,
+        )
+        self.assertIn(f"https://github.com/owner/physlib/commit/{sha}", msg)
+
+
+# ---------------------------------------------------------------------------
+# Tests: compute_alert_actions with workflow parameter
+# ---------------------------------------------------------------------------
+
+
+class ComputeAlertActionsWorkflowTests(unittest.TestCase):
+    """Verify that workflow='ondemand' switches to on-demand formatters."""
+
+    def test_ondemand_failure_uses_incompatibility_language(self) -> None:
+        """Scenario: workflow='ondemand' new_failure produces incompatibility headline."""
+        records = [_make_record(episode_state="new_failure")]
+        actions = compute_alert_actions(records, _RUN_URL, _STREAM, _TOPIC, workflow="ondemand")
+        self.assertEqual(len(actions), 1)
+        self.assertIn("incompatible with the targeted Mathlib revision", actions[0].content)
+        self.assertNotIn("New regression", actions[0].content)
+
+    def test_ondemand_recovered_uses_compatibility_language(self) -> None:
+        """Scenario: workflow='ondemand' recovered produces compatibility headline."""
+        records = [_make_record(episode_state="recovered", outcome="passed")]
+        actions = compute_alert_actions(records, _RUN_URL, _STREAM, _TOPIC, workflow="ondemand")
+        self.assertEqual(len(actions), 1)
+        self.assertIn("compatible with the targeted Mathlib revision", actions[0].content)
+        self.assertNotIn("recovered", actions[0].content)
+
+    def test_regression_failure_uses_regression_language(self) -> None:
+        """Scenario: workflow='regression' (default) new_failure produces regression headline."""
+        records = [_make_record(episode_state="new_failure")]
+        actions = compute_alert_actions(records, _RUN_URL, _STREAM, _TOPIC, workflow="regression")
+        self.assertEqual(len(actions), 1)
+        self.assertIn("New regression detected", actions[0].content)
+
+    def test_regression_is_default(self) -> None:
+        """Scenario: omitting workflow defaults to regression formatters."""
+        records = [_make_record(episode_state="new_failure")]
+        actions = compute_alert_actions(records, _RUN_URL, _STREAM, _TOPIC)
+        self.assertEqual(len(actions), 1)
+        self.assertIn("New regression detected", actions[0].content)
+
+    def test_ondemand_reports_all_non_error_states(self) -> None:
+        """Scenario: workflow='ondemand' reports all non-error states."""
+        records = [
+            _make_record(episode_state="passing"),
+            _make_record(downstream="b", episode_state="failing"),
+            _make_record(downstream="c", episode_state="new_failure"),
+        ]
+        actions = compute_alert_actions(records, _RUN_URL, _STREAM, _TOPIC, workflow="ondemand")
+        self.assertEqual(len(actions), 3)
+        self.assertEqual(
+            [a.downstream for a in actions],
+            ["physlib", "b", "c"],
+        )
+
+    def test_ondemand_errors_still_filtered(self) -> None:
+        """Scenario: workflow='ondemand' still filters out error states."""
+        records = [
+            _make_record(episode_state="passing"),
+            _make_record(downstream="b", episode_state="error"),
+        ]
+        actions = compute_alert_actions(records, _RUN_URL, _STREAM, _TOPIC, workflow="ondemand")
+        self.assertEqual(len(actions), 1)
+        self.assertEqual(actions[0].downstream, "physlib")
+
+    def test_ondemand_includes_skipped_downstreams(self) -> None:
+        """Scenario: workflow='ondemand' includes skipped downstreams in alerts."""
+        records = [_make_record(episode_state="passing")]
+        skipped = [
+            {
+                "downstream": "skipped-ds",
+                "repo": "owner/skipped-ds",
+                "downstream_commit": "abc123",
+                "outcome": "failed",
+                "first_known_bad": "bad456",
+                "target_commit": "target789",
+            }
+        ]
+        actions = compute_alert_actions(
+            records, _RUN_URL, _STREAM, _TOPIC, workflow="ondemand", skipped=skipped,
+        )
+        self.assertEqual(len(actions), 2)
+        self.assertEqual(actions[1].downstream, "skipped-ds")
+        self.assertIn("was not retested", actions[1].content)
+
+
+class FormatOndemandSkippedMessageTests(unittest.TestCase):
+    """Tests for format_ondemand_skipped_message."""
+
+    def test_includes_downstream_name(self) -> None:
+        """Scenario: message contains the downstream name."""
+        record = {
+            "downstream": "MyProject",
+            "repo": "owner/MyProject",
+            "downstream_commit": "abc123def456",
+            "outcome": "passed",
+            "target_commit": "target789",
+        }
+        msg = format_ondemand_skipped_message(record, _RUN_URL)
+        self.assertIn("MyProject", msg)
+
+    def test_compatible_outcome_label(self) -> None:
+        """Scenario: passed outcome shows 'compatible'."""
+        record = {
+            "downstream": "ds",
+            "repo": "owner/ds",
+            "downstream_commit": "abc",
+            "outcome": "passed",
+            "target_commit": "target",
+        }
+        msg = format_ondemand_skipped_message(record, _RUN_URL)
+        self.assertIn("compatible", msg)
+        self.assertNotIn("incompatible", msg)
+
+    def test_incompatible_outcome_label(self) -> None:
+        """Scenario: failed outcome shows 'incompatible'."""
+        record = {
+            "downstream": "ds",
+            "repo": "owner/ds",
+            "downstream_commit": "abc",
+            "outcome": "failed",
+            "first_known_bad": "bad123",
+            "target_commit": "target",
+        }
+        msg = format_ondemand_skipped_message(record, _RUN_URL)
+        self.assertIn("incompatible", msg)
+
+    def test_includes_first_known_bad_when_failed(self) -> None:
+        """Scenario: first known bad is shown when outcome is failed."""
+        record = {
+            "downstream": "ds",
+            "repo": "owner/ds",
+            "downstream_commit": "abc",
+            "outcome": "failed",
+            "first_known_bad": "bad123456789",
+            "target_commit": "target",
+        }
+        msg = format_ondemand_skipped_message(record, _RUN_URL)
+        self.assertIn("bad123456789", msg)
+
+    def test_includes_previous_job_url(self) -> None:
+        """Scenario: previous validation link is shown when available."""
+        record = {
+            "downstream": "ds",
+            "repo": "owner/ds",
+            "downstream_commit": "abc",
+            "outcome": "passed",
+            "target_commit": "target",
+            "previous_job_url": "https://example.com/job/42",
+        }
+        msg = format_ondemand_skipped_message(record, _RUN_URL)
+        self.assertIn("https://example.com/job/42", msg)
+
+    def test_skipped_headline(self) -> None:
+        """Scenario: message headline indicates downstream was not retested."""
+        record = {
+            "downstream": "ds",
+            "repo": "owner/ds",
+            "downstream_commit": "abc",
+            "outcome": "passed",
+            "target_commit": "target",
+        }
+        msg = format_ondemand_skipped_message(record, _RUN_URL)
+        self.assertIn("was not retested", msg)
 
 
 if __name__ == "__main__":
