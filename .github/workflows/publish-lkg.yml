@@ -23,7 +23,7 @@ on:
 
 permissions:
   contents: read
-  id-token: write   # Required for Azure OIDC token minting.
+  id-token: write   # Required for Azure OIDC token minting
 
 jobs:
   publish-lkg:
@@ -60,13 +60,13 @@ jobs:
         with:
           client-id: ${{ secrets.DOWNSTREAM_REPORTS_WRITER_AZ_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          allow-no-subscriptions: true
 
       - name: Upload LKG snapshot to Azure Blob Storage
         run: |
           az storage blob upload \
-            --account-name "${{ vars.AZURE_STORAGE_ACCOUNT }}" \
-            --container-name "${{ vars.AZURE_STORAGE_CONTAINER }}" \
+            --account-name '${{ vars.AZURE_STORAGE_ACCOUNT }}' \
+            --container-name '${{ vars.AZURE_STORAGE_CONTAINER }}' \
             --name "lkg/latest.json" \
             --file /tmp/lkg-snapshot.json \
             --content-type "application/json" \
