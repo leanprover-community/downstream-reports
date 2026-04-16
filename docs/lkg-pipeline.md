@@ -74,36 +74,11 @@ if: github.event_name != 'workflow_run' ||
 long-lived secrets — via `azure/login@v2` with a federated credential scoped to
 `refs/heads/main`.
 
-### `.github/actions/bump-to-lkg`
+### Composite actions
 
-Composite action for downstream repos. Given a `downstream` name (must match the
-inventory entry), it:
-
-1. Fetches and validates `lkg/latest.json` from the public blob URL
-2. Reads the current pin from `lake-manifest.json`
-3. Skips if already at LKG (`skipped=true`)
-4. Installs elan + hopscotch, runs `hopscotch dep --scan-mode linear --keep-last-good`
-5. Resolves outputs with safe defaults
-
-**Inputs:**
-
-| Input | Default | Description |
-|-------|---------|-------------|
-| `downstream` | *(required)* | Name as registered in the inventory |
-| `project-dir` | `.` | Path to the downstream project root |
-| `dependency-name` | `mathlib` | Dependency name in the lakefile |
-| `hopscotch-version` | `v1.3.0` | Hopscotch release tag |
-| `snapshot-url` | production URL | Override for testing |
-
-**Outputs:** `lkg-commit`, `current-pin`, `updated`, `skipped`, `build-failed`
-
-### `.github/actions/open-bump-pr`
-
-Generic commit-and-PR composite action. Independent of `bump-to-lkg` — works
-with any working-tree changes. LKG-aware inputs (`lkg-commit`, `previous-pin`,
-`source-run-url`) enrich the default PR title and body when provided.
-
-**Outputs:** `pr-number`, `pr-url`, `action` (`"created"` / `"updated"` / `"noop"`)
+Three composite actions are available for downstream repos: `bump-to-lkg`,
+`open-bump-pr`, and `query-lkg`. See [docs/actions.md](actions.md) for full
+input/output reference and example workflows.
 
 ---
 
@@ -171,39 +146,8 @@ container and no subscription-level operations are performed.
 
 ## Downstream integration
 
-Minimal workflow for a downstream repo:
+See [docs/actions.md](actions.md) for the full input/output reference and a
+complete example workflow.
 
-```yaml
-name: Bump mathlib to LKG
-
-on:
-  schedule:
-    - cron: "0 18 * * *"
-  workflow_dispatch:
-
-permissions:
-  contents: write
-  pull-requests: write
-
-jobs:
-  bump:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-
-      - name: Bump to LKG
-        id: bump
-        uses: leanprover-community/hopscotch-reports/.github/actions/bump-to-lkg@v1
-        with:
-          downstream: my-project-name
-
-      - name: Open PR
-        if: steps.bump.outputs.updated == 'true'
-        uses: leanprover-community/hopscotch-reports/.github/actions/open-bump-pr@v1
-        with:
-          lkg-commit: ${{ steps.bump.outputs.lkg-commit }}
-          previous-pin: ${{ steps.bump.outputs.current-pin }}
-```
-
-The `downstream` input must match the `name` field of the entry in
-`ci/inventory/downstreams.json`.
+The `downstream` input to `bump-to-lkg` must match the `name` field of the
+entry in `ci/inventory/downstreams.json`.

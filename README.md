@@ -22,6 +22,20 @@ Loads the latest per-downstream state from the database and sends a compact Mark
 
 See [`docs/workflows.md`](docs/workflows.md) for a detailed description of the scheduled regression and summary workflows, including job structure, window selection algorithm, and Zulip configuration.
 
+## Reusable actions for downstream repos
+
+This repo publishes three composite GitHub Actions that downstream Lean projects
+can use to consume the LKG data and automate mathlib bumps:
+
+| Action | Description |
+|--------|-------------|
+| [`bump-to-lkg`](.github/actions/bump-to-lkg) | Fetches the LKG snapshot, checks the current pin, and runs `hopscotch` to bump and build. |
+| [`open-bump-pr`](.github/actions/open-bump-pr) | Commits working-tree changes and creates or updates a PR. |
+| [`query-lkg`](.github/actions/query-lkg) | Lightweight read-only lookup — returns the LKG commit for a downstream without cloning or building. |
+
+See [`docs/actions.md`](docs/actions.md) for the full input/output reference and
+an example workflow.
+
 ## Inventory
 
 `ci/inventory/downstreams.json` holds the curated set of downstream projects.
