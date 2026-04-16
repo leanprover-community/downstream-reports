@@ -2,6 +2,13 @@
   "schema_version": 1,
   "downstreams": [
     {
+      "name": "LeanDownstreamPlayground",
+      "repo": "marcelolynch/LeanDownstreamPlayground",
+      "default_branch": "main",
+      "dependency_name": "mathlib",
+      "enabled": true      
+    },
+    {
       "name": "physlib",
       "repo": "leanprover-community/physlib",
       "default_branch": "master",
