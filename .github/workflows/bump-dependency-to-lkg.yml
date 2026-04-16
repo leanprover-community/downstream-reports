@@ -1,0 +1,107 @@
+name: bump-dependency-to-lkg
+
+# Reusable workflow: bump a Lean downstream's dependency to its current
+# last-known-good (LKG) commit and open (or update) a PR.
+#
+# Wraps bump-to-lkg + open-bump-pr. Intended as the zero-boilerplate option
+# for downstreams that just want a scheduled PR — no job structure required.
+#
+# Minimal calling workflow:
+#
+#   on:
+#     schedule:
+#       - cron: "0 18 * * *"
+#     workflow_dispatch:
+#
+#   jobs:
+#     bump:
+#       uses: leanprover-community/hopscotch-reports/.github/workflows/bump-dependency-to-lkg.yml@main
+#       permissions:
+#         contents: write
+#         pull-requests: write
+
+on:
+  workflow_call:
+    inputs:
+      branch:
+        description: >
+          Branch name for the bump PR. Force-pushed on every run so the PR
+          stays at a single commit.
+        default: 'hopscotch/lkg-bump'
+        required: false
+        type: string
+      base:
+        description: >
+          Base branch for the PR. Defaults to the repository default branch.
+        default: ''
+        required: false
+        type: string
+      labels:
+        description: 'Comma-separated labels to apply to the PR (e.g. "dependencies,automated").'
+        default: ''
+        required: false
+        type: string
+      dependency-name:
+        description: 'Name of the dependency in the lakefile (default: mathlib).'
+        default: 'mathlib'
+        required: false
+        type: string
+      hopscotch-version:
+        description: 'Hopscotch release tag to download.'
+        default: 'v1.3.0'
+        required: false
+        type: string
+    outputs:
+      pr-number:
+        description: 'PR number. Empty when no bump was needed (skipped or build-failed).'
+        value: ${{ jobs.bump.outputs.pr-number }}
+      pr-url:
+        description: 'PR URL. Empty when no bump was needed (skipped or build-failed).'
+        value: ${{ jobs.bump.outputs.pr-url }}
+      action:
+        description: '"created", "updated", or "noop" (nothing to commit).'
+        value: ${{ jobs.bump.outputs.action }}
+      updated:
+        description: '"true" if hopscotch successfully bumped the project.'
+        value: ${{ jobs.bump.outputs.updated }}
+      skipped:
+        description: '"true" if the project was already at the LKG commit.'
+        value: ${{ jobs.bump.outputs.skipped }}
+      build-failed:
+        description: '"true" if hopscotch ran but the build failed at the LKG commit.'
+        value: ${{ jobs.bump.outputs.build-failed }}
+
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    outputs:
+      pr-number:    ${{ steps.open-pr.outputs.pr-number }}
+      pr-url:       ${{ steps.open-pr.outputs.pr-url }}
+      action:       ${{ steps.open-pr.outputs.action }}
+      updated:      ${{ steps.bump.outputs.updated }}
+      skipped:      ${{ steps.bump.outputs.skipped }}
+      build-failed: ${{ steps.bump.outputs.build-failed }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Bump to LKG
+        id: bump
+        uses: leanprover-community/hopscotch-reports/.github/actions/bump-to-lkg@main
+        with:
+          dependency-name:  ${{ inputs.dependency-name }}
+          hopscotch-version: ${{ inputs.hopscotch-version }}
+
+      - name: Open or update PR
+        id: open-pr
+        if: steps.bump.outputs.updated == 'true'
+        uses: leanprover-community/hopscotch-reports/.github/actions/open-bump-pr@main
+        with:
+          branch:         ${{ inputs.branch }}
+          base:           ${{ inputs.base }}
+          labels:         ${{ inputs.labels }}
+          title:          ${{ steps.bump.outputs.pr-title }}
+          message:        ${{ steps.bump.outputs.bump-description }}
+          commit-message: ${{ steps.bump.outputs.commit-message }}

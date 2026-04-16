@@ -22,19 +22,21 @@ Loads the latest per-downstream state from the database and sends a compact Mark
 
 See [`docs/workflows.md`](docs/workflows.md) for a detailed description of the scheduled validation and summary workflows, including job structure, window selection algorithm, and Zulip configuration.
 
-## Reusable actions for downstream repos
+## Reusable actions and workflows for downstream repos
 
-This repo publishes three composite GitHub Actions that downstream Lean projects
-can use to consume the LKG data and automate mathlib bumps:
+This repo publishes a reusable workflow and three composite GitHub Actions that
+downstream Lean projects can use to consume the LKG data and automate mathlib
+bumps:
 
-| Action | Description |
-|--------|-------------|
-| [`bump-to-lkg`](.github/actions/bump-to-lkg) | Looks up the current LKG commit, checks the current pin, and runs `hopscotch` to bump and build. |
-| [`open-bump-pr`](.github/actions/open-bump-pr) | Commits working-tree changes and creates or updates a PR. |
-| [`query-lkg`](.github/actions/query-lkg) | Lightweight read-only lookup — returns the LKG commit for a downstream without cloning or building. |
+| Name | Kind | Description |
+|------|------|-------------|
+| [`bump-dependency-to-lkg`](.github/workflows/bump-dependency-to-lkg.yml) | Reusable workflow | Zero-boilerplate scheduled bumping — the simplest option. |
+| [`bump-to-lkg`](.github/actions/bump-to-lkg) | Composite action | Looks up the current LKG commit, checks the current pin, and runs `hopscotch` to bump and build. |
+| [`open-bump-pr`](.github/actions/open-bump-pr) | Composite action | Commits working-tree changes and creates or updates a PR. |
+| [`query-lkg`](.github/actions/query-lkg) | Composite action | Lightweight read-only lookup — returns the LKG commit for a downstream without cloning or building. |
 
 See [`docs/actions.md`](docs/actions.md) for the full input/output reference and
-an example workflow.
+example workflows.
 
 ## Keeping your downstream up to date with the public last-known-good (LKG) data
 
@@ -51,13 +53,55 @@ commit may no longer build cleanly against its current state. This is why
 You can consume the LKG data from your own repo in several ways depending on how
 much automation you want.
 
-### Option 1 — Automated PR (recommended)
+### Option 1 — Reusable workflow (simplest)
 
-Use `bump-to-lkg` followed by `open-bump-pr` to fully automate the bump. The
-action builds against the LKG commit, and if successful it opens (or updates) a
-PR in your repo. The PR is kept to a single commit and its description is
-updated on every run, so you always have exactly one open bump PR to review and
-merge.
+The `bump-dependency-to-lkg` reusable workflow looks up your downstream's current
+LKG commit, runs `hopscotch` to bump and verify the build, and opens (or updates)
+a single PR with an auto-generated title and description. If the project is
+already at the LKG commit the run is a no-op; if the build fails the run exits
+without touching any PR.
+
+**This is the right choice if:**
+- You want a scheduled bump PR with no custom logic
+- The defaults (one open PR, force-pushed branch, auto-generated message) suit you
+
+**Use a different option if:**
+- You need to run extra steps inside the bump job — e.g. post-bump checks, notifications on failure, or custom commit logic (use Option 2)
+- You want to push the bump directly to a branch instead of opening a PR (use Option 3)
+
+```yaml
+name: Bump mathlib to LKG
+
+on:
+  schedule:
+    - cron: "0 18 * * *"   # run daily; adjust to taste
+  workflow_dispatch:
+
+jobs:
+  bump:
+    uses: leanprover-community/hopscotch-reports/.github/workflows/bump-dependency-to-lkg.yml@main
+    permissions:
+      contents: write
+      pull-requests: write
+```
+
+Optional inputs — pass any of these under `with:` if you need to customise:
+
+| Input | Default | Description |
+|-------|---------|-------------|
+| `branch` | `hopscotch/lkg-bump` | Branch name for the bump PR |
+| `base` | repo default branch | Base branch for the PR |
+| `labels` | — | Comma-separated labels to apply (e.g. `"dependencies"`) |
+| `dependency-name` | `mathlib` | Dependency name in the lakefile |
+| `hopscotch-version` | `v1.3.0` | Hopscotch release tag |
+
+### Option 2 — Composite actions (custom workflow)
+
+Use `bump-to-lkg` followed by `open-bump-pr` directly when you need extra steps
+— for example, running your own checks between the build and the PR, or
+combining the bump with other automation. The action builds against the LKG
+commit, and if successful it opens (or updates) a PR in your repo. The PR is
+kept to a single commit and its description is updated on every run.
 
 ```yaml
 name: Bump mathlib to LKG
@@ -92,7 +136,7 @@ jobs:
           commit-message: ${{ steps.bump.outputs.commit-message }}
 ```
 
-### Option 2 — Bump and push directly
+### Option 3 — Bump and push directly
 
 If you prefer to commit the bump straight to your default branch (no PR), use
 `bump-to-lkg` alone and then push:
@@ -114,7 +158,7 @@ If you prefer to commit the bump straight to your default branch (no PR), use
           git push
 ```
 
-### Option 3 — Just fetch the LKG
+### Option 4 — Just fetch the LKG
 
 Use `query-lkg` to retrieve the current LKG commit SHA without cloning,
 building, or touching your working tree. This is the right starting point for
@@ -134,7 +178,7 @@ last updated, the commit is not guaranteed to still be good.
         run: echo "LKG is ${{ steps.lkg.outputs.lkg-commit }}"
 ```
 
-Full input/output documentation for all three actions is in [`docs/actions.md`](docs/actions.md).
+Full input/output documentation is in [`docs/actions.md`](docs/actions.md).
 
 ## Inventory
 

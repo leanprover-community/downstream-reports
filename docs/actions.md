@@ -1,9 +1,12 @@
-# Reusable composite actions
+# Reusable workflow and composite actions
 
-This repo publishes three composite actions for downstream Lean projects to
-consume. They are designed to be composed: `query-lkg` is the lightweight
-read-only half; `bump-to-lkg` is the full bump-and-build half; `open-bump-pr`
-is the generic "commit + PR" step that follows either of them.
+This repo publishes a reusable workflow and three composite actions for
+downstream Lean projects to consume.
+
+For the common case — a scheduled job that bumps a dependency and opens a PR
+— use the `bump-dependency-to-lkg` reusable workflow directly (see below). The composite
+actions (`bump-to-lkg`, `open-bump-pr`, `query-lkg`) are the building blocks
+for custom workflows that need more control.
 
 > **Extensibility note.** Today the actions are used exclusively for the
 > mathlib upstream. The intent is to keep them general enough to support other
@@ -11,6 +14,73 @@ is the generic "commit + PR" step that follows either of them.
 > in mathlib-specific assumptions: anything that varies per-upstream (dependency
 > name, repo) should be an explicit input with a sensible default rather than a
 > hardcoded constant.
+
+---
+
+## `bump-dependency-to-lkg` reusable workflow
+
+**Path:** `.github/workflows/bump-dependency-to-lkg.yml`
+
+Wraps `bump-to-lkg` + `open-bump-pr` into a single callable unit. This is the
+recommended starting point for downstreams that just want a scheduled bump PR
+with no boilerplate.
+
+### Minimal usage
+
+```yaml
+name: Bump mathlib to LKG
+
+on:
+  schedule:
+    - cron: "0 18 * * *"   # adjust to taste
+  workflow_dispatch:
+
+jobs:
+  bump:
+    uses: leanprover-community/hopscotch-reports/.github/workflows/bump-dependency-to-lkg.yml@main
+    permissions:
+      contents: write
+      pull-requests: write
+```
+
+The `downstream` lookup defaults to `github.repository` (matched as a repo
+slug), so no inputs are required as long as the repo is registered in the
+inventory.
+
+### Inputs
+
+| Input | Default | Description |
+|-------|---------|-------------|
+| `branch` | `hopscotch/lkg-bump` | Branch name for the bump PR. Force-pushed on every run. |
+| `base` | repo default branch | Base branch for the PR |
+| `labels` | — | Comma-separated labels to apply to the PR |
+| `dependency-name` | `mathlib` | Dependency name in the lakefile |
+| `hopscotch-version` | `v1.3.0` | Hopscotch release tag to download |
+
+### Outputs
+
+| Output | Description |
+|--------|-------------|
+| `pr-number` | PR number (empty when `action=noop`) |
+| `pr-url` | PR URL (empty when `action=noop`) |
+| `action` | `"created"`, `"updated"`, or `"noop"` |
+| `updated` | `"true"` if hopscotch successfully bumped the project |
+| `skipped` | `"true"` if the project was already at the LKG commit |
+| `build-failed` | `"true"` if hopscotch ran but the build failed |
+
+### Customised example
+
+```yaml
+jobs:
+  bump:
+    uses: leanprover-community/hopscotch-reports/.github/workflows/bump-dependency-to-lkg.yml@main
+    permissions:
+      contents: write
+      pull-requests: write
+    with:
+      branch: automation/lkg-bump
+      labels: dependencies
+```
 
 ---
 
@@ -119,7 +189,27 @@ downstream repo can use it with no inputs at all.
 
 ---
 
-## Typical workflow
+## Typical workflows
+
+**Simplest — reusable workflow (no boilerplate):**
+
+```yaml
+name: Bump mathlib to LKG
+
+on:
+  schedule:
+    - cron: "0 18 * * *"
+  workflow_dispatch:
+
+jobs:
+  bump:
+    uses: leanprover-community/hopscotch-reports/.github/workflows/bump-dependency-to-lkg.yml@main
+    permissions:
+      contents: write
+      pull-requests: write
+```
+
+**Custom — composite actions (when you need extra steps):**
 
 ```yaml
 name: Bump mathlib to LKG
@@ -153,7 +243,7 @@ jobs:
           commit-message: ${{ steps.bump.outputs.commit-message }}
 ```
 
-To just look up the LKG commit without building:
+**Read-only — just look up the LKG commit without building:**
 
 ```yaml
       - name: Get LKG commit
