@@ -26,6 +26,18 @@ inputs:
     description: >
       Full URL of the LKG snapshot JSON blob. Override for testing against
       a staging blob; leave empty to use the production URL.
+  dependency-repo:
+    required: false
+    default: 'leanprover-community/mathlib4'
+    description: >
+      GitHub repo of the dependency (owner/repo) — used to fetch commit
+      descriptions for the generated PR title and body.
+  generate-description:
+    required: false
+    default: 'true'
+    description: >
+      Set to "false" to skip fetching commit descriptions from the GitHub API.
+      When false, pr-title, bump-description, and commit-message outputs are empty.
 
 outputs:
   lkg-commit:
@@ -43,6 +55,18 @@ outputs:
   build-failed:
     description: '"true" if hopscotch ran but the build failed'
     value: ${{ steps.resolve-outputs.outputs.build_failed }}
+  pr-title:
+    description: 'Suggested PR title for the bump (empty when skipped)'
+    value: ${{ steps.fetch-descriptions.outputs.pr_title }}
+  bump-description:
+    description: >
+      Markdown paragraph describing the bump (new commit + previous pin,
+      with subjects and dates). Pass to open-bump-pr message input.
+      Empty when skipped.
+    value: ${{ steps.fetch-descriptions.outputs.bump_description }}
+  commit-message:
+    description: 'Suggested git commit message for the bump (empty when skipped)'
+    value: ${{ steps.fetch-descriptions.outputs.commit_message }}
 
 runs:
   using: 'composite'
@@ -141,7 +165,71 @@ runs:
         fi
 
     # ------------------------------------------------------------------
-    # Step 4–6 only run when an update is needed.
+    # Step 4: Fetch one-line commit descriptions for the LKG commit and
+    # the current pin, and compose the PR title, body snippet, and git
+    # commit message. Runs whenever a bump is needed; outputs are empty
+    # when the project is already at LKG (skipped=true).
+    # ------------------------------------------------------------------
+    - name: Fetch commit descriptions
+      id: fetch-descriptions
+      if: steps.compare.outputs.skipped != 'true' && inputs.generate-description != 'false'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        LKG_COMMIT: ${{ steps.fetch-snapshot.outputs.lkg_commit }}
+        CURRENT_PIN: ${{ steps.read-manifest.outputs.current_pin }}
+        DEPENDENCY_NAME: ${{ inputs.dependency-name }}
+        DEPENDENCY_REPO: ${{ inputs.dependency-repo }}
+      run: |
+        set -euo pipefail
+
+        fetch_info() {
+          local sha="$1"
+          # Returns <subject>\t<committer-date YYYY-MM-DD>, or empty on failure.
+          gh api "repos/${DEPENDENCY_REPO}/commits/${sha}" \
+            --jq '[(.commit.message | split("\n")[0]), .commit.committer.date[:10]] | join("\t")' \
+            2>/dev/null || true
+        }
+
+        suffix() {
+          local subject="$1" date="$2" result=""
+          [ -n "$subject" ] && result="${result}: ${subject}"
+          [ -n "$date" ]    && result="${result} (${date})"
+          printf '%s' "$result"
+        }
+
+        LKG_INFO=$(fetch_info "$LKG_COMMIT")
+        LKG_SUBJECT=$(printf '%s' "$LKG_INFO" | cut -f1)
+        LKG_DATE=$(printf '%s' "$LKG_INFO" | cut -f2)
+
+        PREV_INFO=$(fetch_info "$CURRENT_PIN")
+        PREV_SUBJECT=$(printf '%s' "$PREV_INFO" | cut -f1)
+        PREV_DATE=$(printf '%s' "$PREV_INFO" | cut -f2)
+
+        LKG_SHORT="${LKG_COMMIT:0:7}"
+        PREV_SHORT="${CURRENT_PIN:0:7}"
+        LKG_URL="https://github.com/${DEPENDENCY_REPO}/commit/${LKG_COMMIT}"
+        PREV_URL="https://github.com/${DEPENDENCY_REPO}/commit/${CURRENT_PIN}"
+
+        LKG_SUFFIX=$(suffix "$LKG_SUBJECT" "$LKG_DATE")
+        PREV_SUFFIX=$(suffix "$PREV_SUBJECT" "$PREV_DATE")
+
+        PR_TITLE="Bump \`${DEPENDENCY_NAME}\` dependency to ${LKG_SHORT}"
+        COMMIT_MSG="chore: bump ${DEPENDENCY_NAME} to ${LKG_SHORT}${LKG_SUFFIX}"
+
+        {
+          echo "pr_title=${PR_TITLE}"
+          echo "commit_message=${COMMIT_MSG}"
+          echo "bump_description<<BUMP_EOF"
+          printf 'Bump `%s` dependency to [%s](%s)%s\n' \
+            "$DEPENDENCY_NAME" "$LKG_SHORT" "$LKG_URL" "$LKG_SUFFIX"
+          printf 'Previously at: [%s](%s)%s\n' \
+            "$PREV_SHORT" "$PREV_URL" "$PREV_SUFFIX"
+          echo "BUMP_EOF"
+        } >> "$GITHUB_OUTPUT"
+
+    # ------------------------------------------------------------------
+    # Steps 5–7 only run when an update is needed.
     # ------------------------------------------------------------------
 
     - name: Install Lean (elan)
@@ -193,10 +281,11 @@ runs:
         CURRENT_PIN: ${{ steps.read-manifest.outputs.current_pin }}
         LKG_COMMIT: ${{ steps.fetch-snapshot.outputs.lkg_commit }}
         PROJECT_DIR: ${{ inputs.project-dir }}
+        GITHUB_TOKEN: ${{ github.token }}
       run: |
         set +e
         hopscotch dep "$DEPENDENCY_NAME" \
-          --from "$LKG_COMMIT~1" \
+          --from "${LKG_COMMIT}~1" \
           --to "$LKG_COMMIT" \
           --project-dir "$PROJECT_DIR" \
           --scan-mode linear \

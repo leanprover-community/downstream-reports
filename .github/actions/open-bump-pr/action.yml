@@ -1,14 +1,17 @@
 name: 'Open Bump PR'
 description: >
-  Commit working-tree changes and create or update a pull request. Generic
-  commit-and-PR action; LKG-aware inputs enrich the default title/body when
-  provided (designed to accept outputs from the bump-to-lkg action).
+  Commit working-tree changes and create or update a pull request.
+  Accepts an optional message (e.g. the bump-description output from
+  bump-to-lkg) which is placed in the PR body above an automated footer.
 
 inputs:
   branch:
     required: false
     default: 'hopscotch/lkg-bump'
-    description: 'Branch name for the PR (force-pushed on every run)'
+    description: >
+      Branch name for the PR. Each run creates a single fresh commit on top
+      of the base branch, so the remote is replaced (force-pushed) every time.
+      This keeps the PR to one commit and avoids accumulating bump history.
   base:
     required: false
     default: ''
@@ -16,31 +19,25 @@ inputs:
   title:
     required: false
     default: ''
-    description: 'PR title (auto-generated from lkg-commit if not provided)'
+    description: 'PR title'
   body:
     required: false
     default: ''
-    description: 'PR body (auto-generated if not provided)'
+    description: 'Full PR body (overrides auto-generated message + footer)'
   commit-message:
     required: false
     default: ''
-    description: 'Commit message (auto-generated from lkg-commit if not provided)'
+    description: 'Commit message (defaults to "chore: dependency update")'
   labels:
     required: false
     default: ''
     description: 'Comma-separated labels to apply to the PR'
-  lkg-commit:
+  message:
     required: false
     default: ''
-    description: 'LKG commit SHA — used to generate default title/body'
-  previous-pin:
-    required: false
-    default: ''
-    description: 'Previous pin SHA — included in the default PR body'
-  source-run-url:
-    required: false
-    default: ''
-    description: 'URL of the regression run that produced the LKG — linked in the default body'
+    description: >
+      Content to place in the PR body above the automated footer.
+      Pass the bump-description output from bump-to-lkg here.
 
 outputs:
   pr-number:
@@ -79,20 +76,11 @@ runs:
       shell: bash
       env:
         BRANCH: ${{ inputs.branch }}
-        LKG_COMMIT: ${{ inputs.lkg-commit }}
         COMMIT_MESSAGE: ${{ inputs.commit-message }}
       run: |
         set -euo pipefail
 
-        # Determine commit message.
-        if [ -n "$COMMIT_MESSAGE" ]; then
-          MSG="$COMMIT_MESSAGE"
-        elif [ -n "$LKG_COMMIT" ]; then
-          SHORT="${LKG_COMMIT:0:7}"
-          MSG="chore: bump mathlib to ${SHORT}"
-        else
-          MSG="chore: dependency update"
-        fi
+        MSG="${COMMIT_MESSAGE:-chore: dependency update}"
 
         git config user.name  "github-actions[bot]"
         git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -116,47 +104,24 @@ runs:
         TITLE: ${{ inputs.title }}
         BODY: ${{ inputs.body }}
         LABELS: ${{ inputs.labels }}
-        LKG_COMMIT: ${{ inputs.lkg-commit }}
-        PREVIOUS_PIN: ${{ inputs.previous-pin }}
-        SOURCE_RUN_URL: ${{ inputs.source-run-url }}
+        MESSAGE: ${{ inputs.message }}
       run: |
         set -euo pipefail
 
-        # Generate default title.
-        if [ -n "$TITLE" ]; then
-          PR_TITLE="$TITLE"
-        elif [ -n "$LKG_COMMIT" ]; then
-          SHORT="${LKG_COMMIT:0:7}"
-          PR_TITLE="chore: bump mathlib to ${SHORT}"
-        else
-          PR_TITLE="chore: dependency update"
-        fi
+        PR_TITLE="${TITLE:-chore: dependency update}"
 
-        # Generate default body.
         if [ -n "$BODY" ]; then
           PR_BODY="$BODY"
-        elif [ -n "$LKG_COMMIT" ]; then
-          MATHLIB_URL="https://github.com/leanprover-community/mathlib4/commit/${LKG_COMMIT}"
-          SHORT="${LKG_COMMIT:0:7}"
-          PR_BODY="Bump mathlib dependency to [${SHORT}](${MATHLIB_URL})."
-          if [ -n "$PREVIOUS_PIN" ]; then
-            PREV_SHORT="${PREVIOUS_PIN:0:7}"
-            PREV_URL="https://github.com/leanprover-community/mathlib4/commit/${PREVIOUS_PIN}"
-            PR_BODY="${PR_BODY}
-
-        Previous pin: [${PREV_SHORT}](${PREV_URL})"
-          fi
-          if [ -n "$SOURCE_RUN_URL" ]; then
-            PR_BODY="${PR_BODY}
-
-        Source: [regression run](${SOURCE_RUN_URL})"
-          fi
-          PR_BODY="${PR_BODY}
-
-        ---
-        *Automated bump via [hopscotch-reports](https://github.com/leanprover-community/hopscotch-reports).*"
         else
-          PR_BODY="Automated dependency update."
+          RUN_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          TODAY=$(date -u +"%Y-%m-%d")
+          FOOTER="_This PR was last updated on ${TODAY} by [this workflow run](${RUN_URL}). It is an automated bump using [downstream-reports/open-bump-pr](https://github.com/leanprover-community/downstream-reports)_"
+
+          if [ -n "$MESSAGE" ]; then
+            PR_BODY=$(printf '%s\n\n%s' "$MESSAGE" "$FOOTER")
+          else
+            PR_BODY="$FOOTER"
+          fi
         fi
 
         # Build optional gh flag arrays.
