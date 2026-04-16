@@ -144,17 +144,17 @@ runs:
             PREV_URL="https://github.com/leanprover-community/mathlib4/commit/${PREVIOUS_PIN}"
             PR_BODY="${PR_BODY}
 
-Previous pin: [${PREV_SHORT}](${PREV_URL})"
+        Previous pin: [${PREV_SHORT}](${PREV_URL})"
           fi
           if [ -n "$SOURCE_RUN_URL" ]; then
             PR_BODY="${PR_BODY}
 
-Source: [regression run](${SOURCE_RUN_URL})"
+        Source: [regression run](${SOURCE_RUN_URL})"
           fi
           PR_BODY="${PR_BODY}
 
----
-*Automated bump via [hopscotch-reports](https://github.com/leanprover-community/hopscotch-reports).*"
+        ---
+        *Automated bump via [hopscotch-reports](https://github.com/leanprover-community/hopscotch-reports).*"
         else
           PR_BODY="Automated dependency update."
         fi
