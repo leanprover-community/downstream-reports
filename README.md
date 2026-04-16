@@ -38,6 +38,12 @@ bumps:
 See [`docs/actions.md`](docs/actions.md) for the full input/output reference and
 example workflows.
 
+> **SHA pinning:** the reusable workflow (`bump-dependency-to-lkg`) internally
+> pins the composite actions to `@main`, so callers cannot override their
+> version. If you need to pin to a specific SHA for security or stability, use
+> the composite actions directly (Options 2–4 above) and specify the SHA in each
+> `uses:` line, e.g. `uses: leanprover-community/downstream-reports/.github/actions/bump-to-lkg@<sha>`.
+
 ## Keeping your downstream up to date with the public last-known-good (LKG) data
 
 Once your project is [registered](#adding-a-downstream), the LKG data is
