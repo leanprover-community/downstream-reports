@@ -6,8 +6,13 @@ description: >
 
 inputs:
   downstream:
-    required: true
-    description: 'Downstream name as registered in the inventory'
+    required: false
+    default: ${{ github.repository }}
+    description: >
+      Downstream to look up. May be a registered downstream name (e.g. "physlib")
+      or a GitHub repo slug (e.g. "leanprover-community/physlib"). When the value
+      contains a "/" it is treated as a repo slug; otherwise as a name key.
+      Defaults to the repository running this action.
   project-dir:
     required: false
     default: '.'

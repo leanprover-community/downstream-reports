@@ -31,7 +31,7 @@ suggested PR title, body snippet, and git commit message — pass
 
 | Input | Required | Default | Description |
 |-------|----------|---------|-------------|
-| `downstream` | yes | — | Name as registered in the hopscotch-reports inventory |
+| `downstream` | no | `${{ github.repository }}` | Downstream name key or repo slug (`owner/repo`). Auto-detected by presence of `/`. Defaults to the repository running this action. |
 | `project-dir` | no | `.` | Path to the downstream project root |
 | `dependency-name` | no | `mathlib` | Name of the dependency in the lakefile |
 | `hopscotch-version` | no | `v1.3.0` | Hopscotch release tag to download |
@@ -142,8 +142,7 @@ jobs:
       - name: Bump to LKG
         id: bump
         uses: leanprover-community/hopscotch-reports/.github/actions/bump-to-lkg@main
-        with:
-          downstream: my-project-name   # must match ci/inventory/downstreams.json
+        # no inputs needed — defaults to github.repository matched by repo slug
 
       - name: Open PR
         if: steps.bump.outputs.updated == 'true'
