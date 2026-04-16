@@ -55,7 +55,6 @@ also supports `workflow_dispatch` for on-demand publishing.
 
 ```
 on:
-  push:
   workflow_dispatch:
   workflow_run:
     workflows: ["mathlib-downstream-report"]

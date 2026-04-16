@@ -14,7 +14,6 @@ name: publish-lkg
 #   Variables: AZURE_STORAGE_ACCOUNT, AZURE_STORAGE_CONTAINER
 
 on:
-  push:
   workflow_dispatch:
   workflow_run:
     workflows: ["mathlib-downstream-report"]
