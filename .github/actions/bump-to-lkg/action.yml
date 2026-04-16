@@ -196,7 +196,7 @@ runs:
       run: |
         set +e
         hopscotch dep "$DEPENDENCY_NAME" \
-          --from "$CURRENT_PIN" \
+          --from "$LKG_COMMIT~1" \
           --to "$LKG_COMMIT" \
           --project-dir "$PROJECT_DIR" \
           --scan-mode linear \
