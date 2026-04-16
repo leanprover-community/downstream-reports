@@ -37,7 +37,7 @@ on:
 
 jobs:
   bump:
-    uses: leanprover-community/hopscotch-reports/.github/workflows/bump-dependency-to-lkg.yml@main
+    uses: leanprover-community/downstream-reports/.github/workflows/bump-dependency-to-lkg.yml@main
     permissions:
       contents: write
       pull-requests: write
@@ -73,7 +73,7 @@ inventory.
 ```yaml
 jobs:
   bump:
-    uses: leanprover-community/hopscotch-reports/.github/workflows/bump-dependency-to-lkg.yml@main
+    uses: leanprover-community/downstream-reports/.github/workflows/bump-dependency-to-lkg.yml@main
     permissions:
       contents: write
       pull-requests: write
@@ -203,7 +203,7 @@ on:
 
 jobs:
   bump:
-    uses: leanprover-community/hopscotch-reports/.github/workflows/bump-dependency-to-lkg.yml@main
+    uses: leanprover-community/downstream-reports/.github/workflows/bump-dependency-to-lkg.yml@main
     permissions:
       contents: write
       pull-requests: write
@@ -231,12 +231,12 @@ jobs:
 
       - name: Bump to LKG
         id: bump
-        uses: leanprover-community/hopscotch-reports/.github/actions/bump-to-lkg@main
+        uses: leanprover-community/downstream-reports/.github/actions/bump-to-lkg@main
         # no inputs needed — defaults to github.repository matched by repo slug
 
       - name: Open PR
         if: steps.bump.outputs.updated == 'true'
-        uses: leanprover-community/hopscotch-reports/.github/actions/open-bump-pr@main
+        uses: leanprover-community/downstream-reports/.github/actions/open-bump-pr@main
         with:
           title:          ${{ steps.bump.outputs.pr-title }}
           message:        ${{ steps.bump.outputs.bump-description }}
@@ -248,7 +248,7 @@ jobs:
 ```yaml
       - name: Get LKG commit
         id: lkg
-        uses: leanprover-community/hopscotch-reports/.github/actions/query-lkg@main
+        uses: leanprover-community/downstream-reports/.github/actions/query-lkg@main
         # no inputs needed — defaults to github.repository
 
       - run: echo "LKG is ${{ steps.lkg.outputs.lkg-commit }}"

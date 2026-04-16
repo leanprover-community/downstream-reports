@@ -15,7 +15,7 @@ name: bump-dependency-to-lkg
 #
 #   jobs:
 #     bump:
-#       uses: leanprover-community/hopscotch-reports/.github/workflows/bump-dependency-to-lkg.yml@main
+#       uses: leanprover-community/downstream-reports/.github/workflows/bump-dependency-to-lkg.yml@main
 #       permissions:
 #         contents: write
 #         pull-requests: write
@@ -89,7 +89,7 @@ jobs:
 
       - name: Bump to LKG
         id: bump
-        uses: leanprover-community/hopscotch-reports/.github/actions/bump-to-lkg@main
+        uses: leanprover-community/downstream-reports/.github/actions/bump-to-lkg@main
         with:
           dependency-name:  ${{ inputs.dependency-name }}
           hopscotch-version: ${{ inputs.hopscotch-version }}
@@ -97,7 +97,7 @@ jobs:
       - name: Open or update PR
         id: open-pr
         if: steps.bump.outputs.updated == 'true'
-        uses: leanprover-community/hopscotch-reports/.github/actions/open-bump-pr@main
+        uses: leanprover-community/downstream-reports/.github/actions/open-bump-pr@main
         with:
           branch:         ${{ inputs.branch }}
           base:           ${{ inputs.base }}

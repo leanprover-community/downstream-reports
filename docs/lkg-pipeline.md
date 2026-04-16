@@ -10,7 +10,7 @@ automatically.
 ## Overview
 
 ```
-hopscotch-reports                         Downstream repos
+downstream-reports                         Downstream repos
 ─────────────────                         ────────────────
 mathlib-downstream-report workflow        scheduled workflow
   └─ report job writes DB                   └─ bump-to-lkg action
@@ -126,7 +126,7 @@ The upload identity is an Entra app registration with a federated credential:
 
 ```
 issuer:  https://token.actions.githubusercontent.com
-subject: repo:leanprover-community/hopscotch-reports:ref:refs/heads/main
+subject: repo:leanprover-community/downstream-reports:ref:refs/heads/main
 ```
 
 Required GitHub configuration:

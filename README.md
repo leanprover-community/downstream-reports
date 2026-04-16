@@ -79,7 +79,7 @@ on:
 
 jobs:
   bump:
-    uses: leanprover-community/hopscotch-reports/.github/workflows/bump-dependency-to-lkg.yml@main
+    uses: leanprover-community/downstream-reports/.github/workflows/bump-dependency-to-lkg.yml@main
     permissions:
       contents: write
       pull-requests: write
@@ -123,13 +123,13 @@ jobs:
 
       - name: Bump to LKG
         id: bump
-        uses: leanprover-community/hopscotch-reports/.github/actions/bump-to-lkg@main
+        uses: leanprover-community/downstream-reports/.github/actions/bump-to-lkg@main
         with:
           downstream: MyProject   # must match the name in ci/inventory/downstreams.json
 
       - name: Open or update PR
         if: steps.bump.outputs.updated == 'true'
-        uses: leanprover-community/hopscotch-reports/.github/actions/open-bump-pr@main
+        uses: leanprover-community/downstream-reports/.github/actions/open-bump-pr@main
         with:
           title:          ${{ steps.bump.outputs.pr-title }}
           message:        ${{ steps.bump.outputs.bump-description }}
@@ -144,7 +144,7 @@ If you prefer to commit the bump straight to your default branch (no PR), use
 ```yaml
       - name: Bump to LKG
         id: bump
-        uses: leanprover-community/hopscotch-reports/.github/actions/bump-to-lkg@main
+        uses: leanprover-community/downstream-reports/.github/actions/bump-to-lkg@main
         with:
           downstream: MyProject
 
@@ -170,7 +170,7 @@ last updated, the commit is not guaranteed to still be good.
 ```yaml
       - name: Get LKG commit
         id: lkg
-        uses: leanprover-community/hopscotch-reports/.github/actions/query-lkg@main
+        uses: leanprover-community/downstream-reports/.github/actions/query-lkg@main
         # defaults to github.repository — no inputs needed if the repo slug
         # matches the registered downstream's repo field
 

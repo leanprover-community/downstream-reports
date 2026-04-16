@@ -39,7 +39,7 @@ SCHEMA_VERSION = 1
 # GitHub base URL used when constructing source run URLs from a run ID.
 _GITHUB_BASE = "https://github.com"
 # Fallback repo slug when GITHUB_REPOSITORY is not set.
-_DEFAULT_REPO = "leanprover-community/hopscotch-reports"
+_DEFAULT_REPO = "leanprover-community/downstream-reports"
 
 
 def build_snapshot(
