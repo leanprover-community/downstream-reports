@@ -140,7 +140,7 @@ def render_selection_summary(selection: WindowSelection) -> str:
     lines.append(f"- Head probe outcome: `{head_probe}`")
     if selection.selected_lower_bound_commit is not None:
         lines.append(f"- Selected lower bound: `{short_commit_label(selection.selected_lower_bound_commit)}`")
-    if selection.needs_probe:
+    if selection.has_bisect_window:
         lines.append(f"- Bisect window size: `{len(selection.tested_commits)}` commits")
     lines.append("")
     lines.append("Decision:")

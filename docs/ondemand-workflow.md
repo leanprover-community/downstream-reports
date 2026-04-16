@@ -31,7 +31,7 @@ The workflow is manually dispatched via GitHub's `workflow_dispatch` event.
 ## Job structure
 
 ```
-plan ──► validate (×N, max 2 parallel) ──► report ──► alert
+plan ──► select (×N, ubuntu-latest) ──► probe (×N, self-hosted, no secrets) ──► report ──► alert
 ```
 
 ### `plan`
@@ -47,62 +47,56 @@ Runs on `ubuntu-latest`. Determines which downstreams to include in the matrix.
    pairs that were already tested under the `ondemand` workflow. Any pair already
    present is moved to the *skipped* list unless `--force` is set.
 6. Emits two JSON files:
-   - `matrix.json` — included in the job matrix passed to `validate`.
+   - `matrix.json` — included in the job matrix passed to `select`.
    - `skipped.json` — uploaded as the `skipped-downstreams` artifact; consumed by
      the `report` job so skipped entries appear in the summary and alert payload.
 
 The `plan` job passes `dry_run` as a job output so every subsequent job can select
 the right backend without re-evaluating the condition.
 
-### `validate`
+### `select`
 
-Runs on the self-hosted `pr` runner pool, at most two jobs in parallel. One job
-per downstream in the matrix.
+Runs on `ubuntu-latest` (hosted runner with access to secrets). One job per
+downstream in the matrix, up to four in parallel.
 
-**Step 1 — Select validation window** (`select_ondemand_window.py`)
-
-Clones mathlib and the downstream, then:
-
-1. Resolves the *target commit*: the HEAD of the downstream's bumping branch on
-   mathlib at the time of the plan job (passed in via `matrix.bumping_branch`).
-2. Runs a **head probe** — a single build attempt of the downstream against that
-   commit.
-3. If the probe passes, writes a passing `result.json` and sets
-   `needs_probe=false`.
-4. If the probe fails with exit code 1 (a bisectable failure), constructs a bisect
-   window from the pinned commit (the mathlib revision in the downstream's
-   `lake-manifest.json`) or the stored `last_known_good_commit` up to the target,
-   writes `selection.json` with `needs_probe=true`, and lets the next step run.
-5. Any other exit code (error, signal) produces a non-bisectable error result and
-   sets `needs_probe=false`.
+Runs `select_ondemand_window.py`, which clones mathlib and the downstream, reads
+the database for prior episode state, and computes a candidate bisect window.
+**Never invokes hopscotch.** Writes `selection.json` and uploads it as a
+`selection-<name>` artifact.
 
 The script also records `downstream_commit` — the HEAD SHA of the downstream
 repository itself — so the skip heuristics described in CLAUDE.md can guard
 against stale culprit attribution if the downstream has changed between runs.
 
-**Step 2 — Run downstream probe** (conditional; `probe_downstream_regression_window.py`)
+Prior episode state (`previous_first_known_bad_commit`,
+`previous_downstream_commit`, `previous_last_known_good_commit`) and
+per-downstream skip flags (`skip_known_bad_bisect`) are embedded in
+`selection.json` so the probe step can apply heuristics without a database
+connection.
 
-Only runs when `needs_probe=true`. Invokes hopscotch in bisect mode over the
-pre-selected window to find the first bad mathlib commit.
+### `probe`
 
-**Step 3 — Upload artifacts**
+Runs on the self-hosted `pr` runner pool with **no secrets in its `env:` blocks**,
+at most two jobs in parallel. Downloads the `selection-<name>` artifact and runs
+`probe_downstream_regression_window.py` — the same script used by the regression
+workflow.
+
+The probe step runs the HEAD probe and, if it fails, optionally bisects. See
+the regression workflow description in `docs/workflows.md` for the full
+probe-step logic (LKG verification, skip-known-bad-bisect, culprit re-probe).
 
 Uploads a `result-<name>` artifact containing `selection.json`, `result.json`,
-and all tool logs. Always runs, even if earlier steps failed.
-
-**Step 4 — Print validation summary**
-
-Prints a human-readable one-liner summary for the validate job's log.
+and all tool logs. Also prints a human-readable summary for the job log.
 
 ### `report`
 
-Runs on `ubuntu-latest` after all validate jobs complete (including when some
+Runs on `ubuntu-latest` after all probe jobs complete (including when some
 fail, as long as `plan` succeeded and at least one downstream was selected or
 skipped).
 
 1. Downloads all `result-*` artifacts into `downloaded-results/`.
 2. Downloads the `skipped-downstreams` artifact.
-3. Collects validate job URLs via the GitHub API (`job_urls.json`) for linking in
+3. Collects probe job URLs via the GitHub API (`job_urls.json`) for linking in
    the report.
 4. Runs `aggregate_results.py --workflow ondemand`:
    - For each `result.json`, applies the episode state machine to derive the new
@@ -182,7 +176,7 @@ skip downstreams whose branch HEAD has not advanced.
 
 The `"skipped"` field is present only in on-demand payloads. Each skipped entry
 carries the downstream name, repo, HEAD SHA tested previously, prior outcome and
-episode state, and a link to the previous validate job.
+episode state, and a link to the previous probe job.
 
 ---
 
@@ -191,20 +185,22 @@ episode state, and a link to the previous validate job.
 | Aspect | `mathlib-downstream-report.yml` | `mathlib-downstream-ondemand.yml` |
 |--------|---------------------------------|-----------------------------------|
 | **Trigger** | Daily cron + manual dispatch | Manual dispatch only |
+| **Job structure** | plan → select → probe → report → alert | plan → select → probe → report → alert |
 | **Downstream scope** | All enabled downstreams (or a comma-separated subset) | All downstreams with `bumping_branch`, or a single named one |
 | **Target commit** | A fixed mathlib ref (default: `master` HEAD at plan time) | HEAD of each downstream's configured `bumping_branch` |
 | **Deduplication** | Never; always re-runs | Automatic: skips if branch HEAD is unchanged (disable with `force`) |
 | **Window selection script** | `select_downstream_regression_window.py` | `select_ondemand_window.py` |
+| **Probe script** | `probe_downstream_regression_window.py` (shared) | `probe_downstream_regression_window.py` (shared) |
 | **DB workflow key** | `"regression"` | `"ondemand"` |
 | **Alert scope** | `NEW_FAILURE` and `RECOVERED` transitions only | All results (failure, compatible, skipped) |
 | **Alert topic** | `Downstream alerts` | `On demand runs` |
 | **dry_run auto-enabled** | Yes, on non-`main` branches | No; opt-in via `dry_run` input |
 | **`skipped.json`** | Not produced | Produced by plan job; included in report and alert payload |
 
-The two workflows share the same episode state machine, storage schema, and
-`probe_downstream_regression_window.py` bisect step. Results from one workflow
-do **not** affect the episode state seen by the other (they are stored under
-separate `workflow` keys).
+The two workflows share the same episode state machine, storage schema, probe
+script (`probe_downstream_regression_window.py`), and select/probe security
+split. Results from one workflow do **not** affect the episode state seen by
+the other (they are stored under separate `workflow` keys).
 
 ---
 

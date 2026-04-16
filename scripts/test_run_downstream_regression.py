@@ -8,6 +8,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+import unittest.mock
 from unittest.mock import patch, Mock
 
 # Ensure the repo root is on sys.path so `scripts.*` imports work.
@@ -30,9 +31,12 @@ from scripts.validation import (
 from scripts.models import Outcome
 from scripts.storage import DownstreamStatusRecord
 from scripts.select_downstream_regression_window import (
-    build_parser,
-    run_culprit_probe,
+    build_parser as select_build_parser,
     try_skip_already_good,
+)
+from scripts.probe_downstream_regression_window import (
+    build_parser as probe_build_parser,
+    run_culprit_probe,
     try_skip_known_bad_bisect,
 )
 
@@ -75,6 +79,22 @@ class WarmCacheTests(unittest.TestCase):
             self.assertNotIn("LAKE_ARTIFACT_CACHE", env)
             self.assertNotIn("LAKE_CACHE_DIR", env)
             self.assertEqual(str(cache_dir / "mathlib"), env["MATHLIB_CACHE_DIR"])
+
+    def test_cache_env_strips_ci_secrets(self) -> None:
+        """Scenario: CI secrets are never forwarded to hopscotch or lake build subprocesses."""
+
+        import os
+        with tempfile.TemporaryDirectory() as tmp:
+            secret_env = {
+                "GITHUB_TOKEN": "ghs_fake",
+                "POSTGRES_DSN": "postgresql://user:pass@host/db",
+                "ZULIP_API_KEY": "zulip_fake",
+                "ZULIP_EMAIL": "bot@example.com",
+            }
+            with unittest.mock.patch.dict(os.environ, secret_env):
+                env = cache_env(Path(tmp) / "cache")
+            for key in secret_env:
+                self.assertNotIn(key, env, f"{key} must not reach subprocesses")
 
     def test_warm_cache_uses_downstream_toolchain_and_repo_scope(self) -> None:
         """Scenario: warmup runs `lake cache get` through `elan` with the downstream toolchain."""
@@ -234,7 +254,7 @@ class WindowSelectionArtifactTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             output_dir = Path(tmp) / "artifacts"
             selection = WindowSelection(
-                needs_probe=True,
+                has_bisect_window=True,
                 downstream="PrimeNumberTheoremAnd",
                 repo="AlexKontorovich/PrimeNumberTheoremAnd",
                 default_branch="master",
@@ -262,7 +282,7 @@ class WindowSelectionArtifactTests(unittest.TestCase):
             write_selection(artifact_path, selection)
             loaded = load_selection(artifact_path)
 
-            self.assertTrue(loaded.needs_probe)
+            self.assertTrue(loaded.has_bisect_window)
             self.assertEqual(loaded.search_mode, "bisect")
             self.assertEqual(loaded.tested_commits, ["good" * 10, "bad" * 10])
             self.assertEqual(loaded.tested_commit_details[0].title, "good title")
@@ -270,6 +290,52 @@ class WindowSelectionArtifactTests(unittest.TestCase):
             self.assertEqual(loaded.selected_lower_bound_commit, "good" * 10)
             self.assertEqual(loaded.decision_reason, "A usable window exists.")
             self.assertEqual(loaded.next_action, "Run the probe task.")
+
+    def test_selection_round_trip_preserves_previous_episode_state(self) -> None:
+        """Scenario: prior episode state (LKG, FKB, downstream_commit) survives serialisation."""
+
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp) / "artifacts"
+            selection = WindowSelection(
+                downstream="TestProject",
+                repo="owner/TestProject",
+                default_branch="main",
+                upstream_ref="master",
+                target_commit="t" * 40,
+                previous_first_known_bad_commit="f" * 40,
+                previous_downstream_commit="d" * 40,
+                previous_last_known_good_commit="g" * 40,
+            )
+
+            artifact_path = selection_artifact_path(output_dir)
+            artifact_path.parent.mkdir(parents=True, exist_ok=True)
+            write_selection(artifact_path, selection)
+            loaded = load_selection(artifact_path)
+
+            self.assertEqual(loaded.previous_first_known_bad_commit, "f" * 40)
+            self.assertEqual(loaded.previous_downstream_commit, "d" * 40)
+            self.assertEqual(loaded.previous_last_known_good_commit, "g" * 40)
+
+    def test_selection_round_trip_preserves_skip_known_bad_bisect(self) -> None:
+        """Scenario: per-downstream skip_known_bad_bisect=False survives serialisation."""
+
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp) / "artifacts"
+            selection = WindowSelection(
+                downstream="SlowProject",
+                repo="owner/SlowProject",
+                default_branch="main",
+                upstream_ref="master",
+                target_commit="t" * 40,
+                skip_known_bad_bisect=False,
+            )
+
+            artifact_path = selection_artifact_path(output_dir)
+            artifact_path.parent.mkdir(parents=True, exist_ok=True)
+            write_selection(artifact_path, selection)
+            loaded = load_selection(artifact_path)
+
+            self.assertFalse(loaded.skip_known_bad_bisect)
 
     def test_selection_summary_explains_skipped_probe(self) -> None:
         """Scenario: the selector summary explains why the probe task will not run."""
@@ -465,7 +531,7 @@ class TrySkipKnownBadBisectTests(unittest.TestCase):
             tested_commit_details=[CommitDetail(sha="t" * 40, title="test")],
         )
         with patch(
-            "scripts.select_downstream_regression_window.is_strict_ancestor",
+            "scripts.probe_downstream_regression_window.is_strict_ancestor",
             return_value=ancestor,
         ):
             return try_skip_known_bad_bisect(
@@ -532,39 +598,59 @@ class TrySkipKnownBadBisectTests(unittest.TestCase):
         self.assertIn("Skip the bisect", selection.next_action)
 
 
+_PROBE_PARSER_REQUIRED = ["--selection", "/tmp/s.json", "--workdir", "/tmp", "--output-dir", "/tmp"]
+
+
 class SkipOptimisationFlagsTests(unittest.TestCase):
     """Scenarios for the --skip-already-good / --skip-known-bad-bisect flags."""
 
-    def test_skip_flags_default_to_true(self) -> None:
-        """Scenario: both skip heuristics are opt-out so they engage without explicit flags."""
+    def test_skip_already_good_defaults_to_true(self) -> None:
+        """Scenario: skip-already-good is opt-out and engages by default in the select step."""
 
-        args = build_parser().parse_args(["--workdir", "/tmp", "--output-dir", "/tmp"])
+        args = select_build_parser().parse_args(["--workdir", "/tmp", "--output-dir", "/tmp"])
         self.assertTrue(args.skip_already_good)
+
+    def test_skip_known_bad_bisect_defaults_to_true(self) -> None:
+        """Scenario: skip-known-bad-bisect is opt-out and engages by default in the probe step."""
+
+        args = probe_build_parser().parse_args(_PROBE_PARSER_REQUIRED)
         self.assertTrue(args.skip_known_bad_bisect)
 
-    def test_skip_flags_can_be_disabled(self) -> None:
-        """Scenario: --no-skip-* flags force full validation regardless of cached state."""
+    def test_skip_already_good_can_be_disabled(self) -> None:
+        """Scenario: --no-skip-already-good forces full validation in the select step."""
 
-        args = build_parser().parse_args([
-            "--workdir", "/tmp",
-            "--output-dir", "/tmp",
-            "--no-skip-already-good",
-            "--no-skip-known-bad-bisect",
+        args = select_build_parser().parse_args([
+            "--workdir", "/tmp", "--output-dir", "/tmp", "--no-skip-already-good",
         ])
         self.assertFalse(args.skip_already_good)
+
+    def test_skip_known_bad_bisect_can_be_disabled(self) -> None:
+        """Scenario: --no-skip-known-bad-bisect forces full bisect in the probe step."""
+
+        args = probe_build_parser().parse_args([*_PROBE_PARSER_REQUIRED, "--no-skip-known-bad-bisect"])
         self.assertFalse(args.skip_known_bad_bisect)
 
-    def test_skip_flags_can_be_explicitly_enabled(self) -> None:
-        """Scenario: --skip-* flags can be passed explicitly to confirm default opt-in behaviour."""
+    def test_skip_already_good_can_be_explicitly_enabled(self) -> None:
+        """Scenario: --skip-already-good can be passed explicitly to confirm default behaviour."""
 
-        args = build_parser().parse_args([
-            "--workdir", "/tmp",
-            "--output-dir", "/tmp",
-            "--skip-already-good",
-            "--skip-known-bad-bisect",
+        args = select_build_parser().parse_args([
+            "--workdir", "/tmp", "--output-dir", "/tmp", "--skip-already-good",
         ])
         self.assertTrue(args.skip_already_good)
+
+    def test_skip_known_bad_bisect_can_be_explicitly_enabled(self) -> None:
+        """Scenario: --skip-known-bad-bisect can be passed explicitly to confirm default behaviour."""
+
+        args = probe_build_parser().parse_args([*_PROBE_PARSER_REQUIRED, "--skip-known-bad-bisect"])
         self.assertTrue(args.skip_known_bad_bisect)
+
+    def test_probe_max_commits_defaults_and_overrides(self) -> None:
+        """Scenario: --max-commits on the probe parser defaults to 100000 and can be overridden."""
+
+        args = probe_build_parser().parse_args(_PROBE_PARSER_REQUIRED)
+        self.assertEqual(args.max_commits, 100000)
+        args = probe_build_parser().parse_args([*_PROBE_PARSER_REQUIRED, "--max-commits", "50"])
+        self.assertEqual(args.max_commits, 50)
 
     def test_downstream_config_skip_flags_default_to_true(self) -> None:
         """Scenario: a downstream with no skip overrides inherits both heuristics as enabled."""
@@ -605,10 +691,10 @@ class TryCulpritProbeTests(unittest.TestCase):
         """Scenario: probe invokes run_validation_attempt with culprit-probe output dir."""
         mock_run = Mock(return_value=(Mock(), {}, None))
         with patch(
-            "scripts.select_downstream_regression_window.run_validation_attempt",
+            "scripts.probe_downstream_regression_window.run_validation_attempt",
             mock_run,
         ), patch(
-            "scripts.select_downstream_regression_window.parent_commit",
+            "scripts.probe_downstream_regression_window.parent_commit",
             return_value="p" * 40,
         ):
             run_culprit_probe(
@@ -627,10 +713,10 @@ class TryCulpritProbeTests(unittest.TestCase):
     def test_does_not_propagate_exception(self) -> None:
         """Scenario: if the probe raises (e.g. subprocess error), the exception is swallowed."""
         with patch(
-            "scripts.select_downstream_regression_window.run_validation_attempt",
+            "scripts.probe_downstream_regression_window.run_validation_attempt",
             side_effect=RuntimeError("tool crashed"),
         ), patch(
-            "scripts.select_downstream_regression_window.parent_commit",
+            "scripts.probe_downstream_regression_window.parent_commit",
             return_value="p" * 40,
         ):
             # Should not raise

@@ -126,11 +126,68 @@ jobs:
           path: skipped.json
           if-no-files-found: ignore
 
-  validate:
+  select:
+    # Runs on a hosted runner with access to secrets.  Clones repos, reads the
+    # database, and computes the bisect window.  Never invokes hopscotch.
     if: ${{ needs.plan.outputs.has_downstreams == 'true' }}
-    name: "validate: ${{ matrix.name }}"
+    name: "select: ${{ matrix.name }}"
     needs:
       - plan
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix: ${{ fromJson(needs.plan.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6.2.0
+        with:
+          python-version: '3.x'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r scripts/requirements.txt
+
+      - name: Select validation window
+        env:
+          DOWNSTREAM_NAME: ${{ matrix.name }}
+          BUMPING_BRANCH: ${{ matrix.bumping_branch }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OUTPUT_DIR: ${{ runner.temp }}/artifacts/${{ matrix.name }}
+          POSTGRES_DSN: ${{ needs.plan.outputs.dry_run == 'true' && '' || secrets.POSTGRES_DSN }}
+          PYTHONUNBUFFERED: "1"
+          WORKDIR: ${{ runner.temp }}/downstream-regression
+          BACKEND: ${{ needs.plan.outputs.dry_run == 'true' && 'dry-run' || 'sql' }}
+        run: |
+          python3 -u scripts/select_ondemand_window.py \
+            --inventory ci/inventory/downstreams.json \
+            --backend "$BACKEND" \
+            --workflow ondemand \
+            --downstream "$DOWNSTREAM_NAME" \
+            --branch-override "$BUMPING_BRANCH" \
+            --workdir "$WORKDIR" \
+            --output-dir "$OUTPUT_DIR"
+
+      - name: Upload selection artifact
+        if: always()
+        uses: actions/upload-artifact@v7.0.0
+        with:
+          name: selection-${{ matrix.name }}
+          path: ${{ runner.temp }}/artifacts/${{ matrix.name }}
+          if-no-files-found: error
+
+  probe:
+    # Runs on an ephemeral self-hosted runner with NO CI secrets in scope.
+    # Downloads selection.json, runs hopscotch (HEAD probe + optional bisect),
+    # and uploads the final result artifact.
+    if: ${{ needs.plan.outputs.has_downstreams == 'true' }}
+    name: "probe: ${{ matrix.name }}"
+    needs:
+      - plan
+      - select
     runs-on:
       - self-hosted
       - pr
@@ -164,42 +221,18 @@ jobs:
             -o "${{ runner.temp }}/tool-bin/hopscotch"
           chmod +x "${{ runner.temp }}/tool-bin/hopscotch"
 
-      - name: Select validation window
-        id: select_window
-        env:
-          DOWNSTREAM_NAME: ${{ matrix.name }}
-          BUMPING_BRANCH: ${{ matrix.bumping_branch }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          OUTPUT_DIR: ${{ runner.temp }}/artifacts/${{ matrix.name }}
-          POSTGRES_DSN: ${{ needs.plan.outputs.dry_run == 'true' && '' || secrets.POSTGRES_DSN }}
-          PYTHONUNBUFFERED: "1"
-          WORKDIR: ${{ runner.temp }}/downstream-regression
-          BACKEND: ${{ needs.plan.outputs.dry_run == 'true' && 'dry-run' || 'sql' }}
-        run: |
-          python3 -u scripts/select_ondemand_window.py \
-            --inventory ci/inventory/downstreams.json \
-            --backend "$BACKEND" \
-            --workflow ondemand \
-            --downstream "$DOWNSTREAM_NAME" \
-            --branch-override "$BUMPING_BRANCH" \
-            --workdir "$WORKDIR" \
-            --output-dir "$OUTPUT_DIR" \
-            --quiet \
-            --tool-exe "${{ runner.temp }}/tool-bin/hopscotch"
-          python3 - <<'PY'
-          import json
-          import os
-          from pathlib import Path
+      - name: Download selection artifact
+        uses: actions/download-artifact@v8.0.1
+        with:
+          name: selection-${{ matrix.name }}
+          path: ${{ runner.temp }}/artifacts/${{ matrix.name }}
 
-          selection = json.loads((Path(os.environ["OUTPUT_DIR"]) / "selection.json").read_text())
-          with Path(os.environ["GITHUB_OUTPUT"]).open("a") as handle:
-              handle.write(f"needs_probe={'true' if selection.get('needs_probe') else 'false'}\n")
-          PY
-
-      - name: Run downstream probe
-        if: steps.select_window.outputs.needs_probe == 'true'
+      - name: Run probe
+        # No secrets in env — hopscotch and lake build cannot read GITHUB_TOKEN
+        # or POSTGRES_DSN.  The downstream repos are public; unauthenticated
+        # GitHub API access is sufficient for the commit-range queries hopscotch
+        # performs.
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           OUTPUT_DIR: ${{ runner.temp }}/artifacts/${{ matrix.name }}
           PYTHONUNBUFFERED: "1"
           QUIET: ${{ inputs.quiet }}
@@ -216,7 +249,7 @@ jobs:
             $QUIET_FLAG \
             --tool-exe "${{ runner.temp }}/tool-bin/hopscotch"
 
-      - name: Upload downstream artifacts
+      - name: Upload result artifact
         if: always()
         uses: actions/upload-artifact@v7.0.0
         with:
@@ -236,7 +269,7 @@ jobs:
     if: "!cancelled() && (needs.plan.outputs.has_downstreams == 'true' || needs.plan.outputs.has_skipped == 'true')"
     needs:
       - plan
-      - validate
+      - probe
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -265,7 +298,7 @@ jobs:
           name: skipped-downstreams
           path: skipped-data
 
-      - name: Collect validate job URLs
+      - name: Collect probe job URLs
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
@@ -280,8 +313,8 @@ jobs:
           urls = {}
           for job in data.get("jobs", []):
               name = job["name"]
-              if name.startswith("validate: "):
-                  downstream = name[len("validate: "):]
+              if name.startswith("probe: "):
+                  downstream = name[len("probe: "):]
                   urls[downstream] = {
                       "job_id": str(job["id"]),
                       "url": job["html_url"],

@@ -46,7 +46,10 @@ class WindowSelection:
     """Persisted output from the pre-probe window-selection step."""
 
     schema_version: int = 1
-    needs_probe: bool = False
+    # True when a multi-commit bisect window is available.  In both regression
+    # and on-demand workflows the probe job always runs; this field tells the
+    # probe step whether to attempt a bisect after the HEAD probe.
+    has_bisect_window: bool = False
     downstream: str | None = None
     repo: str | None = None
     default_branch: str | None = None
@@ -70,6 +73,18 @@ class WindowSelection:
     # probe step can invoke the tool without its own mathlib clone.
     probe_from_ref: str | None = None
     probe_to_ref: str | None = None
+    # Prior episode state from the database, embedded by the select step so the
+    # probe step can apply skip heuristics without a database connection.
+    previous_first_known_bad_commit: str | None = None
+    previous_downstream_commit: str | None = None
+    previous_last_known_good_commit: str | None = None
+    # When the select step already resolved the final result (e.g. skip-already-
+    # good fired), the serialised ValidationResult payload is stored here.  The
+    # probe step writes it directly to result.json without invoking hopscotch.
+    pre_resolved_result: dict[str, Any] | None = None
+    # Per-downstream skip flag from the inventory, forwarded so the probe step
+    # respects inventory-level overrides without access to the inventory file.
+    skip_known_bad_bisect: bool = True
 
     @classmethod
     def from_json(cls, payload: dict[str, Any]) -> "WindowSelection":

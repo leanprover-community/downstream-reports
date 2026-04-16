@@ -16,10 +16,28 @@ def downstream_cache_dir(workdir: Path, downstream_name: str) -> Path:
     return workdir / "lake-artifact-cache" / downstream_name
 
 
-def cache_env(cache_dir: Path) -> dict[str, str]:
-    """Build the environment that keeps only mathlib's `.ltar` cache local."""
+# Secrets that must never reach hopscotch or lake build subprocesses.
+# cache_env() is the single chokepoint for subprocess environment
+# construction.  Stripping secrets here is a defence-in-depth measure;
+# the primary guarantee is the job boundary (the probe job has no secrets
+# in its env: blocks).  Keep this list in sync with any secret added to
+# the workflow's select job.
+_CI_SECRETS = frozenset({
+    "GITHUB_TOKEN",
+    "POSTGRES_DSN",
+    "ZULIP_API_KEY",
+    "ZULIP_EMAIL",
+})
 
-    env = os.environ.copy()
+
+def cache_env(cache_dir: Path) -> dict[str, str]:
+    """Build the environment that keeps only mathlib's `.ltar` cache local.
+
+    CI secrets are explicitly stripped so that hopscotch and any lake build
+    subprocesses it spawns cannot read them from the environment.
+    """
+
+    env = {k: v for k, v in os.environ.items() if k not in _CI_SECRETS}
     env["MATHLIB_CACHE_DIR"] = str(cache_dir / "mathlib")
     return env
 
