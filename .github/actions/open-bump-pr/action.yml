@@ -1,0 +1,194 @@
+name: 'Open Bump PR'
+description: >
+  Commit working-tree changes and create or update a pull request.
+  Accepts an optional message (e.g. the bump-description output from
+  bump-to-lkg) which is placed in the PR body above an automated footer.
+
+inputs:
+  branch:
+    required: false
+    default: 'hopscotch/lkg-bump'
+    description: >
+      Branch name for the PR. Each run creates a single fresh commit on top
+      of the base branch, so the remote is replaced (force-pushed) every time.
+      This keeps the PR to one commit and avoids accumulating bump history.
+  base:
+    required: false
+    default: ''
+    description: 'Base branch for the PR (defaults to the repo default branch)'
+  title:
+    required: false
+    default: ''
+    description: 'PR title'
+  body:
+    required: false
+    default: ''
+    description: 'Full PR body (overrides auto-generated message + footer)'
+  commit-message:
+    required: false
+    default: ''
+    description: 'Commit message (defaults to "chore: dependency update")'
+  labels:
+    required: false
+    default: ''
+    description: 'Comma-separated labels to apply to the PR'
+  message:
+    required: false
+    default: ''
+    description: >
+      Content to place in the PR body above the automated footer.
+      Pass the bump-description output from bump-to-lkg here.
+
+outputs:
+  pr-number:
+    description: 'PR number (empty if action=noop)'
+    value: ${{ steps.resolve-outputs.outputs.pr_number }}
+  pr-url:
+    description: 'PR URL (empty if action=noop)'
+    value: ${{ steps.resolve-outputs.outputs.pr_url }}
+  action:
+    description: '"created", "updated", or "noop" (no changes to commit)'
+    value: ${{ steps.resolve-outputs.outputs.action }}
+
+runs:
+  using: 'composite'
+  steps:
+    # ------------------------------------------------------------------
+    # Step 1: Check whether there are any file changes to commit.
+    # ------------------------------------------------------------------
+    - name: Check for working-tree changes
+      id: check-changes
+      shell: bash
+      run: |
+        if git diff --quiet && git diff --cached --quiet; then
+          echo "No file changes detected — nothing to commit."
+          echo "no_changes=true" >> "$GITHUB_OUTPUT"
+        else
+          echo "no_changes=false" >> "$GITHUB_OUTPUT"
+        fi
+
+    # ------------------------------------------------------------------
+    # Step 2: Create the branch, commit, and force-push.
+    # ------------------------------------------------------------------
+    - name: Commit and push branch
+      id: commit-and-push
+      if: steps.check-changes.outputs.no_changes != 'true'
+      shell: bash
+      env:
+        BRANCH: ${{ inputs.branch }}
+        COMMIT_MESSAGE: ${{ inputs.commit-message }}
+      run: |
+        set -euo pipefail
+
+        MSG="${COMMIT_MESSAGE:-chore: dependency update}"
+
+        git config user.name  "github-actions[bot]"
+        git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+        git checkout -B "$BRANCH"
+        git add -A
+        git commit -m "$MSG"
+        git push --force origin "$BRANCH"
+
+    # ------------------------------------------------------------------
+    # Step 3: Create or update the PR.
+    # ------------------------------------------------------------------
+    - name: Create or update PR
+      id: create-or-update-pr
+      if: steps.check-changes.outputs.no_changes != 'true'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        BRANCH: ${{ inputs.branch }}
+        BASE: ${{ inputs.base }}
+        TITLE: ${{ inputs.title }}
+        BODY: ${{ inputs.body }}
+        LABELS: ${{ inputs.labels }}
+        MESSAGE: ${{ inputs.message }}
+      run: |
+        set -euo pipefail
+
+        PR_TITLE="${TITLE:-chore: dependency update}"
+
+        if [ -n "$BODY" ]; then
+          PR_BODY="$BODY"
+        else
+          RUN_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          TODAY=$(date -u +"%Y-%m-%d")
+          FOOTER="_This PR was last updated on ${TODAY} by [this workflow run](${RUN_URL}). It is an automated bump using [downstream-reports/open-bump-pr](https://github.com/leanprover-community/downstream-reports)_"
+
+          if [ -n "$MESSAGE" ]; then
+            PR_BODY=$(printf '%s\n\n%s' "$MESSAGE" "$FOOTER")
+          else
+            PR_BODY="$FOOTER"
+          fi
+        fi
+
+        # Build optional gh flag arrays.
+        BASE_ARGS=()
+        if [ -n "$BASE" ]; then
+          BASE_ARGS=(--base "$BASE")
+        fi
+
+        LABEL_ARGS=()
+        if [ -n "$LABELS" ]; then
+          IFS=',' read -ra LABEL_LIST <<< "$LABELS"
+          for label in "${LABEL_LIST[@]}"; do
+            trimmed="${label#"${label%%[![:space:]]*}"}"  # ltrim
+            trimmed="${trimmed%"${trimmed##*[![:space:]]}"}"  # rtrim
+            if [ -n "$trimmed" ]; then
+              LABEL_ARGS+=(--label "$trimmed")
+            fi
+          done
+        fi
+
+        # Check for an existing open PR on this branch.
+        EXISTING=$(gh pr list \
+          --head "$BRANCH" \
+          --state open \
+          --json number,url \
+          --jq '.[0] // empty')
+
+        if [ -n "$EXISTING" ]; then
+          PR_NUMBER=$(echo "$EXISTING" | jq -r '.number')
+          PR_URL=$(echo "$EXISTING" | jq -r '.url')
+          gh pr edit "$PR_NUMBER" --title "$PR_TITLE" --body "$PR_BODY"
+          echo "PR #${PR_NUMBER} updated: $PR_URL"
+          echo "pr_action=updated" >> "$GITHUB_OUTPUT"
+        else
+          PR_URL=$(gh pr create \
+            --head "$BRANCH" \
+            "${BASE_ARGS[@]}" \
+            --title "$PR_TITLE" \
+            --body "$PR_BODY" \
+            "${LABEL_ARGS[@]}")
+          PR_NUMBER="${PR_URL##*/}"
+          echo "PR #${PR_NUMBER} created: $PR_URL"
+          echo "pr_action=created" >> "$GITHUB_OUTPUT"
+        fi
+
+        echo "pr_number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
+        echo "pr_url=$PR_URL"       >> "$GITHUB_OUTPUT"
+
+    # ------------------------------------------------------------------
+    # Final step: consolidate outputs.
+    # ------------------------------------------------------------------
+    - name: Resolve outputs
+      id: resolve-outputs
+      if: always()
+      shell: bash
+      env:
+        NO_CHANGES: ${{ steps.check-changes.outputs.no_changes }}
+        PR_NUMBER: ${{ steps.create-or-update-pr.outputs.pr_number }}
+        PR_URL: ${{ steps.create-or-update-pr.outputs.pr_url }}
+        PR_ACTION: ${{ steps.create-or-update-pr.outputs.pr_action }}
+      run: |
+        if [ "${NO_CHANGES:-}" = "true" ]; then
+          echo "action=noop"   >> "$GITHUB_OUTPUT"
+          echo "pr_number="    >> "$GITHUB_OUTPUT"
+          echo "pr_url="       >> "$GITHUB_OUTPUT"
+        else
+          echo "action=${PR_ACTION:-created}"  >> "$GITHUB_OUTPUT"
+          echo "pr_number=${PR_NUMBER:-}"      >> "$GITHUB_OUTPUT"
+          echo "pr_url=${PR_URL:-}"            >> "$GITHUB_OUTPUT"
+        fi

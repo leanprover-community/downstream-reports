@@ -38,6 +38,7 @@ jobs:
 
       - name: Generate Pages site
         env:
+          GITHUB_TOKEN: ${{ github.token }}
           POSTGRES_DSN: ${{ secrets.POSTGRES_DSN }}
         run: |
           python3 scripts/generate_site.py \

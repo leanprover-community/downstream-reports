@@ -147,13 +147,17 @@ def utc_now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
-def load_inventory(path: Path) -> dict[str, DownstreamConfig]:
-    """Load the JSON inventory and index it by downstream name."""
+def load_inventory(path: Path, *, include_disabled: bool = False) -> dict[str, DownstreamConfig]:
+    """Load the JSON inventory and index it by downstream name.
+
+    By default only enabled entries are returned.  Pass ``include_disabled=True``
+    to include every entry regardless of the ``enabled`` flag.
+    """
 
     payload = json.loads(path.read_text())
     entries = payload.get("downstreams", [])
     return {
         entry["name"]: DownstreamConfig(**entry)
         for entry in entries
-        if entry.get("enabled", True)
+        if include_disabled or entry.get("enabled", True)
     }

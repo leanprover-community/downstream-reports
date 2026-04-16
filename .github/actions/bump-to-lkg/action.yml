@@ -1,0 +1,290 @@
+name: 'Bump to LKG'
+description: >
+  Look up the current LKG commit and bump the mathlib dependency to it via
+  hopscotch. On success the working tree contains modified lakefile and
+  lake-manifest.json ready to commit.
+
+inputs:
+  downstream:
+    required: false
+    default: ${{ github.repository }}
+    description: >
+      Downstream to look up. May be a registered downstream name (e.g. "physlib")
+      or a GitHub repo slug (e.g. "leanprover-community/physlib"). When the value
+      contains a "/" it is treated as a repo slug; otherwise as a name key.
+      Defaults to the repository running this action.
+  project-dir:
+    required: false
+    default: '.'
+    description: 'Path to the downstream project root (default: repo root)'
+  dependency-name:
+    required: false
+    default: 'mathlib'
+    description: 'Name of the dependency in the lakefile'
+  hopscotch-version:
+    required: false
+    default: 'v1.3.0'
+    description: 'Hopscotch release tag to download'
+  generate-description:
+    required: false
+    default: 'true'
+    description: >
+      Set to "false" to skip fetching commit descriptions from the GitHub API.
+      When false, pr-title, bump-description, and commit-message outputs are empty.
+
+outputs:
+  lkg-commit:
+    description: 'The current LKG commit SHA for this downstream'
+    value: ${{ steps.resolve-outputs.outputs.lkg_commit }}
+  current-pin:
+    description: 'The commit the project was pinned to before this action ran'
+    value: ${{ steps.resolve-outputs.outputs.current_pin }}
+  updated:
+    description: '"true" if hopscotch successfully bumped the project'
+    value: ${{ steps.resolve-outputs.outputs.updated }}
+  skipped:
+    description: '"true" if the project was already at the LKG commit'
+    value: ${{ steps.resolve-outputs.outputs.skipped }}
+  build-failed:
+    description: '"true" if hopscotch ran but the build failed'
+    value: ${{ steps.resolve-outputs.outputs.build_failed }}
+  pr-title:
+    description: 'Suggested PR title for the bump (empty when skipped)'
+    value: ${{ steps.fetch-descriptions.outputs.pr_title }}
+  bump-description:
+    description: >
+      Markdown paragraph describing the bump (new commit + previous pin,
+      with subjects and dates). Pass to open-bump-pr message input.
+      Empty when skipped.
+    value: ${{ steps.fetch-descriptions.outputs.bump_description }}
+  commit-message:
+    description: 'Suggested git commit message for the bump (empty when skipped)'
+    value: ${{ steps.fetch-descriptions.outputs.commit_message }}
+
+runs:
+  using: 'composite'
+  steps:
+    # ------------------------------------------------------------------
+    # Step 1: Look up the LKG commit for this downstream.
+    # Fails fast with a helpful error if the downstream is not found.
+    # ------------------------------------------------------------------
+    - name: Look up LKG commit
+      id: fetch-snapshot
+      shell: bash
+      env:
+        DOWNSTREAM: ${{ inputs.downstream }}
+      run: bash "${{ github.action_path }}/../../scripts/fetch-lkg.sh"
+
+    # ------------------------------------------------------------------
+    # Step 2: Read the current mathlib pin from lake-manifest.json.
+    # ------------------------------------------------------------------
+    - name: Read current pin from lake-manifest.json
+      id: read-manifest
+      shell: bash
+      env:
+        PROJECT_DIR: ${{ inputs.project-dir }}
+        DEPENDENCY_NAME: ${{ inputs.dependency-name }}
+      run: |
+        set -euo pipefail
+
+        MANIFEST="$PROJECT_DIR/lake-manifest.json"
+        if [ ! -f "$MANIFEST" ]; then
+          echo "Error: $MANIFEST not found in project-dir '$PROJECT_DIR'."
+          exit 1
+        fi
+
+        CURRENT_PIN=$(jq -r --arg dep "$DEPENDENCY_NAME" \
+          '.packages[] | select(.name == $dep) | .rev' \
+          "$MANIFEST")
+
+        if [ -z "$CURRENT_PIN" ]; then
+          echo "Error: dependency '$DEPENDENCY_NAME' not found in $MANIFEST."
+          echo "Packages present:"
+          jq -r '.packages[].name' "$MANIFEST"
+          exit 1
+        fi
+
+        echo "Current pin for '$DEPENDENCY_NAME': $CURRENT_PIN"
+        echo "current_pin=$CURRENT_PIN" >> "$GITHUB_OUTPUT"
+
+    # ------------------------------------------------------------------
+    # Step 3: Compare pins. If already at LKG, skip the build steps.
+    # ------------------------------------------------------------------
+    - name: Compare pins
+      id: compare
+      shell: bash
+      env:
+        LKG_COMMIT: ${{ steps.fetch-snapshot.outputs.lkg_commit }}
+        CURRENT_PIN: ${{ steps.read-manifest.outputs.current_pin }}
+      run: |
+        if [ "$CURRENT_PIN" = "$LKG_COMMIT" ]; then
+          echo "Already at LKG commit $LKG_COMMIT — nothing to do."
+          echo "skipped=true" >> "$GITHUB_OUTPUT"
+        else
+          echo "Pin needs update: $CURRENT_PIN → $LKG_COMMIT"
+          echo "skipped=false" >> "$GITHUB_OUTPUT"
+        fi
+
+    # ------------------------------------------------------------------
+    # Step 4: Fetch one-line commit descriptions for the LKG commit and
+    # the current pin, and compose the PR title, body snippet, and git
+    # commit message. Runs whenever a bump is needed; outputs are empty
+    # when the project is already at LKG (skipped=true).
+    # ------------------------------------------------------------------
+    - name: Fetch commit descriptions
+      id: fetch-descriptions
+      if: steps.compare.outputs.skipped != 'true' && inputs.generate-description != 'false'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        LKG_COMMIT: ${{ steps.fetch-snapshot.outputs.lkg_commit }}
+        CURRENT_PIN: ${{ steps.read-manifest.outputs.current_pin }}
+        DEPENDENCY_NAME: ${{ inputs.dependency-name }}
+        DEPENDENCY_REPO: leanprover-community/mathlib4
+      run: |
+        set -euo pipefail
+
+        fetch_info() {
+          local sha="$1"
+          # Returns <subject>\t<committer-date YYYY-MM-DD>, or empty on failure.
+          gh api "repos/${DEPENDENCY_REPO}/commits/${sha}" \
+            --jq '[(.commit.message | split("\n")[0]), .commit.committer.date[:10]] | join("\t")' \
+            2>/dev/null || true
+        }
+
+        suffix() {
+          local subject="$1" date="$2" result=""
+          [ -n "$subject" ] && result="${result}: ${subject}"
+          [ -n "$date" ]    && result="${result} (${date})"
+          printf '%s' "$result"
+        }
+
+        LKG_INFO=$(fetch_info "$LKG_COMMIT")
+        LKG_SUBJECT=$(printf '%s' "$LKG_INFO" | cut -f1)
+        LKG_DATE=$(printf '%s' "$LKG_INFO" | cut -f2)
+
+        PREV_INFO=$(fetch_info "$CURRENT_PIN")
+        PREV_SUBJECT=$(printf '%s' "$PREV_INFO" | cut -f1)
+        PREV_DATE=$(printf '%s' "$PREV_INFO" | cut -f2)
+
+        LKG_SHORT="${LKG_COMMIT:0:7}"
+        PREV_SHORT="${CURRENT_PIN:0:7}"
+        LKG_URL="https://github.com/${DEPENDENCY_REPO}/commit/${LKG_COMMIT}"
+        PREV_URL="https://github.com/${DEPENDENCY_REPO}/commit/${CURRENT_PIN}"
+
+        LKG_SUFFIX=$(suffix "$LKG_SUBJECT" "$LKG_DATE")
+        PREV_SUFFIX=$(suffix "$PREV_SUBJECT" "$PREV_DATE")
+
+        PR_TITLE="Bump \`${DEPENDENCY_NAME}\` dependency to ${LKG_SHORT}"
+        COMMIT_MSG="chore: bump ${DEPENDENCY_NAME} to ${LKG_SHORT}${LKG_SUFFIX}"
+
+        {
+          echo "pr_title=${PR_TITLE}"
+          echo "commit_message=${COMMIT_MSG}"
+          echo "bump_description<<BUMP_EOF"
+          printf 'Bump `%s` dependency to [%s](%s)%s\n' \
+            "$DEPENDENCY_NAME" "$LKG_SHORT" "$LKG_URL" "$LKG_SUFFIX"
+          printf 'Previously at: [%s](%s)%s\n' \
+            "$PREV_SHORT" "$PREV_URL" "$PREV_SUFFIX"
+          echo "BUMP_EOF"
+        } >> "$GITHUB_OUTPUT"
+
+    # ------------------------------------------------------------------
+    # Steps 5–7 only run when an update is needed.
+    # ------------------------------------------------------------------
+
+    - name: Install Lean (elan)
+      if: steps.compare.outputs.skipped != 'true'
+      shell: bash
+      run: |
+        curl https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh \
+          -sSf | sh -s -- -y --default-toolchain none
+        echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+
+    - name: Download hopscotch binary
+      if: steps.compare.outputs.skipped != 'true'
+      shell: bash
+      env:
+        HOPSCOTCH_VERSION: ${{ inputs.hopscotch-version }}
+      run: |
+        set -euo pipefail
+        TOOL_DIR="$RUNNER_TEMP/hopscotch-bin"
+        mkdir -p "$TOOL_DIR"
+        curl -L \
+          "https://github.com/leanprover-community/hopscotch/releases/download/${HOPSCOTCH_VERSION}/hopscotch-linux-x86_64" \
+          -o "$TOOL_DIR/hopscotch"
+        chmod +x "$TOOL_DIR/hopscotch"
+        echo "$TOOL_DIR" >> "$GITHUB_PATH"
+
+    - name: Clean any stale hopscotch session
+      if: steps.compare.outputs.skipped != 'true'
+      shell: bash
+      env:
+        PROJECT_DIR: ${{ inputs.project-dir }}
+      run: |
+        # Ignore errors — clean is a best-effort guard against leftover state.
+        hopscotch clean --project-dir "$PROJECT_DIR" || true
+
+    # ------------------------------------------------------------------
+    # Step 7: Run hopscotch to bump and build.
+    #
+    # Exit codes:
+    #   0 → bumped and built successfully (lakefile updated)
+    #   1 → build failed (lakefile left at original pin by --keep-last-good)
+    #   2+ → tool error (fail the step)
+    # ------------------------------------------------------------------
+    - name: Run hopscotch dep
+      id: run-hopscotch
+      if: steps.compare.outputs.skipped != 'true'
+      shell: bash
+      env:
+        DEPENDENCY_NAME: ${{ inputs.dependency-name }}
+        CURRENT_PIN: ${{ steps.read-manifest.outputs.current_pin }}
+        LKG_COMMIT: ${{ steps.fetch-snapshot.outputs.lkg_commit }}
+        PROJECT_DIR: ${{ inputs.project-dir }}
+        GITHUB_TOKEN: ${{ github.token }}
+      run: |
+        set +e
+        hopscotch dep "$DEPENDENCY_NAME" \
+          --from "${LKG_COMMIT}~1" \
+          --to "$LKG_COMMIT" \
+          --project-dir "$PROJECT_DIR" \
+          --scan-mode linear \
+          --keep-last-good \
+          --allow-dirty-workspace
+        EXIT_CODE=$?
+        set -e
+
+        if [ "$EXIT_CODE" -eq 0 ]; then
+          echo "hopscotch: bump succeeded."
+          echo "updated=true" >> "$GITHUB_OUTPUT"
+          echo "build_failed=false" >> "$GITHUB_OUTPUT"
+        elif [ "$EXIT_CODE" -eq 1 ]; then
+          echo "hopscotch: build failed (lakefile unchanged due to --keep-last-good)."
+          echo "updated=false" >> "$GITHUB_OUTPUT"
+          echo "build_failed=true" >> "$GITHUB_OUTPUT"
+        else
+          echo "hopscotch: tool error (exit $EXIT_CODE)."
+          exit "$EXIT_CODE"
+        fi
+
+    # ------------------------------------------------------------------
+    # Final step: consolidate outputs with safe defaults so callers never
+    # see empty strings for boolean-valued outputs.
+    # ------------------------------------------------------------------
+    - name: Resolve outputs
+      id: resolve-outputs
+      if: always()
+      shell: bash
+      env:
+        LKG_COMMIT: ${{ steps.fetch-snapshot.outputs.lkg_commit }}
+        CURRENT_PIN: ${{ steps.read-manifest.outputs.current_pin }}
+        SKIPPED: ${{ steps.compare.outputs.skipped }}
+        UPDATED: ${{ steps.run-hopscotch.outputs.updated }}
+        BUILD_FAILED: ${{ steps.run-hopscotch.outputs.build_failed }}
+      run: |
+        echo "lkg_commit=${LKG_COMMIT:-}"         >> "$GITHUB_OUTPUT"
+        echo "current_pin=${CURRENT_PIN:-}"        >> "$GITHUB_OUTPUT"
+        echo "skipped=${SKIPPED:-false}"           >> "$GITHUB_OUTPUT"
+        echo "updated=${UPDATED:-false}"           >> "$GITHUB_OUTPUT"
+        echo "build_failed=${BUILD_FAILED:-false}" >> "$GITHUB_OUTPUT"
