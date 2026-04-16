@@ -50,7 +50,8 @@ def build_snapshot(
 ) -> dict[str, Any]:
     """Build and return the LKG snapshot dict.
 
-    Only enabled downstreams (those present in *inventory*) are included.
+    All downstreams present in *inventory* are included (callers should pass
+    the full inventory including disabled entries).
     Downstreams with no stored status get ``null`` commit fields.
 
     Args:
@@ -137,7 +138,7 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> int:
     args = build_parser().parse_args()
 
-    inventory = load_inventory(Path(args.inventory))
+    inventory = load_inventory(Path(args.inventory), include_disabled=True)
     backend = create_backend(args.backend, dsn=args.dsn, state_root=args.state_root)
 
     # Provenance metadata — only available for the SQL backend.

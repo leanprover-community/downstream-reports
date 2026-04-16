@@ -252,10 +252,10 @@ class MainCliTests(unittest.TestCase):
         snap = self._run()
         self.assertIsNotNone(snap)
 
-    def test_disabled_downstreams_excluded_via_inventory(self) -> None:
-        """Scenario: load_inventory filters disabled entries before build_snapshot."""
+    def test_disabled_downstreams_included_in_snapshot(self) -> None:
+        """Scenario: export uses include_disabled=True so disabled entries appear in snapshot."""
         snap = self._run()
-        self.assertNotIn("disabled-project", snap["downstreams"])
+        self.assertIn("disabled-project", snap["downstreams"])
 
     def test_enabled_downstreams_present(self) -> None:
         """Scenario: enabled inventory entries appear in the snapshot output file."""
