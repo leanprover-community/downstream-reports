@@ -35,7 +35,6 @@ suggested PR title, body snippet, and git commit message — pass
 | `project-dir` | no | `.` | Path to the downstream project root |
 | `dependency-name` | no | `mathlib` | Name of the dependency in the lakefile |
 | `hopscotch-version` | no | `v1.3.0` | Hopscotch release tag to download |
-| `dependency-repo` | no | `leanprover-community/mathlib4` | GitHub repo of the dependency (`owner/repo`) — used to fetch commit descriptions |
 | `generate-description` | no | `true` | Set to `false` to skip GitHub API calls; `pr-title`, `bump-description`, and `commit-message` will be empty |
 
 ### Outputs

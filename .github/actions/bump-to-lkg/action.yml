@@ -20,12 +20,6 @@ inputs:
     required: false
     default: 'v1.3.0'
     description: 'Hopscotch release tag to download'
-  dependency-repo:
-    required: false
-    default: 'leanprover-community/mathlib4'
-    description: >
-      GitHub repo of the dependency (owner/repo) — used to fetch commit
-      descriptions for the generated PR title and body.
   generate-description:
     required: false
     default: 'true'
@@ -141,7 +135,7 @@ runs:
         LKG_COMMIT: ${{ steps.fetch-snapshot.outputs.lkg_commit }}
         CURRENT_PIN: ${{ steps.read-manifest.outputs.current_pin }}
         DEPENDENCY_NAME: ${{ inputs.dependency-name }}
-        DEPENDENCY_REPO: ${{ inputs.dependency-repo }}
+        DEPENDENCY_REPO: leanprover-community/mathlib4
       run: |
         set -euo pipefail
 
