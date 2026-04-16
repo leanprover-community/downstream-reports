@@ -29,7 +29,7 @@ can use to consume the LKG data and automate mathlib bumps:
 
 | Action | Description |
 |--------|-------------|
-| [`bump-to-lkg`](.github/actions/bump-to-lkg) | Fetches the LKG snapshot, checks the current pin, and runs `hopscotch` to bump and build. |
+| [`bump-to-lkg`](.github/actions/bump-to-lkg) | Looks up the current LKG commit, checks the current pin, and runs `hopscotch` to bump and build. |
 | [`open-bump-pr`](.github/actions/open-bump-pr) | Commits working-tree changes and creates or updates a PR. |
 | [`query-lkg`](.github/actions/query-lkg) | Lightweight read-only lookup — returns the LKG commit for a downstream without cloning or building. |
 
@@ -38,14 +38,14 @@ an example workflow.
 
 ## Keeping your downstream up to date with the public last-known-good (LKG) data
 
-Once your project is [registered](#adding-a-downstream), the LKG snapshot is
+Once your project is [registered](#adding-a-downstream), the LKG data is
 updated automatically after every validation run. The LKG (last-known-good) commit is the latest
 mathlib commit known to build cleanly against your downstream's **main branch**.
 
-Note that the snapshot reflects the state of your downstream at the time of the
+Note that the LKG data reflects the state of your downstream at the time of the
 last validation run. If your downstream has changed since then, the recorded LKG
 commit may no longer build cleanly against its current state. This is why
-`bump-to-lkg` re-runs the build rather than blindly applying the snapshot commit
+`bump-to-lkg` re-runs the build rather than blindly applying the recorded commit
 — it verifies the bump still works before touching your working tree.
 
 You can consume the LKG data from your own repo in several ways depending on how
@@ -120,8 +120,8 @@ Use `query-lkg` to retrieve the current LKG commit SHA without cloning,
 building, or touching your working tree. This is the right starting point for
 custom workflows — for example, posting a notification, triggering a separate
 CI job, or driving a bespoke update script. Keep in mind that this skips the
-verification build, so if your downstream has changed since the snapshot was
-generated, the commit is not guaranteed to still be good.
+verification build, so if your downstream has changed since the LKG data was
+last updated, the commit is not guaranteed to still be good.
 
 ```yaml
       - name: Get LKG commit

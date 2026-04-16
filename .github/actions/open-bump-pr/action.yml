@@ -115,7 +115,7 @@ runs:
         else
           RUN_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
           TODAY=$(date -u +"%Y-%m-%d")
-          FOOTER="_This PR was last updated on ${TODAY} by [this workflow run](${RUN_URL}). It is an automated bump using [downstream-reports/open-bump-pr](https://github.com/leanprover-community/downstream-reports)_"
+          FOOTER="_This PR was last updated on ${TODAY} by [this workflow run](${RUN_URL}). It is an automated bump using [hopscotch-reports/open-bump-pr](https://github.com/leanprover-community/hopscotch-reports)_"
 
           if [ -n "$MESSAGE" ]; then
             PR_BODY=$(printf '%s\n\n%s' "$MESSAGE" "$FOOTER")

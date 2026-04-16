@@ -5,16 +5,12 @@ consume. They are designed to be composed: `query-lkg` is the lightweight
 read-only half; `bump-to-lkg` is the full bump-and-build half; `open-bump-pr`
 is the generic "commit + PR" step that follows either of them.
 
-The shared snapshot-fetch logic lives in
-[`.github/scripts/fetch-lkg.sh`](../.github/scripts/fetch-lkg.sh) and is
-called by both `query-lkg` and `bump-to-lkg`.
-
 > **Extensibility note.** Today the actions are used exclusively for the
 > mathlib upstream. The intent is to keep them general enough to support other
 > upstream/downstream pairs in the future. When adding features, avoid baking
 > in mathlib-specific assumptions: anything that varies per-upstream (dependency
-> name, repo, snapshot URL) should be an explicit input with a sensible default
-> rather than a hardcoded constant.
+> name, repo) should be an explicit input with a sensible default rather than a
+> hardcoded constant.
 
 ---
 
@@ -39,7 +35,6 @@ suggested PR title, body snippet, and git commit message — pass
 | `project-dir` | no | `.` | Path to the downstream project root |
 | `dependency-name` | no | `mathlib` | Name of the dependency in the lakefile |
 | `hopscotch-version` | no | `v1.3.0` | Hopscotch release tag to download |
-| `snapshot-url` | no | production URL | Override to test against a staging blob |
 | `dependency-repo` | no | `leanprover-community/mathlib4` | GitHub repo of the dependency (`owner/repo`) — used to fetch commit descriptions |
 | `generate-description` | no | `true` | Set to `false` to skip GitHub API calls; `pr-title`, `bump-description`, and `commit-message` will be empty |
 
@@ -113,7 +108,6 @@ downstream repo can use it with no inputs at all.
 | Input | Required | Default | Description |
 |-------|----------|---------|-------------|
 | `downstream` | no | `${{ github.repository }}` | Downstream name key or repo slug (`owner/repo`). Auto-detected by presence of `/`. |
-| `snapshot-url` | no | production URL | Override to test against a staging blob |
 
 ### Outputs
 

@@ -1,13 +1,13 @@
 name: 'Bump to LKG'
 description: >
-  Fetch the hopscotch-reports LKG snapshot and bump the mathlib dependency
-  to the latest known-good commit via hopscotch. On success the working tree
-  contains modified lakefile and lake-manifest.json ready to commit.
+  Look up the current LKG commit and bump the mathlib dependency to it via
+  hopscotch. On success the working tree contains modified lakefile and
+  lake-manifest.json ready to commit.
 
 inputs:
   downstream:
     required: true
-    description: 'Downstream name as registered in the hopscotch-reports inventory'
+    description: 'Downstream name as registered in the inventory'
   project-dir:
     required: false
     default: '.'
@@ -20,12 +20,6 @@ inputs:
     required: false
     default: 'v1.3.0'
     description: 'Hopscotch release tag to download'
-  snapshot-url:
-    required: false
-    default: 'https://downstreamreports.z13.web.core.windows.net/lkg/latest.json'
-    description: >
-      Full URL of the LKG snapshot JSON blob. Override for testing against
-      a staging blob; leave empty to use the production URL.
   dependency-repo:
     required: false
     default: 'leanprover-community/mathlib4'
@@ -41,7 +35,7 @@ inputs:
 
 outputs:
   lkg-commit:
-    description: 'The LKG commit SHA from the snapshot'
+    description: 'The current LKG commit SHA for this downstream'
     value: ${{ steps.resolve-outputs.outputs.lkg_commit }}
   current-pin:
     description: 'The commit the project was pinned to before this action ran'
@@ -72,16 +66,14 @@ runs:
   using: 'composite'
   steps:
     # ------------------------------------------------------------------
-    # Step 1: Fetch the LKG snapshot and extract the entry for this
-    # downstream. Fails fast with a helpful error if the downstream is
-    # not found.
+    # Step 1: Look up the LKG commit for this downstream.
+    # Fails fast with a helpful error if the downstream is not found.
     # ------------------------------------------------------------------
-    - name: Fetch LKG snapshot
+    - name: Look up LKG commit
       id: fetch-snapshot
       shell: bash
       env:
         DOWNSTREAM: ${{ inputs.downstream }}
-        SNAPSHOT_URL: ${{ inputs.snapshot-url }}
       run: bash "${{ github.action_path }}/../../scripts/fetch-lkg.sh"
 
     # ------------------------------------------------------------------

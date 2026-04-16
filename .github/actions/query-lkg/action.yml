@@ -13,13 +13,6 @@ inputs:
       or a GitHub repo slug (e.g. "leanprover-community/physlib"). When the value
       contains a "/" it is treated as a repo slug; otherwise as a name key.
       Defaults to the repository running this action.
-  snapshot-url:
-    required: false
-    default: 'https://downstreamreports.z13.web.core.windows.net/lkg/latest.json'
-    description: >
-      Full URL of the LKG snapshot JSON. Override for testing against a staging
-      blob; leave empty to use the production URL.
-
 outputs:
   lkg-commit:
     description: 'The last-known-good commit SHA for the downstream'
@@ -42,5 +35,4 @@ runs:
       shell: bash
       env:
         DOWNSTREAM: ${{ inputs.downstream }}
-        SNAPSHOT_URL: ${{ inputs.snapshot-url }}
       run: bash "${{ github.action_path }}/../../scripts/fetch-lkg.sh"

@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
-# fetch-lkg.sh — fetch the LKG snapshot and look up a single downstream entry.
+# fetch-lkg.sh — fetch the LKG data and look up a single downstream entry.
 #
 # Required env vars:
-#   SNAPSHOT_URL   Full URL of the LKG snapshot JSON
 #   DOWNSTREAM     Downstream name key (e.g. "physlib") OR repo slug
 #                  (e.g. "leanprover-community/physlib"). Values containing "/"
 #                  are treated as repo slugs; all others as name keys.
@@ -14,14 +13,16 @@
 
 set -euo pipefail
 
-echo "Fetching LKG snapshot from $SNAPSHOT_URL"
+LKG_URL='https://downstreamreports.z13.web.core.windows.net/lkg/latest.json'
+
+echo "Fetching LKG data..."
 curl --retry 3 --retry-delay 5 --fail --silent --show-error \
-  -o /tmp/lkg-snapshot.json "$SNAPSHOT_URL"
+  -o /tmp/lkg-snapshot.json "$LKG_URL"
 
 # Validate schema_version.
 SCHEMA_VERSION=$(jq -r '.schema_version // empty' /tmp/lkg-snapshot.json)
 if [ -z "$SCHEMA_VERSION" ]; then
-  echo "Error: snapshot JSON is missing schema_version field."
+  echo "Error: LKG data is missing schema_version field."
   exit 1
 fi
 if [ "$SCHEMA_VERSION" -lt 1 ] 2>/dev/null; then
@@ -30,14 +31,14 @@ fi
 
 # Auto-detect lookup mode: values containing "/" are repo slugs, otherwise name keys.
 if [[ "$DOWNSTREAM" == */* ]]; then
-  echo "Searching snapshot by repo slug: $DOWNSTREAM"
+  echo "Looking up downstream by repo slug: $DOWNSTREAM"
   ENTRY=$(jq -c --arg repo "$DOWNSTREAM" '
     .downstreams | to_entries[]
     | select(.value.repo == $repo)
     | {name: .key} + .value
   ' /tmp/lkg-snapshot.json | head -n1)
 else
-  echo "Searching snapshot by downstream name: $DOWNSTREAM"
+  echo "Looking up downstream by name: $DOWNSTREAM"
   ENTRY=$(jq -c --arg ds "$DOWNSTREAM" '
     if .downstreams[$ds] then
       {name: $ds} + .downstreams[$ds]
@@ -46,7 +47,7 @@ else
 fi
 
 if [ -z "$ENTRY" ]; then
-  echo "Error: could not find downstream '$DOWNSTREAM' in the snapshot."
+  echo "Error: could not find downstream '$DOWNSTREAM' in the LKG data."
   echo ""
   echo "Available downstream names:"
   jq -r '.downstreams | keys[]' /tmp/lkg-snapshot.json
