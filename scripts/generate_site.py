@@ -738,9 +738,12 @@ def render_table_row(
         lgr_dist = lgr_distances.get((pin, lgr))
     if lgr_dist is not None and lgr_dist != 0:
         if lgr_dist > 0:
-            dist_html = f'<div class="distance-sub">(+{lgr_dist})</div>'
+            tip = f"This tag is newer than the downstream&#39;s pinned revision by {lgr_dist} commit{'s' if lgr_dist != 1 else ''}"
+            dist_html = f'<div class="distance-sub" data-tooltip="{tip}">(+{lgr_dist})</div>'
         else:
-            dist_html = f'<div class="distance-sub">({lgr_dist})</div>'
+            count = abs(lgr_dist)
+            tip = f"This tag is older than the downstream&#39;s pinned revision by {count} commit{'s' if count != 1 else ''}"
+            dist_html = f'<div class="distance-sub" data-tooltip="{tip}">({lgr_dist})</div>'
         lgr_cell = f'<div>{lgr_link}{dist_html}</div>'
     else:
         lgr_cell = lgr_link
