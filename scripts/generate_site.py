@@ -173,14 +173,15 @@ def fetch_tags(
 
 
 COL_DESC = {
-    "downstream":      "Project tested updating the Mathlib dependency",
-    "compatibility":   "Compatibility of the downstream with the target Mathlib revision\n(based on the result of the latest validation run)",
-    "target":          "Mathlib revision targeted in the latest validation run",
-    "last_known_good": "Latest Mathlib revision compatible with the downstream",
-    "first_known_bad": "Earliest Mathlib revision incompatible with the downstream",
-    "pinned":          "Mathlib revision in the downstream's lake manifest",
-    "age":             "Days between 'pinned' and 'target' (commit count below)",
-    "bump":            "Commits that can be safely advanced ('pinned' -> 'last known good')",
+    "downstream":        "Project tested updating the Mathlib dependency",
+    "compatibility":     "Compatibility of the downstream with the target Mathlib revision\n(based on the result of the latest validation run)",
+    "target":            "Mathlib revision targeted in the latest validation run",
+    "last_known_good":   "Latest Mathlib revision compatible with the downstream",
+    "last_good_release": "Latest Mathlib semver release tag compatible with the downstream",
+    "first_known_bad":   "Earliest Mathlib revision incompatible with the downstream",
+    "pinned":            "Mathlib revision in the downstream's lake manifest",
+    "age":               "Days between 'pinned' and 'target' (commit count below)",
+    "bump":              "Commits that can be safely advanced ('pinned' -> 'last known good')",
 }
 
 COMPATIBILITY_CLASS = {
@@ -256,9 +257,26 @@ def load_from_filesystem(state_root: Path) -> tuple[dict, list[dict]]:
         "started_at":   None,
     }
 
+    # Load release-tag fields from status/current.json (downstream_status table analogue).
+    release_by_name: dict[str, dict] = {}
+    status_path = state_root / "status" / "current.json"
+    if status_path.exists():
+        try:
+            sdata = json.loads(status_path.read_text())
+            for name, s in sdata.get("downstreams", {}).items():
+                release_by_name[name] = {
+                    "last_good_release": s.get("last_good_release"),
+                    "last_good_release_commit": s.get("last_good_release_commit"),
+                }
+        except Exception:
+            pass
+
     rows = []
     for r in data.get("results", []):
         row = dict(r)
+        ds = row.get("downstream", "")
+        row.setdefault("last_good_release", release_by_name.get(ds, {}).get("last_good_release"))
+        row.setdefault("last_good_release_commit", release_by_name.get(ds, {}).get("last_good_release_commit"))
         rows.append(row)
 
     return run_meta, rows
@@ -542,6 +560,8 @@ def render_table_row(
     target = r.get("target_commit")
     lkg = r.get("last_known_good")
     fkb = r.get("first_known_bad")
+    lgr = r.get("last_good_release_commit")
+    lgr_tag = r.get("last_good_release")
     age_val  = r.get("age_commits")
     bump_val = r.get("bump_commits")
 
@@ -565,6 +585,7 @@ def render_table_row(
     compatibility_cell  = badge(r.get("outcome"), COMPATIBILITY_CLASS, label_map=COMPATIBILITY_LABEL, tooltip_map=COMPATIBILITY_TOOLTIP)
     target_cell   = commit_link(UPSTREAM_REPO, target, ct(target), tg(target), cd(target))
     lkg_cell      = commit_link(UPSTREAM_REPO, lkg,    ct(lkg),    tg(lkg),    cd(lkg))
+    lgr_cell      = commit_link(UPSTREAM_REPO, lgr,    ct(lgr),    lgr_tag,    cd(lgr))
     fkb_cell      = commit_link(UPSTREAM_REPO, fkb,    ct(fkb),    tg(fkb),    cd(fkb))
     pin_cell      = commit_link(UPSTREAM_REPO, pin,    ct(pin),    tg(pin),    cd(pin))
     age_days  = days_between(cd(pin), cd(target))
@@ -588,6 +609,7 @@ def render_table_row(
         f'<td data-sort-val="{esc(target or "")}">{target_cell}</td>'
         f'<td data-sort-val="{esc(r.get("outcome", ""))}">{compatibility_cell}</td>'
         f'<td data-sort-val="{esc(lkg or "")}">{lkg_cell}</td>'
+        f'<td data-sort-val="{esc(lgr_tag or "")}">{lgr_cell}</td>'
         f'<td data-sort-val="{esc(fkb or "")}">{fkb_cell}</td>'
         f'<td data-sort-val="{_bv}">{bump_cell}</td>'
         f"<td>{links_cell}</td>"
@@ -605,6 +627,8 @@ def render_table_row(
         tg(target),
         short_sha(lkg),
         tg(lkg),
+        lgr_tag,
+        short_sha(lgr),
         short_sha(fkb),
         tg(fkb),
     ]))
@@ -629,14 +653,15 @@ def render(
         f'<span class="col-glossary-val">{esc(desc)}</span>'
         f'</div>'
         for label, desc in [
-            ("Downstream",      COL_DESC["downstream"]),
-            ("Target",          COL_DESC["target"]),
-            ("Compatibility",    COL_DESC["compatibility"]),
-            ("Last known good", COL_DESC["last_known_good"]),
-            ("First known bad", COL_DESC["first_known_bad"]),
-            ("Pinned",          COL_DESC["pinned"]),
-            ("Age",             COL_DESC["age"]),
-            ("Bump",            COL_DESC["bump"]),
+            ("Downstream",        COL_DESC["downstream"]),
+            ("Target",            COL_DESC["target"]),
+            ("Compatibility",     COL_DESC["compatibility"]),
+            ("Last known good",   COL_DESC["last_known_good"]),
+            ("Last good release", COL_DESC["last_good_release"]),
+            ("First known bad",   COL_DESC["first_known_bad"]),
+            ("Pinned",            COL_DESC["pinned"]),
+            ("Age",               COL_DESC["age"]),
+            ("Bump",              COL_DESC["bump"]),
         ]
     )
     badge_glossary_intro = (
@@ -750,12 +775,13 @@ def render(
         + _th("Target",          "target")
         + _th("Compatibility",         "compatibility",         sortable=True)
         + _th("Last known good", "last_known_good")
+        + _th("Last good release", "last_good_release")
         + _th("First known bad", "first_known_bad")
         + _th("Bump",            "bump",            sortable=True, sort_type="numeric")
         + _th("Links")
     )
 
-    n_cols = 9
+    n_cols = 10
     if not table_rows:
         table_rows = [
             f'<tr><td colspan="{n_cols}" style="text-align:center;padding:20px;color:#bbb;">'
@@ -915,7 +941,7 @@ def main() -> None:
 
     # Collect every unique Mathlib SHA referenced across all rows, then fetch
     # their commit titles in one pass (memoized — each SHA fetched at most once).
-    sha_fields = ("target_commit", "last_known_good", "first_known_bad", "pinned_commit")
+    sha_fields = ("target_commit", "last_known_good", "first_known_bad", "pinned_commit", "last_good_release_commit")
     unique_shas = {r[f] for r in rows for f in sha_fields if r.get(f)}
     print(f"Fetching commit titles for {len(unique_shas)} unique SHA(s)…")
     commit_titles = fetch_commit_titles(unique_shas, UPSTREAM_REPO, args.github_token)

@@ -22,10 +22,15 @@ inputs:
         last-known-good  (default) — the last commit known to build successfully
         first-known-bad            — the first commit known to break the build
                                      (null when no active regression)
+        last-good-release          — the latest semver release tag (e.g. v4.13.0)
+                                     reachable from the last-known-good commit
 
 outputs:
+  rev:
+    description: 'The human-readable ref (tag name for last-good-release, SHA for other query types)'
+    value: ${{ steps.lookup.outputs.rev }}
   commit:
-    description: 'The target commit SHA (last-known-good or first-known-bad depending on query-type)'
+    description: 'The resolved commit SHA (same as rev for non-release query types)'
     value: ${{ steps.lookup.outputs.commit }}
   downstream-name:
     description: 'The downstream name key as registered in the snapshot'

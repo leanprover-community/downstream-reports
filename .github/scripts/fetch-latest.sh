@@ -12,7 +12,9 @@
 #                    first-known-bad            — first_known_bad_commit
 #
 # Writes to GITHUB_OUTPUT:
-#   commit, downstream_name, repo, dependency_name
+#   rev, commit, downstream_name, repo, dependency_name
+#   rev    — the human-readable ref (tag name for last-good-release, SHA otherwise)
+#   commit — commit SHA (resolved from the tag for last-good-release)
 #
 # Exits non-zero with a diagnostic message if the downstream is not found.
 
@@ -68,13 +70,20 @@ DEP_NAME=$(printf '%s' "$ENTRY" | jq -r '.dependency_name')
 
 # Select the commit field based on QUERY_TYPE.
 RESOLVED_TYPE="${QUERY_TYPE:-last-known-good}"
-if [ "$RESOLVED_TYPE" = "first-known-bad" ]; then
-  TARGET_COMMIT=$(printf '%s' "$ENTRY" | jq -r '.first_known_bad_commit // empty')
-  COMMIT_LABEL="FKB commit"
-else
-  TARGET_COMMIT=$(printf '%s' "$ENTRY" | jq -r '.last_known_good_commit // empty')
-  COMMIT_LABEL="LKG commit"
-fi
+case "$RESOLVED_TYPE" in
+  first-known-bad)
+    TARGET_COMMIT=$(printf '%s' "$ENTRY" | jq -r '.first_known_bad_commit // empty')
+    TARGET_SHA="$TARGET_COMMIT"
+    COMMIT_LABEL="FKB commit" ;;
+  last-good-release)
+    TARGET_COMMIT=$(printf '%s' "$ENTRY" | jq -r '.last_good_release // empty')
+    TARGET_SHA=$(printf '%s' "$ENTRY" | jq -r '.last_good_release_commit // empty')
+    COMMIT_LABEL="Release tag" ;;
+  *)  # last-known-good (default)
+    TARGET_COMMIT=$(printf '%s' "$ENTRY" | jq -r '.last_known_good_commit // empty')
+    TARGET_SHA="$TARGET_COMMIT"
+    COMMIT_LABEL="LKG commit" ;;
+esac
 
 echo "Downstream:   $DS_NAME"
 echo "Repo:         $REPO"
@@ -82,7 +91,8 @@ echo "Dependency:   $DEP_NAME"
 echo "Commit type:  $RESOLVED_TYPE"
 echo "$COMMIT_LABEL: ${TARGET_COMMIT:-<none>}"
 
-echo "commit=$TARGET_COMMIT"          >> "$GITHUB_OUTPUT"
+echo "rev=$TARGET_COMMIT"             >> "$GITHUB_OUTPUT"
+echo "commit=$TARGET_SHA"             >> "$GITHUB_OUTPUT"
 echo "downstream_name=$DS_NAME"       >> "$GITHUB_OUTPUT"
 echo "repo=$REPO"                     >> "$GITHUB_OUTPUT"
 echo "dependency_name=$DEP_NAME"      >> "$GITHUB_OUTPUT"

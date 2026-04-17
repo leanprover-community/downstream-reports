@@ -186,6 +186,27 @@ def build_commit_window(
     return commits, truncated
 
 
+RELEASE_TAG_GLOB = "v[0-9]*"
+
+
+def latest_reachable_tag(
+    repo_dir: Path, commit: str, pattern: str = RELEASE_TAG_GLOB
+) -> str | None:
+    """Return the latest matching tag reachable from `commit`, or None."""
+    output = git(
+        repo_dir,
+        "tag", "--merged", commit,
+        "--list", pattern,
+        "--sort=-v:refname",
+    )
+    return output.splitlines()[0] if output else None
+
+
+def resolve_tag(repo_dir: Path, tag: str) -> str:
+    """Return the commit SHA for `tag`."""
+    return git(repo_dir, "rev-list", "-n", "1", tag)
+
+
 def should_run_boundary_search(head_probe_exit_code: int, commit_window: list[str]) -> bool:
     """Return whether a failing head probe should be followed by a range search."""
 

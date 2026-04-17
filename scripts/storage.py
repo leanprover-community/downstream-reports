@@ -64,6 +64,8 @@ class DownstreamStatusRecord:
     first_known_bad_commit: str | None = None
     pinned_commit: str | None = None
     downstream_commit: str | None = None
+    last_good_release: str | None = None         # e.g. "v4.13.0"
+    last_good_release_commit: str | None = None  # resolved SHA for that tag
 
 
 @dataclass
@@ -254,6 +256,8 @@ class FilesystemBackend:
                 first_known_bad_commit=data.get("first_known_bad_commit"),
                 pinned_commit=data.get("pinned_commit"),
                 downstream_commit=data.get("downstream_commit"),
+                last_good_release=data.get("last_good_release"),
+                last_good_release_commit=data.get("last_good_release_commit"),
             )
             for name, data in payload.get("downstreams", {}).items()
         }
@@ -292,6 +296,8 @@ class FilesystemBackend:
                             "first_known_bad_commit": s.first_known_bad_commit,
                             "pinned_commit": s.pinned_commit,
                             "downstream_commit": s.downstream_commit,
+                            "last_good_release": s.last_good_release,
+                            "last_good_release_commit": s.last_good_release_commit,
                         }
                         for name, s in sorted(updated_statuses.items())
                     },
@@ -439,6 +445,8 @@ try:
         Column("first_known_bad", String),
         Column("pinned_commit", String),
         Column("downstream_commit", String),
+        Column("last_good_release", String),
+        Column("last_good_release_commit", String),
         Column("updated_at", DateTime(timezone=True), nullable=False),
     )
 
@@ -582,6 +590,7 @@ class SqlBackend:
         stmt = sa_select(
             t.c.downstream, t.c.last_known_good, t.c.first_known_bad,
             t.c.pinned_commit, t.c.downstream_commit,
+            t.c.last_good_release, t.c.last_good_release_commit,
         ).where(t.c.workflow == workflow, t.c.upstream == upstream)
         with self._engine.connect() as conn:
             rows = conn.execute(stmt).fetchall()
@@ -591,6 +600,8 @@ class SqlBackend:
                 first_known_bad_commit=row[2],
                 pinned_commit=row[3],
                 downstream_commit=row[4],
+                last_good_release=row[5],
+                last_good_release_commit=row[6],
             )
             for row in rows
         }
@@ -670,10 +681,12 @@ class SqlBackend:
                         "first_known_bad": s.first_known_bad_commit,
                         "pinned_commit": s.pinned_commit,
                         "downstream_commit": s.downstream_commit,
+                        "last_good_release": s.last_good_release,
+                        "last_good_release_commit": s.last_good_release_commit,
                         "updated_at": reported_dt,
                     },
                     conflict_cols=["downstream", "workflow", "upstream"],
-                    update_cols=["last_known_good", "first_known_bad", "pinned_commit", "downstream_commit", "updated_at"],
+                    update_cols=["last_known_good", "first_known_bad", "pinned_commit", "downstream_commit", "last_good_release", "last_good_release_commit", "updated_at"],
                 )
 
             for j in (validate_jobs or []):
@@ -847,6 +860,8 @@ def load_run_for_site(engine: Any, run_id: str) -> tuple[dict, list[dict]]:
             .subquery()
         )
 
+        ds_tbl = _sa_downstream_status
+        upstream_val = dict(run_row)["upstream"]
         results = conn.execute(
             sa_select(
                 _sa_run_result.c.downstream,
@@ -865,6 +880,8 @@ def load_run_for_site(engine: Any, run_id: str) -> tuple[dict, list[dict]]:
                 _sa_validate_job.c.started_at.label("job_started_at"),
                 _sa_validate_job.c.finished_at.label("job_finished_at"),
                 _sa_validate_job.c.conclusion.label("job_conclusion"),
+                ds_tbl.c.last_good_release,
+                ds_tbl.c.last_good_release_commit,
             )
             .join(latest_per_ds, _sa_run_result.c.downstream == latest_per_ds.c.downstream)
             .join(_sa_run, and_(
@@ -874,6 +891,11 @@ def load_run_for_site(engine: Any, run_id: str) -> tuple[dict, list[dict]]:
             .outerjoin(_sa_validate_job, and_(
                 _sa_run_result.c.run_id == _sa_validate_job.c.run_id,
                 _sa_run_result.c.downstream == _sa_validate_job.c.downstream,
+            ))
+            .outerjoin(ds_tbl, and_(
+                _sa_run_result.c.downstream == ds_tbl.c.downstream,
+                ds_tbl.c.workflow == "regression",
+                ds_tbl.c.upstream == upstream_val,
             ))
             .order_by(_sa_run_result.c.downstream)
         ).mappings().all()

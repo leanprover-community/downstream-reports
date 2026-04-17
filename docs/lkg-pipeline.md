@@ -97,7 +97,9 @@ input/output reference and example workflows.
       "repo": "leanprover-community/physlib",
       "dependency_name": "mathlib",
       "last_known_good_commit": "abc123...",
-      "first_known_bad_commit": null
+      "first_known_bad_commit": null,
+      "last_good_release": "v4.13.0",
+      "last_good_release_commit": "def456..."
     }
   }
 }

@@ -40,10 +40,15 @@ inputs:
         last-known-good  (default) — the last commit known to build successfully
         first-known-bad            — the first commit known to break the build
                                      (null when no active regression)
+        last-good-release          — the latest semver release tag (e.g. v4.13.0)
+                                     reachable from the last-known-good commit
 
 outputs:
+  rev:
+    description: 'The human-readable ref passed to hopscotch (tag name for last-good-release, SHA otherwise)'
+    value: ${{ steps.resolve-outputs.outputs.rev }}
   commit:
-    description: 'The target commit SHA from the snapshot (last-known-good or first-known-bad)'
+    description: 'The resolved commit SHA (always a SHA)'
     value: ${{ steps.resolve-outputs.outputs.commit }}
   current-pin:
     description: 'The commit the project was pinned to before this action ran'
@@ -124,17 +129,20 @@ runs:
       id: compare
       shell: bash
       env:
+        TARGET_REV: ${{ steps.fetch-snapshot.outputs.rev }}
         TARGET_COMMIT: ${{ steps.fetch-snapshot.outputs.commit }}
         CURRENT_PIN: ${{ steps.read-manifest.outputs.current_pin }}
       run: |
-        if [ -z "$TARGET_COMMIT" ]; then
+        # Use TARGET_COMMIT (SHA) for the equality check so that tag names
+        # compare correctly against the SHA stored in lake-manifest.json.
+        if [ -z "$TARGET_REV" ]; then
           echo "Target commit is empty (no active entry for this query-type) — nothing to do."
           echo "skipped=true" >> "$GITHUB_OUTPUT"
         elif [ "$CURRENT_PIN" = "$TARGET_COMMIT" ]; then
-          echo "Already at target commit $TARGET_COMMIT — nothing to do."
+          echo "Already at target $TARGET_REV — nothing to do."
           echo "skipped=true" >> "$GITHUB_OUTPUT"
         else
-          echo "Pin needs update: $CURRENT_PIN → $TARGET_COMMIT"
+          echo "Pin needs update: $CURRENT_PIN → $TARGET_REV"
           echo "skipped=false" >> "$GITHUB_OUTPUT"
         fi
 
@@ -150,7 +158,7 @@ runs:
       shell: bash
       env:
         GH_TOKEN: ${{ github.token }}
-        TARGET_COMMIT: ${{ steps.fetch-snapshot.outputs.commit }}
+        TARGET_COMMIT: ${{ steps.fetch-snapshot.outputs.rev }}
         CURRENT_PIN: ${{ steps.read-manifest.outputs.current_pin }}
         DEPENDENCY_NAME: ${{ inputs.dependency-name }}
         DEPENDENCY_REPO: leanprover-community/mathlib4
@@ -253,7 +261,7 @@ runs:
       env:
         DEPENDENCY_NAME: ${{ inputs.dependency-name }}
         CURRENT_PIN: ${{ steps.read-manifest.outputs.current_pin }}
-        TARGET_COMMIT: ${{ steps.fetch-snapshot.outputs.commit }}
+        TARGET_COMMIT: ${{ steps.fetch-snapshot.outputs.rev }}
         PROJECT_DIR: ${{ inputs.project-dir }}
         GITHUB_TOKEN: ${{ github.token }}
       run: |
@@ -290,12 +298,14 @@ runs:
       if: always()
       shell: bash
       env:
+        TARGET_REV: ${{ steps.fetch-snapshot.outputs.rev }}
         TARGET_COMMIT: ${{ steps.fetch-snapshot.outputs.commit }}
         CURRENT_PIN: ${{ steps.read-manifest.outputs.current_pin }}
         SKIPPED: ${{ steps.compare.outputs.skipped }}
         UPDATED: ${{ steps.run-hopscotch.outputs.updated }}
         BUILD_FAILED: ${{ steps.run-hopscotch.outputs.build_failed }}
       run: |
+        echo "rev=${TARGET_REV:-}"                 >> "$GITHUB_OUTPUT"
         echo "commit=${TARGET_COMMIT:-}"           >> "$GITHUB_OUTPUT"
         echo "current_pin=${CURRENT_PIN:-}"        >> "$GITHUB_OUTPUT"
         echo "skipped=${SKIPPED:-false}"           >> "$GITHUB_OUTPUT"

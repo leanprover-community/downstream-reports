@@ -75,6 +75,8 @@ def build_snapshot(
             "dependency_name": config.dependency_name,
             "last_known_good_commit": status.last_known_good_commit if status else None,
             "first_known_bad_commit": status.first_known_bad_commit if status else None,
+            "last_good_release": status.last_good_release if status else None,
+            "last_good_release_commit": status.last_good_release_commit if status else None,
         }
 
     return {
