@@ -23,6 +23,7 @@ import argparse
 import html as _html
 import json
 import os
+import subprocess
 import sys
 import urllib.request
 from collections import defaultdict
@@ -208,6 +209,107 @@ def fetch_commit_distances(
             print(f"  warning: could not fetch distance {base[:7]}…{head[:7]}: {exc}")
             result[(base, head)] = None
     return result
+
+
+# ---------------------------------------------------------------------------
+# Local git helpers (used when --upstream-dir is provided)
+# ---------------------------------------------------------------------------
+
+def git_commit_info(
+    repo_dir: Path,
+    shas: set[str],
+) -> dict[str, dict[str, str | None]]:
+    """Return {sha: {"title": ..., "date": ...}} by reading a local clone.
+
+    Uses a single ``git log --no-walk`` call for all SHAs at once.
+    Any SHA not found in the repo maps to ``{"title": None, "date": None}``.
+    """
+    if not shas:
+        return {}
+    # %H = full SHA, %s = subject (first line only — no newlines), %cI = ISO committer date.
+    # tformat emits exactly 3 lines per commit with no blank separators.
+    args = ["git", "log", "--no-walk=unsorted", "--format=%H%n%s%n%cI"] + list(shas)
+    try:
+        out = subprocess.check_output(
+            args, cwd=repo_dir, text=True, stderr=subprocess.DEVNULL,
+        )
+    except subprocess.CalledProcessError as exc:
+        print(f"  warning: git log failed: {exc}")
+        return {sha: {"title": None, "date": None} for sha in shas}
+
+    result: dict[str, dict[str, str | None]] = {}
+    lines = out.splitlines()
+    for i in range(0, len(lines) - 2, 3):
+        sha = lines[i].strip()
+        title = lines[i + 1].strip() or None
+        date = lines[i + 2].strip() or None
+        if sha:
+            result[sha] = {"title": title, "date": date}
+    for sha in shas:
+        result.setdefault(sha, {"title": None, "date": None})
+    return result
+
+
+def git_tag_map(repo_dir: Path) -> dict[str, str]:
+    """Return {commit_sha: tag_name} from a local clone.
+
+    Uses ``git for-each-ref`` sorted by descending semver so the newest tag
+    wins when multiple tags point to the same commit — matching the behaviour
+    of ``fetch_tags`` which iterates pages newest-first.
+    """
+    # Each output line: "tag_name full_sha deref_sha_or_empty"
+    # Tag names and SHAs contain no spaces, so space-splitting is safe.
+    # Annotated tags: *objectname is the commit SHA; lightweight tags: objectname is.
+    try:
+        out = subprocess.check_output(
+            [
+                "git", "for-each-ref", "refs/tags",
+                "--sort=-v:refname",
+                "--format=%(refname:short) %(objectname) %(*objectname)",
+            ],
+            cwd=repo_dir, text=True, stderr=subprocess.DEVNULL,
+        )
+    except subprocess.CalledProcessError as exc:
+        print(f"  warning: git for-each-ref failed: {exc}")
+        return {}
+
+    result: dict[str, str] = {}
+    for line in out.splitlines():
+        parts = line.split()
+        if len(parts) < 2:
+            continue
+        name = parts[0]
+        obj_sha = parts[1]
+        deref_sha = parts[2] if len(parts) >= 3 else ""
+        commit_sha = deref_sha or obj_sha
+        if commit_sha and name and commit_sha not in result:
+            result[commit_sha] = name
+    return result
+
+
+def git_signed_distance(repo_dir: Path, base: str, head: str) -> int | None:
+    """Return the signed commit distance between *base* and *head* locally.
+
+    Positive: *head* is ahead of *base*.  Negative: *base* is ahead of *head*.
+    Returns ``None`` on any git error.
+    """
+    if base == head:
+        return 0
+    try:
+        ahead = int(subprocess.check_output(
+            ["git", "rev-list", "--count", f"{base}..{head}"],
+            cwd=repo_dir, text=True, stderr=subprocess.DEVNULL,
+        ).strip())
+        if ahead > 0:
+            return ahead
+        behind = int(subprocess.check_output(
+            ["git", "rev-list", "--count", f"{head}..{base}"],
+            cwd=repo_dir, text=True, stderr=subprocess.DEVNULL,
+        ).strip())
+        return -behind
+    except (subprocess.CalledProcessError, ValueError) as exc:
+        print(f"  warning: git distance {base[:7]}…{head[:7]} failed: {exc}")
+        return None
 
 
 COL_DESC = {
@@ -660,9 +762,9 @@ def render_table_row(
         f'<td data-sort-val="{esc(target or "")}">{target_cell}</td>'
         f'<td data-sort-val="{esc(r.get("outcome", ""))}">{compatibility_cell}</td>'
         f'<td data-sort-val="{esc(lkg or "")}">{lkg_cell}</td>'
-        f'<td data-sort-val="{esc(lgr_tag or "")}">{lgr_cell}</td>'
         f'<td data-sort-val="{esc(fkb or "")}">{fkb_cell}</td>'
         f'<td data-sort-val="{_bv}">{bump_cell}</td>'
+        f'<td data-sort-val="{esc(lgr_tag or "")}">{lgr_cell}</td>'
         f"<td>{links_cell}</td>"
     )
     ep_label = EPISODE_LABEL.get(episode_state, episode_state or "")
@@ -828,9 +930,9 @@ def render(
         + _th("Target",          "target")
         + _th("Compatibility",         "compatibility",         sortable=True)
         + _th("Last known good", "last_known_good")
-        + _th("Last good release", "last_good_release")
         + _th("First known bad", "first_known_bad")
         + _th("Bump",            "bump",            sortable=True, sort_type="numeric")
+        + _th("Last good release", "last_good_release")
         + _th("Links")
     )
 
@@ -947,6 +1049,12 @@ def main() -> None:
         default=os.environ.get("GITHUB_TOKEN"),
         help="GitHub token for commit title lookups (default: $GITHUB_TOKEN)",
     )
+    ap.add_argument(
+        "--upstream-dir",
+        help="Path to a bare/blobless local clone of the upstream repo; "
+             "when provided, commit info, tags, and distances are read locally "
+             "instead of via the GitHub API",
+    )
     args = ap.parse_args()
 
     generated_at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
@@ -992,14 +1100,52 @@ def main() -> None:
     else:
         print(f"  warning: inventory not found at {inventory_path}, skipping filter")
 
-    # Collect every unique Mathlib SHA referenced across all rows, then fetch
-    # their commit titles in one pass (memoized — each SHA fetched at most once).
+    # Collect every unique Mathlib SHA referenced across all rows.
     sha_fields = ("target_commit", "last_known_good", "first_known_bad", "pinned_commit", "last_good_release_commit")
     unique_shas = {r[f] for r in rows for f in sha_fields if r.get(f)}
-    print(f"Fetching commit titles for {len(unique_shas)} unique SHA(s)…")
-    commit_titles = fetch_commit_titles(unique_shas, UPSTREAM_REPO, args.github_token)
 
-    # Fetch downstream commit titles, grouped by repo.
+    # Collect pinned→last_good_release pairs for distance computation.
+    lgr_pairs: set[tuple[str, str]] = set()
+    for r in rows:
+        pin = r.get("pinned_commit")
+        lgr = r.get("last_good_release_commit")
+        if pin and lgr and pin != lgr:
+            lgr_pairs.add((pin, lgr))
+
+    upstream_dir = Path(args.upstream_dir) if args.upstream_dir else None
+
+    if upstream_dir is not None:
+        # --- Local git path: all upstream data from the cloned repo ----------
+        print(f"Reading upstream commit info from local clone at {upstream_dir}…")
+        commit_titles = git_commit_info(upstream_dir, unique_shas)
+        print(f"  {len(commit_titles)} commit(s) resolved.")
+
+        print(f"Reading tags from local clone…")
+        sha_to_tag = git_tag_map(upstream_dir)
+        print(f"  {len(sha_to_tag)} tag(s) loaded.")
+
+        lgr_distances: dict[tuple[str, str], int | None] = {}
+        if lgr_pairs:
+            print(f"Computing pinned→last-good-release distances for {len(lgr_pairs)} pair(s)…")
+            lgr_distances = {
+                (base, head): git_signed_distance(upstream_dir, base, head)
+                for base, head in lgr_pairs
+            }
+    else:
+        # --- GitHub API path (fallback when no local clone is available) -----
+        print(f"Fetching commit titles for {len(unique_shas)} unique SHA(s)…")
+        commit_titles = fetch_commit_titles(unique_shas, UPSTREAM_REPO, args.github_token)
+
+        print(f"Fetching tags for {UPSTREAM_REPO}…")
+        sha_to_tag = fetch_tags(UPSTREAM_REPO, args.github_token)
+        print(f"  {len(sha_to_tag)} tag(s) loaded.")
+
+        lgr_distances = {}
+        if lgr_pairs:
+            print(f"Fetching pinned→last-good-release distances for {len(lgr_pairs)} pair(s)…")
+            lgr_distances = fetch_commit_distances(lgr_pairs, UPSTREAM_REPO, args.github_token)
+
+    # Downstream commit titles always come from the API (we only clone the upstream).
     ds_by_repo: dict[str, set[str]] = defaultdict(set)
     for r in rows:
         if r.get("downstream_commit") and r.get("repo") and "/" in r.get("repo", ""):
@@ -1008,23 +1154,6 @@ def main() -> None:
     for repo, shas in sorted(ds_by_repo.items()):
         print(f"Fetching downstream commit titles for {repo} ({len(shas)} SHA(s))…")
         downstream_commit_titles.update(fetch_commit_titles(shas, repo, args.github_token))
-
-    # Fetch tags for the upstream repo so tagged commits display the tag name.
-    print(f"Fetching tags for {UPSTREAM_REPO}…")
-    sha_to_tag = fetch_tags(UPSTREAM_REPO, args.github_token)
-    print(f"  {len(sha_to_tag)} tag(s) loaded.")
-
-    # Fetch signed commit distances for pinned→last_good_release pairs.
-    lgr_pairs: set[tuple[str, str]] = set()
-    for r in rows:
-        pin = r.get("pinned_commit")
-        lgr = r.get("last_good_release_commit")
-        if pin and lgr and pin != lgr:
-            lgr_pairs.add((pin, lgr))
-    lgr_distances: dict[tuple[str, str], int | None] = {}
-    if lgr_pairs:
-        print(f"Fetching pinned→last-good-release distances for {len(lgr_pairs)} pair(s)…")
-        lgr_distances = fetch_commit_distances(lgr_pairs, UPSTREAM_REPO, args.github_token)
 
     html = render(
         run_id=run_id,

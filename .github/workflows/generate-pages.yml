@@ -36,6 +36,12 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r scripts/requirements.txt
 
+      - name: Clone mathlib4 (blobless)
+        run: |
+          git clone --bare --filter=blob:none --quiet \
+            https://github.com/leanprover-community/mathlib4.git \
+            /tmp/mathlib4.git
+
       - name: Generate Pages site
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -43,6 +49,7 @@ jobs:
         run: |
           python3 scripts/generate_site.py \
             --backend sql \
+            --upstream-dir /tmp/mathlib4.git \
             --output /tmp/site/index.html
 
       - name: Upload Pages artifact
