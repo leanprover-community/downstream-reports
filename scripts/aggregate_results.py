@@ -692,6 +692,11 @@ def main() -> int:
             r.age_commits = distances.get((pin, r.target_commit)) if pin and r.target_commit else None
             r.bump_commits = distances.get((pin, r.last_known_good)) if pin and r.last_known_good else None
 
+    for r in result_records:
+        status = updated_statuses.get(r.downstream)
+        if status:
+            r.last_good_release = status.last_good_release
+
     render_rows: list[dict[str, Any]] = [
         {**result_to_row(r), "tested_commit_details": details}
         for r, details in zip(result_records, tested_details_per_record)

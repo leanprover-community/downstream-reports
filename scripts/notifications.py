@@ -101,7 +101,15 @@ class AlertAction:
 # ---------------------------------------------------------------------------
 
 _MATHLIB_COMMIT_URL = "https://github.com/leanprover-community/mathlib4/commit"
+_MATHLIB_RELEASE_URL = "https://github.com/leanprover-community/mathlib4/releases/tag"
 _COMMIT_TITLE_MAX = 60  # truncate commit titles to this many characters
+
+
+def _release_link(tag: str | None) -> str | None:
+    """Return a Zulip markdown link for a mathlib release tag, or None."""
+    if not tag:
+        return None
+    return f"[`{tag}`]({_MATHLIB_RELEASE_URL}/{tag})"
 
 
 def _short_sha(sha: str | None) -> str:
@@ -184,6 +192,7 @@ def format_new_failure_message(
     failure_stage = record.get("failure_stage") or "unknown"
     ds_commit = record.get("downstream_commit")
     ds_repo = record.get("repo")
+    release = _release_link(record.get("last_good_release"))
 
     target_link = _commit_link_with_title(target_sha, commit_titles, sha_to_tag)
     first_bad_link = _commit_link_with_title(first_bad_sha, commit_titles, sha_to_tag)
@@ -196,6 +205,8 @@ def format_new_failure_message(
         f"- Target Mathlib commit: {target_link}",
         f"- First known bad: {first_bad_link}",
     ]
+    if release:
+        lines.append(f"- Last compatible release: {release}")
     if failure_stage != "build":
         lines.append(f"- Failure stage: {failure_stage}")
     lines.extend([
@@ -222,6 +233,7 @@ def format_recovered_message(
     prev_bad_sha = record.get("previous_first_known_bad")
     ds_commit = record.get("downstream_commit")
     ds_repo = record.get("repo")
+    release = _release_link(record.get("last_good_release"))
 
     target_link = _commit_link_with_title(target_sha, commit_titles, sha_to_tag)
     prev_bad_link = _commit_link_with_title(prev_bad_sha, commit_titles, sha_to_tag)
@@ -231,10 +243,14 @@ def format_recovered_message(
         f"**{downstream} has recovered (at: {ds_link})**",
         "",
         f"- Target Mathlib commit: {target_link}",
+    ]
+    if release:
+        lines.append(f"- Compatible with release: {release}")
+    lines.extend([
         f"- Previous known-bad: {prev_bad_link}",
         "",
         f"[Downstream validation run]({run_url})",
-    ]
+    ])
     return "\n".join(lines)
 
 
@@ -251,6 +267,7 @@ def format_ondemand_failure_message(
     failure_stage = record.get("failure_stage") or "unknown"
     ds_commit = record.get("downstream_commit")
     ds_repo = record.get("repo")
+    release = _release_link(record.get("last_good_release"))
 
     target_link = _commit_link_with_title(target_sha, commit_titles, sha_to_tag)
     first_bad_link = _commit_link_with_title(first_bad_sha, commit_titles, sha_to_tag)
@@ -264,6 +281,8 @@ def format_ondemand_failure_message(
         f"- Target Mathlib commit: {target_link}",
         f"- First known bad: {first_bad_link}",
     ]
+    if release:
+        lines.append(f"- Last compatible release: {release}")
     if failure_stage != "build":
         lines.append(f"- Failure stage: {failure_stage}")
 
@@ -286,6 +305,7 @@ def format_ondemand_compatible_message(
     prev_bad_sha = record.get("previous_first_known_bad")
     ds_commit = record.get("downstream_commit")
     ds_repo = record.get("repo")
+    release = _release_link(record.get("last_good_release"))
 
     target_link = _commit_link_with_title(target_sha, commit_titles, sha_to_tag)
     prev_bad_link = _commit_link_with_title(prev_bad_sha, commit_titles, sha_to_tag)
@@ -297,8 +317,10 @@ def format_ondemand_compatible_message(
         "",
         f"- {downstream} at: {ds_link}",
         f"- Target Mathlib commit: {target_link}",
-        f"- Previous known-bad: {prev_bad_link}"
     ]
+    if release:
+        lines.append(f"- Compatible with release: {release}")
+    lines.append(f"- Previous known-bad: {prev_bad_link}")
     return "\n".join(lines)
 
 
@@ -546,8 +568,8 @@ def format_summary_message(
     ]
 
     table_lines = [
-        "| Downstream | Status | First Bad | Safe commits |",
-        "|---|---|---|---|",
+        "| Downstream | Status | Good release | First Bad | Safe commits |",
+        "|---|---|---|---|---|",
     ]
     titles = commit_titles or {}
     for row in sorted(rows, key=lambda r: (r.get("downstream") or "").lower()):
@@ -556,6 +578,8 @@ def format_summary_message(
         downstream_cell = f"[{name}](https://github.com/{repo})"
         episode = row.get("episode_state", "")
         status = _STATUS_EMOJI.get(episode, episode)
+
+        release_cell = _release_link(row.get("last_good_release")) or "—"
 
         first_bad_sha = row.get("first_known_bad")
         if first_bad_sha:
@@ -574,7 +598,7 @@ def format_summary_message(
         bump = row.get("bump_commits")
         bump_cell = str(bump) if bump is not None else "—"
 
-        table_lines.append(f"| {downstream_cell} | {status} | {first_bad_cell} | {bump_cell} |")
+        table_lines.append(f"| {downstream_cell} | {status} | {release_cell} | {first_bad_cell} | {bump_cell} |")
 
     n_passed = sum(1 for r in rows if r.get("outcome") == "passed")
     n_failed = sum(1 for r in rows if r.get("outcome") == "failed")

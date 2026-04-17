@@ -17,6 +17,7 @@ from scripts.notifications import (
     AlertAction,
     DryRunSender,
     _MATHLIB_COMMIT_URL,
+    _MATHLIB_RELEASE_URL,
     compute_alert_actions,
     execute_alerts,
     fetch_commit_titles,
@@ -371,6 +372,39 @@ class FormatRecoveredMessageTests(unittest.TestCase):
         self.assertIn("[`v4.18.0`]", msg)
         self.assertNotIn(f"[`{sha[:12]}`]", msg)
 
+    def test_release_tag_shown_when_present(self) -> None:
+        """Scenario: last_good_release in the record yields a linked release line."""
+        msg = format_new_failure_message(
+            _make_record(last_good_release="v4.13.0"), _RUN_URL
+        )
+        self.assertIn("v4.13.0", msg)
+        self.assertIn(f"{_MATHLIB_RELEASE_URL}/v4.13.0", msg)
+        self.assertIn("Last compatible release", msg)
+
+    def test_release_tag_absent_when_none(self) -> None:
+        """Scenario: no last_good_release → release line is omitted."""
+        msg = format_new_failure_message(_make_record(), _RUN_URL)
+        self.assertNotIn("Last compatible release", msg)
+        self.assertNotIn(_MATHLIB_RELEASE_URL, msg)
+
+    def test_recovered_release_tag_shown_when_present(self) -> None:
+        """Scenario: last_good_release in a recovered record yields a compatible-release line."""
+        msg = format_recovered_message(
+            _make_record(episode_state="recovered", outcome="passed", last_good_release="v4.13.0"),
+            _RUN_URL,
+        )
+        self.assertIn("v4.13.0", msg)
+        self.assertIn(f"{_MATHLIB_RELEASE_URL}/v4.13.0", msg)
+        self.assertIn("Compatible with release", msg)
+
+    def test_recovered_release_tag_absent_when_none(self) -> None:
+        """Scenario: no last_good_release in recovered record → release line omitted."""
+        msg = format_recovered_message(
+            _make_record(episode_state="recovered", outcome="passed"), _RUN_URL
+        )
+        self.assertNotIn("Compatible with release", msg)
+        self.assertNotIn(_MATHLIB_RELEASE_URL, msg)
+
 
 # ---------------------------------------------------------------------------
 # Tests: DryRunSender
@@ -472,6 +506,7 @@ def _make_summary_row(
     first_known_bad: str | None = None,
     last_known_good: str | None = "aabbccddee11",
     bump_commits: int | None = None,
+    last_good_release: str | None = None,
     **kwargs,
 ) -> dict:
     row = {
@@ -483,6 +518,7 @@ def _make_summary_row(
         "first_known_bad": first_known_bad,
         "last_known_good": last_known_good,
         "bump_commits": bump_commits,
+        "last_good_release": last_good_release,
     }
     row.update(kwargs)
     return row
@@ -500,9 +536,27 @@ class FormatSummaryMessageTests(unittest.TestCase):
         """Scenario: the table is wrapped in a Zulip spoiler block so it is collapsible, with the correct columns."""
         msg = format_summary_message(_SUMMARY_RUN_META, [_make_summary_row()])
         self.assertIn("```spoiler", msg)
-        self.assertIn("| Downstream | Status | First Bad | Safe commits |", msg)
+        self.assertIn("| Downstream | Status | Good release | First Bad | Safe commits |", msg)
         self.assertNotIn("Target", msg)
         self.assertNotIn("Last Good", msg)
+
+    def test_last_release_shown_when_present(self) -> None:
+        """Scenario: when last_good_release is set, a linked tag name appears in the Last release column."""
+        msg = format_summary_message(
+            _SUMMARY_RUN_META,
+            [_make_summary_row(last_good_release="v4.13.0")],
+        )
+        self.assertIn("v4.13.0", msg)
+        self.assertIn(f"{_MATHLIB_RELEASE_URL}/v4.13.0", msg)
+
+    def test_last_release_dash_when_absent(self) -> None:
+        """Scenario: when last_good_release is None, the Last release column shows a dash."""
+        msg = format_summary_message(
+            _SUMMARY_RUN_META,
+            [_make_summary_row(last_good_release=None)],
+        )
+        # "— |" appears as the release column dash (release column precedes first_bad)
+        self.assertIn("| — |", msg)
 
     def test_includes_all_downstreams_as_short_name_links(self) -> None:
         """Scenario: every downstream appears as a GitHub link using the short name as label, sorted case-insensitively by short name."""
@@ -729,6 +783,21 @@ class FormatOndemandFailureMessageTests(unittest.TestCase):
         msg = format_ondemand_failure_message(_make_record(), _RUN_URL)
         self.assertIn("Target Mathlib commit", msg)
 
+    def test_release_tag_shown_when_present(self) -> None:
+        """Scenario: last_good_release yields a last-compatible-release line."""
+        msg = format_ondemand_failure_message(
+            _make_record(last_good_release="v4.13.0"), _RUN_URL
+        )
+        self.assertIn("v4.13.0", msg)
+        self.assertIn(f"{_MATHLIB_RELEASE_URL}/v4.13.0", msg)
+        self.assertIn("Last compatible release", msg)
+
+    def test_release_tag_absent_when_none(self) -> None:
+        """Scenario: no last_good_release → release line is omitted."""
+        msg = format_ondemand_failure_message(_make_record(), _RUN_URL)
+        self.assertNotIn("Last compatible release", msg)
+        self.assertNotIn(_MATHLIB_RELEASE_URL, msg)
+
 
 # ---------------------------------------------------------------------------
 # Tests: format_ondemand_compatible_message
@@ -781,6 +850,24 @@ class FormatOndemandCompatibleMessageTests(unittest.TestCase):
             _RUN_URL,
         )
         self.assertIn(f"https://github.com/owner/physlib/commit/{sha}", msg)
+
+    def test_release_tag_shown_when_present(self) -> None:
+        """Scenario: last_good_release yields a compatible-release line."""
+        msg = format_ondemand_compatible_message(
+            _make_record(episode_state="recovered", outcome="passed", last_good_release="v4.13.0"),
+            _RUN_URL,
+        )
+        self.assertIn("v4.13.0", msg)
+        self.assertIn(f"{_MATHLIB_RELEASE_URL}/v4.13.0", msg)
+        self.assertIn("Compatible with release", msg)
+
+    def test_release_tag_absent_when_none(self) -> None:
+        """Scenario: no last_good_release → release line is omitted."""
+        msg = format_ondemand_compatible_message(
+            _make_record(episode_state="recovered", outcome="passed"), _RUN_URL
+        )
+        self.assertNotIn("Compatible with release", msg)
+        self.assertNotIn(_MATHLIB_RELEASE_URL, msg)
 
 
 # ---------------------------------------------------------------------------
