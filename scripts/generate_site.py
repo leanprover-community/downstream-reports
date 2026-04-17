@@ -172,6 +172,44 @@ def fetch_tags(
     return result
 
 
+def fetch_commit_distances(
+    pairs: set[tuple[str, str]],
+    repo: str,
+    token: str | None,
+) -> dict[tuple[str, str], int | None]:
+    """Return {(base_sha, head_sha): signed_distance} for every pair.
+
+    Positive: head is ahead of base by that many commits (can advance).
+    Negative: base is ahead of head by that many commits (already past).
+    Zero: same commit.  None: API error.
+    """
+    headers: dict[str, str] = {
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+        "User-Agent": "downstream-reports/generate_site",
+    }
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+
+    result: dict[tuple[str, str], int | None] = {}
+    for base, head in sorted(pairs):
+        if base == head:
+            result[(base, head)] = 0
+            continue
+        url = f"{GITHUB_API}/repos/{repo}/compare/{base}...{head}"
+        req = urllib.request.Request(url, headers=headers)
+        try:
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                data = json.loads(resp.read())
+            ahead = data.get("ahead_by") or 0
+            behind = data.get("behind_by") or 0
+            result[(base, head)] = ahead if ahead > 0 else -behind
+        except Exception as exc:
+            print(f"  warning: could not fetch distance {base[:7]}…{head[:7]}: {exc}")
+            result[(base, head)] = None
+    return result
+
+
 COL_DESC = {
     "downstream":        "Project tested updating the Mathlib dependency",
     "compatibility":     "Compatibility of the downstream with the target Mathlib revision\n(based on the result of the latest validation run)",
@@ -531,6 +569,7 @@ def render_table_row(
     commit_titles: dict[str, dict[str, str | None]],
     downstream_commit_titles: dict[str, dict[str, str | None]],
     sha_to_tag: dict[str, str],
+    lgr_distances: dict[tuple[str, str], int | None] | None = None,
 ) -> str:
     downstream = r.get("downstream", "")
     repo = r.get("repo", "")
@@ -585,12 +624,24 @@ def render_table_row(
     compatibility_cell  = badge(r.get("outcome"), COMPATIBILITY_CLASS, label_map=COMPATIBILITY_LABEL, tooltip_map=COMPATIBILITY_TOOLTIP)
     target_cell   = commit_link(UPSTREAM_REPO, target, ct(target), tg(target), cd(target))
     lkg_cell      = commit_link(UPSTREAM_REPO, lkg,    ct(lkg),    tg(lkg),    cd(lkg))
-    lgr_cell      = commit_link(UPSTREAM_REPO, lgr,    ct(lgr),    lgr_tag,    cd(lgr))
+    lgr_link      = commit_link(UPSTREAM_REPO, lgr,    ct(lgr),    lgr_tag,    cd(lgr))
     fkb_cell      = commit_link(UPSTREAM_REPO, fkb,    ct(fkb),    tg(fkb),    cd(fkb))
     pin_cell      = commit_link(UPSTREAM_REPO, pin,    ct(pin),    tg(pin),    cd(pin))
     age_days  = days_between(cd(pin), cd(target))
     age_cell  = distance_cell(age_val, age_days)
     bump_cell = distance_cell(bump_val)
+
+    lgr_dist: int | None = None
+    if lgr_distances and pin and lgr:
+        lgr_dist = lgr_distances.get((pin, lgr))
+    if lgr_dist is not None and lgr_dist != 0:
+        if lgr_dist > 0:
+            dist_html = f'<div class="distance-sub">(+{lgr_dist})</div>'
+        else:
+            dist_html = f'<div class="distance-sub">({lgr_dist})</div>'
+        lgr_cell = f'<div>{lgr_link}{dist_html}</div>'
+    else:
+        lgr_cell = lgr_link
 
     row_run_url = r.get("run_url") or run_url
     btns: list[str] = []
@@ -646,6 +697,7 @@ def render(
     commit_titles: dict[str, dict[str, str | None]],
     downstream_commit_titles: dict[str, dict[str, str | None]],
     sha_to_tag: dict[str, str],
+    lgr_distances: dict[tuple[str, str], int | None] | None = None,
 ) -> str:
     col_glossary_items = "".join(
         f'<div class="col-glossary-item">'
@@ -758,6 +810,7 @@ def render(
             commit_titles=commit_titles,
             downstream_commit_titles=downstream_commit_titles,
             sha_to_tag=sha_to_tag,
+            lgr_distances=lgr_distances,
         )
         for r in sorted(rows, key=sort_key)
     ]
@@ -961,6 +1014,18 @@ def main() -> None:
     sha_to_tag = fetch_tags(UPSTREAM_REPO, args.github_token)
     print(f"  {len(sha_to_tag)} tag(s) loaded.")
 
+    # Fetch signed commit distances for pinned→last_good_release pairs.
+    lgr_pairs: set[tuple[str, str]] = set()
+    for r in rows:
+        pin = r.get("pinned_commit")
+        lgr = r.get("last_good_release_commit")
+        if pin and lgr and pin != lgr:
+            lgr_pairs.add((pin, lgr))
+    lgr_distances: dict[tuple[str, str], int | None] = {}
+    if lgr_pairs:
+        print(f"Fetching pinned→last-good-release distances for {len(lgr_pairs)} pair(s)…")
+        lgr_distances = fetch_commit_distances(lgr_pairs, UPSTREAM_REPO, args.github_token)
+
     html = render(
         run_id=run_id,
         run_url=run_url,
@@ -971,6 +1036,7 @@ def main() -> None:
         commit_titles=commit_titles,
         downstream_commit_titles=downstream_commit_titles,
         sha_to_tag=sha_to_tag,
+        lgr_distances=lgr_distances,
     )
 
     out = Path(args.output)
