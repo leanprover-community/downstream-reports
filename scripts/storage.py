@@ -117,6 +117,7 @@ class RunResultRecord:
     pinned_commit: str | None = None
     age_commits: int | None = None   # commits between pinned_commit and target_commit
     bump_commits: int | None = None  # commits between pinned_commit and last_known_good
+    last_good_release: str | None = None  # latest semver release tag reachable from LKG
 
 
 # ---------------------------------------------------------------------------
@@ -839,6 +840,7 @@ def load_run_for_site(engine: Any, run_id: str) -> tuple[dict, list[dict]]:
             sa_select(
                 _sa_run.c.run_id,
                 _sa_run.c.workflow,
+                _sa_run.c.upstream,
                 _sa_run.c.upstream_ref,
                 _sa_run.c.run_url,
                 _sa_run.c.started_at,
