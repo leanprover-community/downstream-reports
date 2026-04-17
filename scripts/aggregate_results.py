@@ -17,10 +17,11 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 import urllib.error
 import urllib.request
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from enum import Enum
 from pathlib import Path
 from typing import Any
@@ -77,6 +78,79 @@ def fetch_commit_distances(
         data = _gh_get(url, headers)
         cache[(base, head)] = data.get("ahead_by") if data is not None else None
     return cache
+
+
+_SEMVER_RE = re.compile(r"^v(\d+)\.(\d+)\.(\d+)")
+
+
+def _fetch_semver_tags_api(
+    repo: str,
+    headers: dict[str, str],
+    max_pages: int = 5,
+) -> list[tuple[tuple[int, int, int], str, str]]:
+    """Return [(version_tuple, tag_name, tag_sha), ...] sorted newest-first."""
+    result: list[tuple[tuple[int, int, int], str, str]] = []
+    for page in range(1, max_pages + 1):
+        url = f"{GITHUB_API}/repos/{repo}/tags?per_page=100&page={page}"
+        req = urllib.request.Request(url, headers=headers)
+        try:
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                page_tags = json.loads(resp.read())
+        except Exception as exc:
+            print(f"  warning: could not fetch tags page {page} for {repo}: {exc}")
+            break
+        for tag in page_tags:
+            name: str = tag.get("name", "")
+            sha: str = (tag.get("commit") or {}).get("sha", "")
+            m = _SEMVER_RE.match(name)
+            if m and sha:
+                result.append(((int(m.group(1)), int(m.group(2)), int(m.group(3))), name, sha))
+        if len(page_tags) < 100:
+            break
+    result.sort(key=lambda t: t[0], reverse=True)
+    return result
+
+
+def fetch_release_tags_api(
+    repo: str,
+    lkg_commits: dict[str, str],
+    token: str | None,
+    max_pages: int = 5,
+) -> dict[str, tuple[str | None, str | None]]:
+    """Return {downstream_name: (tag_name, tag_sha)} for each entry in lkg_commits.
+
+    Fetches the semver tag list once, then checks ancestry per downstream via the
+    compare endpoint (newest tag first). Returns (None, None) for downstreams with
+    no reachable release tag.
+    """
+    headers: dict[str, str] = {
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+        "User-Agent": "downstream-reports/aggregate_results",
+    }
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+
+    semver_tags = _fetch_semver_tags_api(repo, headers, max_pages)
+    if not semver_tags:
+        return {name: (None, None) for name in lkg_commits}
+
+    out: dict[str, tuple[str | None, str | None]] = {}
+    for ds_name, lkg in lkg_commits.items():
+        found: tuple[str | None, str | None] = (None, None)
+        for _, tag_name, tag_sha in semver_tags:
+            url = f"{GITHUB_API}/repos/{repo}/compare/{tag_sha}...{lkg}"
+            req = urllib.request.Request(url, headers=headers)
+            try:
+                with urllib.request.urlopen(req, timeout=10) as resp:
+                    data = json.loads(resp.read())
+                if data.get("status") in ("ahead", "identical"):
+                    found = (tag_name, tag_sha)
+                    break
+            except Exception as exc:
+                print(f"  warning: compare failed for {tag_name}...{lkg[:7]}: {exc}")
+        out[ds_name] = found
+    return out
 
 
 class EpisodeState(str, Enum):
@@ -655,6 +729,19 @@ def main() -> int:
         job_urls=job_urls,
         skipped_rows=skipped_rows or None,
     )
+
+    lkg_commits = {
+        name: status.last_known_good_commit
+        for name, status in updated_statuses.items()
+        if status.last_known_good_commit is not None
+    }
+    if lkg_commits:
+        print(f"Looking up latest release tags for {len(lkg_commits)} downstream(s)…")
+        release_tags = fetch_release_tags_api(args.upstream, lkg_commits, args.github_token)
+        for name, (tag, sha) in release_tags.items():
+            updated_statuses[name] = replace(
+                updated_statuses[name], last_good_release=tag, last_good_release_commit=sha
+            )
 
     if result_records:
         backend.save_run(

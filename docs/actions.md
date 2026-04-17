@@ -107,13 +107,14 @@ suggested PR title, body snippet, and git commit message — pass
 | `dependency-name` | no | `mathlib` | Name of the dependency in the lakefile |
 | `hopscotch-version` | no | `v1.3.0` | Hopscotch release tag to download |
 | `generate-description` | no | `true` | Set to `false` to skip GitHub API calls; `pr-title`, `bump-description`, and `commit-message` will be empty |
-| `query-type` | no | `last-known-good` | Which commit to bump to: `last-known-good` or `first-known-bad` (null when no active regression) |
+| `query-type` | no | `last-known-good` | Which commit to bump to: `last-known-good`, `first-known-bad`, or `last-good-release` (semver tag, e.g. `v4.13.0`) |
 
 ### Outputs
 
 | Output | Description |
 |--------|-------------|
-| `commit` | The target commit SHA from the snapshot |
+| `rev` | The human-readable ref passed to hopscotch (tag name for `last-good-release`, SHA otherwise) |
+| `commit` | The resolved commit SHA |
 | `current-pin` | The commit the project was pinned to before this action ran |
 | `updated` | `"true"` if hopscotch successfully bumped the project |
 | `skipped` | `"true"` if the project was already at the target commit (or target is empty) |
@@ -179,13 +180,14 @@ downstream repo can use it with no inputs at all.
 | Input | Required | Default | Description |
 |-------|----------|---------|-------------|
 | `downstream` | no | `${{ github.repository }}` | Downstream name key or repo slug (`owner/repo`). Auto-detected by presence of `/`. |
-| `query-type` | no | `last-known-good` | Which commit to return: `last-known-good` or `first-known-bad` (empty when no active regression) |
+| `query-type` | no | `last-known-good` | Which commit to return: `last-known-good`, `first-known-bad`, or `last-good-release` (empty when no active entry) |
 
 ### Outputs
 
 | Output | Description |
 |--------|-------------|
-| `commit` | The target commit SHA (last-known-good or first-known-bad) |
+| `rev` | The human-readable ref (tag name for `last-good-release`, SHA for other query types) |
+| `commit` | The resolved commit SHA (same as `rev` for non-release query types) |
 | `downstream-name` | The downstream name key as registered in the snapshot |
 | `repo` | GitHub repo slug (`owner/repo`) |
 | `dependency-name` | The dependency name field from the snapshot entry |
@@ -268,3 +270,39 @@ jobs:
 
       - run: echo "FKB is ${{ steps.fkb.outputs.commit }}"
 ```
+
+**Bump to the latest compatible semver release tag (e.g. `v4.13.0`):**
+
+```yaml
+# Bump to the latest compatible mathlib release tag (rather than a raw commit).
+# The resulting lakefile pins `inputRev` to a human-readable tag like "v4.13.0".
+
+jobs:
+  bump:
+    uses: leanprover-community/downstream-reports/.github/workflows/bump-dependency-to-latest.yml@main
+    permissions:
+      contents: write
+      pull-requests: write
+    with:
+      query-type: last-good-release
+      branch: automation/release-bump
+```
+
+Or using the composite actions directly for a read-only lookup:
+
+```yaml
+      - name: Look up latest compatible release
+        id: release
+        uses: leanprover-community/downstream-reports/.github/actions/query-latest@main
+        with:
+          query-type: last-good-release
+
+      - run: |
+          echo "Latest compatible mathlib release: ${{ steps.release.outputs.rev }}"
+          echo "Resolves to commit: ${{ steps.release.outputs.commit }}"
+```
+
+When `query-type: last-good-release`:
+- `rev` is a **tag name** (e.g. `v4.13.0`) that `hopscotch dep` and Lake's `inputRev` both accept directly.
+- `commit` is the resolved SHA, for consumers that need byte-equality comparison against the `rev` field in `lake-manifest.json`.
+- Both fields are empty when no semver release precedes the downstream's current LKG.

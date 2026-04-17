@@ -192,6 +192,53 @@ class FilesystemBackendTests(unittest.TestCase):
             loaded = backend.load_all_statuses("regression", "leanprover-community/mathlib4")
             self.assertEqual(loaded["TestDownstream"].downstream_commit, "ds_commit_abc")
 
+    def test_last_good_release_round_trip(self) -> None:
+        """last_good_release and last_good_release_commit are persisted and reloaded."""
+        with tempfile.TemporaryDirectory() as tmp:
+            backend = FilesystemBackend(Path(tmp))
+            statuses = {
+                "TestDownstream": DownstreamStatusRecord(
+                    last_known_good_commit="lkg_abc",
+                    last_good_release="v4.13.0",
+                    last_good_release_commit="sha_v4_13_0",
+                ),
+            }
+            backend.save_run(
+                run_id="run_release",
+                workflow="regression",
+                upstream="leanprover-community/mathlib4",
+                upstream_ref="master",
+                run_url="https://example.com/run/release",
+                created_at="2026-04-10T00:00:00Z",
+                results=[],
+                updated_statuses=statuses,
+            )
+            loaded = backend.load_all_statuses("regression", "leanprover-community/mathlib4")
+            self.assertEqual(loaded["TestDownstream"].last_good_release, "v4.13.0")
+            self.assertEqual(loaded["TestDownstream"].last_good_release_commit, "sha_v4_13_0")
+
+    def test_last_good_release_defaults_to_none(self) -> None:
+        """Existing status files without last_good_release fields load as None."""
+        with tempfile.TemporaryDirectory() as tmp:
+            status_dir = Path(tmp) / "status"
+            status_dir.mkdir()
+            (status_dir / "current.json").write_text(json.dumps({
+                "schema_version": 2,
+                "reported_at": "2026-04-01T00:00:00Z",
+                "downstreams": {
+                    "OldDownstream": {
+                        "last_known_good_commit": "abc",
+                        "first_known_bad_commit": None,
+                        "pinned_commit": None,
+                        "downstream_commit": None,
+                    },
+                },
+            }))
+            backend = FilesystemBackend(Path(tmp))
+            loaded = backend.load_all_statuses("regression", "leanprover-community/mathlib4")
+            self.assertIsNone(loaded["OldDownstream"].last_good_release)
+            self.assertIsNone(loaded["OldDownstream"].last_good_release_commit)
+
     def test_downstream_commit_defaults_to_none(self) -> None:
         """Existing status files without downstream_commit load as None."""
         with tempfile.TemporaryDirectory() as tmp:

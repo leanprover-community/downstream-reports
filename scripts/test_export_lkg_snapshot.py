@@ -184,6 +184,42 @@ class BuildSnapshotCommitFieldTests(unittest.TestCase):
         self.assertIsNone(snap["downstreams"]["alglib"]["last_known_good_commit"])
 
 
+class BuildSnapshotReleaseFieldTests(unittest.TestCase):
+    """Tests for last_good_release and last_good_release_commit in snapshot entries."""
+
+    def test_last_good_release_null_when_no_status(self) -> None:
+        """Scenario: downstream with no status gets null last_good_release fields."""
+        snap = build_snapshot(_make_backend(), _INVENTORY, _UPSTREAM)
+        self.assertIsNone(snap["downstreams"]["physlib"]["last_good_release"])
+        self.assertIsNone(snap["downstreams"]["physlib"]["last_good_release_commit"])
+
+    def test_last_good_release_reflected_from_status(self) -> None:
+        """Scenario: stored release tag and SHA appear in snapshot entry."""
+        statuses = {
+            "physlib": DownstreamStatusRecord(
+                last_known_good_commit="lkg_abc",
+                last_good_release="v4.13.0",
+                last_good_release_commit="sha_v4_13_0",
+            )
+        }
+        snap = build_snapshot(_make_backend(statuses), _INVENTORY, _UPSTREAM)
+        self.assertEqual(snap["downstreams"]["physlib"]["last_good_release"], "v4.13.0")
+        self.assertEqual(snap["downstreams"]["physlib"]["last_good_release_commit"], "sha_v4_13_0")
+
+    def test_last_good_release_null_when_status_has_none(self) -> None:
+        """Scenario: status present but release fields None produces null in snapshot."""
+        statuses = {
+            "physlib": DownstreamStatusRecord(
+                last_known_good_commit="lkg_abc",
+                last_good_release=None,
+                last_good_release_commit=None,
+            )
+        }
+        snap = build_snapshot(_make_backend(statuses), _INVENTORY, _UPSTREAM)
+        self.assertIsNone(snap["downstreams"]["physlib"]["last_good_release"])
+        self.assertIsNone(snap["downstreams"]["physlib"]["last_good_release_commit"])
+
+
 class BuildSnapshotInventoryEnrichmentTests(unittest.TestCase):
     """Tests that repo and dependency_name come from the inventory, not the status table."""
 

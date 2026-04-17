@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 import sys
 import unittest
 from pathlib import Path
@@ -383,6 +384,217 @@ class RenderReportSkippedTests(unittest.TestCase):
         md = render_report(**self._COMMON_KWARGS, skipped_rows=skipped)
         self.assertIn("bad123456789", md)
         self.assertIn("incompatible", md)
+
+
+class ReleaseEnrichmentTests(unittest.TestCase):
+    """Tests for the post-aggregation release tag enrichment in main()."""
+
+    def test_enrichment_sets_tag_and_sha(self) -> None:
+        """Scenario: fetch_release_tags_api returns a tag; updated_statuses gets tag+sha."""
+        from dataclasses import replace
+        from unittest.mock import patch
+        import scripts.aggregate_results as agg
+
+        status = DownstreamStatusRecord(last_known_good_commit="lkg_abc")
+        updated_statuses = {"physlib": status}
+
+        lkg_commits = {
+            name: s.last_known_good_commit
+            for name, s in updated_statuses.items()
+            if s.last_known_good_commit is not None
+        }
+        with patch(
+            "scripts.aggregate_results.fetch_release_tags_api",
+            return_value={"physlib": ("v4.13.0", "sha_v4_13_0")},
+        ) as mock_api:
+            release_tags = agg.fetch_release_tags_api("upstream/repo", lkg_commits, None)
+            for name, (tag, sha) in release_tags.items():
+                updated_statuses[name] = replace(
+                    updated_statuses[name], last_good_release=tag, last_good_release_commit=sha
+                )
+            mock_api.assert_called_once_with("upstream/repo", lkg_commits, None)
+
+        self.assertEqual(updated_statuses["physlib"].last_good_release, "v4.13.0")
+        self.assertEqual(updated_statuses["physlib"].last_good_release_commit, "sha_v4_13_0")
+
+    def test_enrichment_sets_none_when_no_tag(self) -> None:
+        """Scenario: no tag reachable from LKG — both fields stay None."""
+        from dataclasses import replace
+        from unittest.mock import patch
+        import scripts.aggregate_results as agg
+
+        status = DownstreamStatusRecord(last_known_good_commit="lkg_abc")
+        updated_statuses = {"physlib": status}
+
+        lkg_commits = {
+            name: s.last_known_good_commit
+            for name, s in updated_statuses.items()
+            if s.last_known_good_commit is not None
+        }
+        with patch(
+            "scripts.aggregate_results.fetch_release_tags_api",
+            return_value={"physlib": (None, None)},
+        ):
+            release_tags = agg.fetch_release_tags_api("upstream/repo", lkg_commits, None)
+            for name, (tag, sha) in release_tags.items():
+                updated_statuses[name] = replace(
+                    updated_statuses[name], last_good_release=tag, last_good_release_commit=sha
+                )
+
+        self.assertIsNone(updated_statuses["physlib"].last_good_release)
+        self.assertIsNone(updated_statuses["physlib"].last_good_release_commit)
+
+    def test_enrichment_skipped_when_no_lkg(self) -> None:
+        """Scenario: downstream with no LKG is not included in release lookups."""
+        status = DownstreamStatusRecord(last_known_good_commit=None)
+        updated_statuses = {"physlib": status}
+
+        lkg_commits = {
+            name: s.last_known_good_commit
+            for name, s in updated_statuses.items()
+            if s.last_known_good_commit is not None
+        }
+        self.assertEqual(lkg_commits, {})
+
+
+class FetchReleaseTagsApiTests(unittest.TestCase):
+    """Unit tests for fetch_release_tags_api / _fetch_semver_tags_api."""
+
+    def _make_tag(self, name: str, sha: str) -> dict:
+        return {"name": name, "commit": {"sha": sha}}
+
+    def _mock_urlopen(self, responses: list):
+        """Return a context-manager mock that yields successive responses."""
+        import io
+        from unittest.mock import MagicMock, patch
+
+        call_count = [0]
+
+        class _FakeResp:
+            def __init__(self, body):
+                self._body = body.encode() if isinstance(body, str) else body
+
+            def read(self):
+                return self._body
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_):
+                pass
+
+        def _urlopen(req, timeout=10):
+            body = json.dumps(responses[call_count[0]])
+            call_count[0] += 1
+            return _FakeResp(body)
+
+        return patch("urllib.request.urlopen", side_effect=_urlopen)
+
+    def test_finds_newest_reachable_tag(self) -> None:
+        """Scenario: v4.13.0 is reachable, v4.14.0 is not; returns v4.13.0."""
+        import scripts.aggregate_results as agg
+
+        tags_page = [
+            self._make_tag("v4.14.0", "sha_414"),
+            self._make_tag("v4.13.0", "sha_413"),
+            self._make_tag("v4.12.0", "sha_412"),
+            self._make_tag("master-nightly", "sha_nightly"),
+        ]
+        # API call order: tags page 1, compare v4.14.0...lkg (behind), compare v4.13.0...lkg (ahead)
+        responses = [
+            tags_page,
+            {"status": "behind"},    # v4.14.0 not reachable
+            {"status": "ahead"},     # v4.13.0 reachable → stop
+        ]
+        with self._mock_urlopen(responses):
+            result = agg.fetch_release_tags_api("owner/repo", {"physlib": "lkg_sha"}, None)
+
+        self.assertEqual(result["physlib"], ("v4.13.0", "sha_413"))
+
+    def test_returns_none_none_when_no_tag_reachable(self) -> None:
+        """Scenario: all tags are newer than LKG; returns (None, None)."""
+        import scripts.aggregate_results as agg
+
+        tags_page = [self._make_tag("v4.14.0", "sha_414")]
+        responses = [
+            tags_page,
+            {"status": "behind"},
+        ]
+        with self._mock_urlopen(responses):
+            result = agg.fetch_release_tags_api("owner/repo", {"physlib": "lkg_sha"}, None)
+
+        self.assertEqual(result["physlib"], (None, None))
+
+    def test_skips_non_semver_tags(self) -> None:
+        """Scenario: non-semver tags are filtered out; only vX.Y.Z tags are checked."""
+        import scripts.aggregate_results as agg
+
+        tags_page = [
+            self._make_tag("nightly-2026-04-01", "sha_nightly"),
+            self._make_tag("v4.13.0", "sha_413"),
+        ]
+        responses = [
+            tags_page,
+            {"status": "ahead"},  # v4.13.0 reachable (nightly skipped, no compare for it)
+        ]
+        with self._mock_urlopen(responses):
+            result = agg.fetch_release_tags_api("owner/repo", {"physlib": "lkg_sha"}, None)
+
+        self.assertEqual(result["physlib"], ("v4.13.0", "sha_413"))
+
+    def test_identical_status_counts_as_reachable(self) -> None:
+        """Scenario: LKG commit is exactly the tag commit; status=identical is accepted."""
+        import scripts.aggregate_results as agg
+
+        tags_page = [self._make_tag("v4.13.0", "sha_413")]
+        responses = [tags_page, {"status": "identical"}]
+        with self._mock_urlopen(responses):
+            result = agg.fetch_release_tags_api("owner/repo", {"physlib": "sha_413"}, None)
+
+        self.assertEqual(result["physlib"], ("v4.13.0", "sha_413"))
+
+    def test_tag_list_fetched_once_for_multiple_downstreams(self) -> None:
+        """Scenario: two downstreams share one tag-list fetch; two ancestry checks run."""
+        import scripts.aggregate_results as agg
+        from unittest.mock import patch
+
+        tags_page = [self._make_tag("v4.13.0", "sha_413")]
+        call_urls: list[str] = []
+
+        import io
+
+        class _FakeResp:
+            def __init__(self, body):
+                self._body = json.dumps(body).encode()
+
+            def read(self):
+                return self._body
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_):
+                pass
+
+        def _urlopen(req, timeout=10):
+            call_urls.append(req.full_url)
+            if "tags?" in req.full_url:
+                return _FakeResp(tags_page)
+            return _FakeResp({"status": "ahead"})
+
+        with patch("urllib.request.urlopen", side_effect=_urlopen):
+            result = agg.fetch_release_tags_api(
+                "owner/repo",
+                {"physlib": "lkg1", "mathlib4-port": "lkg2"},
+                None,
+            )
+
+        tag_calls = [u for u in call_urls if "tags?" in u]
+        compare_calls = [u for u in call_urls if "compare" in u]
+        self.assertEqual(len(tag_calls), 1)
+        self.assertEqual(len(compare_calls), 2)
+        self.assertEqual(result["physlib"], ("v4.13.0", "sha_413"))
+        self.assertEqual(result["mathlib4-port"], ("v4.13.0", "sha_413"))
 
 
 if __name__ == "__main__":
