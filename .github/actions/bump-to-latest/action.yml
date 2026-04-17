@@ -1,8 +1,9 @@
-name: 'Bump to LKG'
+name: 'Bump to Latest'
 description: >
-  Look up the current LKG commit and bump the mathlib dependency to it via
-  hopscotch. On success the working tree contains modified lakefile and
-  lake-manifest.json ready to commit.
+  Look up the target commit (last-known-good or first-known-bad) for a
+  downstream and bump the mathlib dependency to it via hopscotch. On success
+  the working tree contains modified lakefile and lake-manifest.json ready
+  to commit.
 
 inputs:
   downstream:
@@ -31,11 +32,19 @@ inputs:
     description: >
       Set to "false" to skip fetching commit descriptions from the GitHub API.
       When false, pr-title, bump-description, and commit-message outputs are empty.
+  query-type:
+    required: false
+    default: 'last-known-good'
+    description: >
+      Which commit to bump to. One of:
+        last-known-good  (default) — the last commit known to build successfully
+        first-known-bad            — the first commit known to break the build
+                                     (null when no active regression)
 
 outputs:
-  lkg-commit:
-    description: 'The current LKG commit SHA for this downstream'
-    value: ${{ steps.resolve-outputs.outputs.lkg_commit }}
+  commit:
+    description: 'The target commit SHA from the snapshot (last-known-good or first-known-bad)'
+    value: ${{ steps.resolve-outputs.outputs.commit }}
   current-pin:
     description: 'The commit the project was pinned to before this action ran'
     value: ${{ steps.resolve-outputs.outputs.current_pin }}
@@ -43,7 +52,7 @@ outputs:
     description: '"true" if hopscotch successfully bumped the project'
     value: ${{ steps.resolve-outputs.outputs.updated }}
   skipped:
-    description: '"true" if the project was already at the LKG commit'
+    description: '"true" if the project was already at the target commit'
     value: ${{ steps.resolve-outputs.outputs.skipped }}
   build-failed:
     description: '"true" if hopscotch ran but the build failed'
@@ -65,15 +74,16 @@ runs:
   using: 'composite'
   steps:
     # ------------------------------------------------------------------
-    # Step 1: Look up the LKG commit for this downstream.
+    # Step 1: Look up the target commit for this downstream.
     # Fails fast with a helpful error if the downstream is not found.
     # ------------------------------------------------------------------
-    - name: Look up LKG commit
+    - name: Look up target commit
       id: fetch-snapshot
       shell: bash
       env:
         DOWNSTREAM: ${{ inputs.downstream }}
-      run: bash "${{ github.action_path }}/../../scripts/fetch-lkg.sh"
+        QUERY_TYPE: ${{ inputs.query-type }}
+      run: bash "${{ github.action_path }}/../../scripts/fetch-latest.sh"
 
     # ------------------------------------------------------------------
     # Step 2: Read the current mathlib pin from lake-manifest.json.
@@ -108,28 +118,31 @@ runs:
         echo "current_pin=$CURRENT_PIN" >> "$GITHUB_OUTPUT"
 
     # ------------------------------------------------------------------
-    # Step 3: Compare pins. If already at LKG, skip the build steps.
+    # Step 3: Compare pins. If already at target, skip the build steps.
     # ------------------------------------------------------------------
     - name: Compare pins
       id: compare
       shell: bash
       env:
-        LKG_COMMIT: ${{ steps.fetch-snapshot.outputs.lkg_commit }}
+        TARGET_COMMIT: ${{ steps.fetch-snapshot.outputs.commit }}
         CURRENT_PIN: ${{ steps.read-manifest.outputs.current_pin }}
       run: |
-        if [ "$CURRENT_PIN" = "$LKG_COMMIT" ]; then
-          echo "Already at LKG commit $LKG_COMMIT — nothing to do."
+        if [ -z "$TARGET_COMMIT" ]; then
+          echo "Target commit is empty (no active entry for this query-type) — nothing to do."
+          echo "skipped=true" >> "$GITHUB_OUTPUT"
+        elif [ "$CURRENT_PIN" = "$TARGET_COMMIT" ]; then
+          echo "Already at target commit $TARGET_COMMIT — nothing to do."
           echo "skipped=true" >> "$GITHUB_OUTPUT"
         else
-          echo "Pin needs update: $CURRENT_PIN → $LKG_COMMIT"
+          echo "Pin needs update: $CURRENT_PIN → $TARGET_COMMIT"
           echo "skipped=false" >> "$GITHUB_OUTPUT"
         fi
 
     # ------------------------------------------------------------------
-    # Step 4: Fetch one-line commit descriptions for the LKG commit and
+    # Step 4: Fetch one-line commit descriptions for the target commit and
     # the current pin, and compose the PR title, body snippet, and git
     # commit message. Runs whenever a bump is needed; outputs are empty
-    # when the project is already at LKG (skipped=true).
+    # when the project is already at the target commit (skipped=true).
     # ------------------------------------------------------------------
     - name: Fetch commit descriptions
       id: fetch-descriptions
@@ -137,7 +150,7 @@ runs:
       shell: bash
       env:
         GH_TOKEN: ${{ github.token }}
-        LKG_COMMIT: ${{ steps.fetch-snapshot.outputs.lkg_commit }}
+        TARGET_COMMIT: ${{ steps.fetch-snapshot.outputs.commit }}
         CURRENT_PIN: ${{ steps.read-manifest.outputs.current_pin }}
         DEPENDENCY_NAME: ${{ inputs.dependency-name }}
         DEPENDENCY_REPO: leanprover-community/mathlib4
@@ -159,31 +172,31 @@ runs:
           printf '%s' "$result"
         }
 
-        LKG_INFO=$(fetch_info "$LKG_COMMIT")
-        LKG_SUBJECT=$(printf '%s' "$LKG_INFO" | cut -f1)
-        LKG_DATE=$(printf '%s' "$LKG_INFO" | cut -f2)
+        TARGET_INFO=$(fetch_info "$TARGET_COMMIT")
+        TARGET_SUBJECT=$(printf '%s' "$TARGET_INFO" | cut -f1)
+        TARGET_DATE=$(printf '%s' "$TARGET_INFO" | cut -f2)
 
         PREV_INFO=$(fetch_info "$CURRENT_PIN")
         PREV_SUBJECT=$(printf '%s' "$PREV_INFO" | cut -f1)
         PREV_DATE=$(printf '%s' "$PREV_INFO" | cut -f2)
 
-        LKG_SHORT="${LKG_COMMIT:0:7}"
+        TARGET_SHORT="${TARGET_COMMIT:0:7}"
         PREV_SHORT="${CURRENT_PIN:0:7}"
-        LKG_URL="https://github.com/${DEPENDENCY_REPO}/commit/${LKG_COMMIT}"
+        TARGET_URL="https://github.com/${DEPENDENCY_REPO}/commit/${TARGET_COMMIT}"
         PREV_URL="https://github.com/${DEPENDENCY_REPO}/commit/${CURRENT_PIN}"
 
-        LKG_SUFFIX=$(suffix "$LKG_SUBJECT" "$LKG_DATE")
+        TARGET_SUFFIX=$(suffix "$TARGET_SUBJECT" "$TARGET_DATE")
         PREV_SUFFIX=$(suffix "$PREV_SUBJECT" "$PREV_DATE")
 
-        PR_TITLE="Bump \`${DEPENDENCY_NAME}\` dependency to ${LKG_SHORT}"
-        COMMIT_MSG="chore: bump ${DEPENDENCY_NAME} to ${LKG_SHORT}${LKG_SUFFIX}"
+        PR_TITLE="Bump \`${DEPENDENCY_NAME}\` dependency to ${TARGET_SHORT}"
+        COMMIT_MSG="chore: bump ${DEPENDENCY_NAME} to ${TARGET_SHORT}${TARGET_SUFFIX}"
 
         {
           echo "pr_title=${PR_TITLE}"
           echo "commit_message=${COMMIT_MSG}"
           echo "bump_description<<BUMP_EOF"
           printf 'Bump `%s` dependency to [%s](%s)%s\n' \
-            "$DEPENDENCY_NAME" "$LKG_SHORT" "$LKG_URL" "$LKG_SUFFIX"
+            "$DEPENDENCY_NAME" "$TARGET_SHORT" "$TARGET_URL" "$TARGET_SUFFIX"
           printf 'Previously at: [%s](%s)%s\n' \
             "$PREV_SHORT" "$PREV_URL" "$PREV_SUFFIX"
           echo "BUMP_EOF"
@@ -240,14 +253,14 @@ runs:
       env:
         DEPENDENCY_NAME: ${{ inputs.dependency-name }}
         CURRENT_PIN: ${{ steps.read-manifest.outputs.current_pin }}
-        LKG_COMMIT: ${{ steps.fetch-snapshot.outputs.lkg_commit }}
+        TARGET_COMMIT: ${{ steps.fetch-snapshot.outputs.commit }}
         PROJECT_DIR: ${{ inputs.project-dir }}
         GITHUB_TOKEN: ${{ github.token }}
       run: |
         set +e
         hopscotch dep "$DEPENDENCY_NAME" \
-          --from "${LKG_COMMIT}~1" \
-          --to "$LKG_COMMIT" \
+          --from "${TARGET_COMMIT}~1" \
+          --to "$TARGET_COMMIT" \
           --project-dir "$PROJECT_DIR" \
           --scan-mode linear \
           --keep-last-good \
@@ -277,13 +290,13 @@ runs:
       if: always()
       shell: bash
       env:
-        LKG_COMMIT: ${{ steps.fetch-snapshot.outputs.lkg_commit }}
+        TARGET_COMMIT: ${{ steps.fetch-snapshot.outputs.commit }}
         CURRENT_PIN: ${{ steps.read-manifest.outputs.current_pin }}
         SKIPPED: ${{ steps.compare.outputs.skipped }}
         UPDATED: ${{ steps.run-hopscotch.outputs.updated }}
         BUILD_FAILED: ${{ steps.run-hopscotch.outputs.build_failed }}
       run: |
-        echo "lkg_commit=${LKG_COMMIT:-}"         >> "$GITHUB_OUTPUT"
+        echo "commit=${TARGET_COMMIT:-}"           >> "$GITHUB_OUTPUT"
         echo "current_pin=${CURRENT_PIN:-}"        >> "$GITHUB_OUTPUT"
         echo "skipped=${SKIPPED:-false}"           >> "$GITHUB_OUTPUT"
         echo "updated=${UPDATED:-false}"           >> "$GITHUB_OUTPUT"

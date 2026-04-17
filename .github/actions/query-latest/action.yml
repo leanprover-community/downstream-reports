@@ -1,8 +1,9 @@
-name: 'Query LKG'
+name: 'Query Latest'
 description: >
-  Look up a downstream's last-known-good mathlib commit from the LKG snapshot.
-  Accepts either a downstream name (e.g. "physlib") or a full repo slug
-  (e.g. "leanprover-community/physlib"). Defaults to the current repository.
+  Look up a downstream's target commit (last-known-good or first-known-bad)
+  from the snapshot. Accepts either a downstream name (e.g. "physlib") or a
+  full repo slug (e.g. "leanprover-community/physlib"). Defaults to the
+  current repository.
 
 inputs:
   downstream:
@@ -13,10 +14,19 @@ inputs:
       or a GitHub repo slug (e.g. "leanprover-community/physlib"). When the value
       contains a "/" it is treated as a repo slug; otherwise as a name key.
       Defaults to the repository running this action.
+  query-type:
+    required: false
+    default: 'last-known-good'
+    description: >
+      Which commit to return. One of:
+        last-known-good  (default) — the last commit known to build successfully
+        first-known-bad            — the first commit known to break the build
+                                     (null when no active regression)
+
 outputs:
-  lkg-commit:
-    description: 'The last-known-good commit SHA for the downstream'
-    value: ${{ steps.lookup.outputs.lkg_commit }}
+  commit:
+    description: 'The target commit SHA (last-known-good or first-known-bad depending on query-type)'
+    value: ${{ steps.lookup.outputs.commit }}
   downstream-name:
     description: 'The downstream name key as registered in the snapshot'
     value: ${{ steps.lookup.outputs.downstream_name }}
@@ -35,4 +45,5 @@ runs:
       shell: bash
       env:
         DOWNSTREAM: ${{ inputs.downstream }}
-      run: bash "${{ github.action_path }}/../../scripts/fetch-lkg.sh"
+        QUERY_TYPE: ${{ inputs.query-type }}
+      run: bash "${{ github.action_path }}/../../scripts/fetch-latest.sh"

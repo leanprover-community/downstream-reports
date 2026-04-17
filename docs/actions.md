@@ -4,8 +4,8 @@ This repo publishes a reusable workflow and three composite actions for
 downstream Lean projects to consume.
 
 For the common case — a scheduled job that bumps a dependency and opens a PR
-— use the `bump-dependency-to-lkg` reusable workflow directly (see below). The composite
-actions (`bump-to-lkg`, `open-bump-pr`, `query-lkg`) are the building blocks
+— use the `bump-dependency-to-latest` reusable workflow directly (see below). The composite
+actions (`bump-to-latest`, `open-bump-pr`, `query-latest`) are the building blocks
 for custom workflows that need more control.
 
 > **Extensibility note.** Today the actions are used exclusively for the
@@ -17,18 +17,18 @@ for custom workflows that need more control.
 
 ---
 
-## `bump-dependency-to-lkg` reusable workflow
+## `bump-dependency-to-latest` reusable workflow
 
-**Path:** `.github/workflows/bump-dependency-to-lkg.yml`
+**Path:** `.github/workflows/bump-dependency-to-latest.yml`
 
-Wraps `bump-to-lkg` + `open-bump-pr` into a single callable unit. This is the
+Wraps `bump-to-latest` + `open-bump-pr` into a single callable unit. This is the
 recommended starting point for downstreams that just want a scheduled bump PR
 with no boilerplate.
 
 ### Minimal usage
 
 ```yaml
-name: Bump mathlib to LKG
+name: Bump mathlib to latest
 
 on:
   schedule:
@@ -37,7 +37,7 @@ on:
 
 jobs:
   bump:
-    uses: leanprover-community/downstream-reports/.github/workflows/bump-dependency-to-lkg.yml@main
+    uses: leanprover-community/downstream-reports/.github/workflows/bump-dependency-to-latest.yml@main
     permissions:
       contents: write
       pull-requests: write
@@ -56,6 +56,7 @@ inventory.
 | `labels` | — | Comma-separated labels to apply to the PR |
 | `dependency-name` | `mathlib` | Dependency name in the lakefile |
 | `hopscotch-version` | `v1.3.0` | Hopscotch release tag to download |
+| `query-type` | `last-known-good` | Which commit to bump to: `last-known-good` or `first-known-bad` |
 
 ### Outputs
 
@@ -65,7 +66,7 @@ inventory.
 | `pr-url` | PR URL (empty when `action=noop`) |
 | `action` | `"created"`, `"updated"`, or `"noop"` |
 | `updated` | `"true"` if hopscotch successfully bumped the project |
-| `skipped` | `"true"` if the project was already at the LKG commit |
+| `skipped` | `"true"` if the project was already at the target commit |
 | `build-failed` | `"true"` if hopscotch ran but the build failed |
 
 ### Customised example
@@ -73,7 +74,7 @@ inventory.
 ```yaml
 jobs:
   bump:
-    uses: leanprover-community/downstream-reports/.github/workflows/bump-dependency-to-lkg.yml@main
+    uses: leanprover-community/downstream-reports/.github/workflows/bump-dependency-to-latest.yml@main
     permissions:
       contents: write
       pull-requests: write
@@ -84,11 +85,11 @@ jobs:
 
 ---
 
-## `bump-to-lkg`
+## `bump-to-latest`
 
-**Path:** `.github/actions/bump-to-lkg`
+**Path:** `.github/actions/bump-to-latest`
 
-Fetches the LKG snapshot, reads the current mathlib pin from
+Fetches the snapshot, reads the current mathlib pin from
 `lake-manifest.json`, and (when a bump is needed) installs elan + hopscotch and
 runs `hopscotch dep` to bump and build. On success the working tree contains
 modified `lakefile` and `lake-manifest.json` ready to commit.
@@ -106,15 +107,16 @@ suggested PR title, body snippet, and git commit message — pass
 | `dependency-name` | no | `mathlib` | Name of the dependency in the lakefile |
 | `hopscotch-version` | no | `v1.3.0` | Hopscotch release tag to download |
 | `generate-description` | no | `true` | Set to `false` to skip GitHub API calls; `pr-title`, `bump-description`, and `commit-message` will be empty |
+| `query-type` | no | `last-known-good` | Which commit to bump to: `last-known-good` or `first-known-bad` (null when no active regression) |
 
 ### Outputs
 
 | Output | Description |
 |--------|-------------|
-| `lkg-commit` | The LKG commit SHA from the snapshot |
+| `commit` | The target commit SHA from the snapshot |
 | `current-pin` | The commit the project was pinned to before this action ran |
 | `updated` | `"true"` if hopscotch successfully bumped the project |
-| `skipped` | `"true"` if the project was already at the LKG commit |
+| `skipped` | `"true"` if the project was already at the target commit (or target is empty) |
 | `build-failed` | `"true"` if hopscotch ran but the build failed |
 | `pr-title` | Suggested PR title (empty when skipped or `generate-description: false`) |
 | `bump-description` | Markdown paragraph describing the bump — new commit + previous pin, with subjects and dates. Pass to `open-bump-pr`'s `message` input. Empty when skipped or `generate-description: false`. |
@@ -126,7 +128,7 @@ suggested PR title, body snippet, and git commit message — pass
 
 **Path:** `.github/actions/open-bump-pr`
 
-Generic commit-and-PR action. Independent of `bump-to-lkg` — works with any
+Generic commit-and-PR action. Independent of `bump-to-latest` — works with any
 working-tree changes.
 
 Commits all working-tree changes onto a dedicated branch (force-pushed on every
@@ -147,7 +149,7 @@ If there are no working-tree changes (`git diff` is clean) the action exits with
 | `body` | no | `''` | Full PR body. When set, overrides the auto-generated message + footer entirely. |
 | `commit-message` | no | `chore: dependency update` | Git commit message |
 | `labels` | no | `''` | Comma-separated labels to apply to the PR |
-| `message` | no | `''` | Content to place in the PR body above the automated footer. Pass the `bump-description` output from `bump-to-lkg` here. |
+| `message` | no | `''` | Content to place in the PR body above the automated footer. Pass the `bump-description` output from `bump-to-latest` here. |
 
 ### Outputs
 
@@ -159,13 +161,13 @@ If there are no working-tree changes (`git diff` is clean) the action exits with
 
 ---
 
-## `query-lkg`
+## `query-latest`
 
-**Path:** `.github/actions/query-lkg`
+**Path:** `.github/actions/query-latest`
 
-Lightweight read-only action. Fetches the LKG snapshot and returns the
-last-known-good commit for a downstream — without cloning repos, installing
-elan, or running hopscotch.
+Lightweight read-only action. Fetches the snapshot and returns the target
+commit for a downstream — without cloning repos, installing elan, or running
+hopscotch.
 
 Accepts either a downstream **name key** (e.g. `physlib`) or a **repo slug**
 (e.g. `leanprover-community/physlib`). Values containing `/` are treated as
@@ -177,12 +179,13 @@ downstream repo can use it with no inputs at all.
 | Input | Required | Default | Description |
 |-------|----------|---------|-------------|
 | `downstream` | no | `${{ github.repository }}` | Downstream name key or repo slug (`owner/repo`). Auto-detected by presence of `/`. |
+| `query-type` | no | `last-known-good` | Which commit to return: `last-known-good` or `first-known-bad` (empty when no active regression) |
 
 ### Outputs
 
 | Output | Description |
 |--------|-------------|
-| `lkg-commit` | The last-known-good commit SHA |
+| `commit` | The target commit SHA (last-known-good or first-known-bad) |
 | `downstream-name` | The downstream name key as registered in the snapshot |
 | `repo` | GitHub repo slug (`owner/repo`) |
 | `dependency-name` | The dependency name field from the snapshot entry |
@@ -194,7 +197,7 @@ downstream repo can use it with no inputs at all.
 **Simplest — reusable workflow (no boilerplate):**
 
 ```yaml
-name: Bump mathlib to LKG
+name: Bump mathlib to latest
 
 on:
   schedule:
@@ -203,7 +206,7 @@ on:
 
 jobs:
   bump:
-    uses: leanprover-community/downstream-reports/.github/workflows/bump-dependency-to-lkg.yml@main
+    uses: leanprover-community/downstream-reports/.github/workflows/bump-dependency-to-latest.yml@main
     permissions:
       contents: write
       pull-requests: write
@@ -212,7 +215,7 @@ jobs:
 **Custom — composite actions (when you need extra steps):**
 
 ```yaml
-name: Bump mathlib to LKG
+name: Bump mathlib to latest
 
 on:
   schedule:
@@ -229,9 +232,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Bump to LKG
+      - name: Bump to latest
         id: bump
-        uses: leanprover-community/downstream-reports/.github/actions/bump-to-lkg@main
+        uses: leanprover-community/downstream-reports/.github/actions/bump-to-latest@main
         # no inputs needed — defaults to github.repository matched by repo slug
 
       - name: Open PR
@@ -243,13 +246,25 @@ jobs:
           commit-message: ${{ steps.bump.outputs.commit-message }}
 ```
 
-**Read-only — just look up the LKG commit without building:**
+**Read-only — just look up the target commit without building:**
 
 ```yaml
-      - name: Get LKG commit
-        id: lkg
-        uses: leanprover-community/downstream-reports/.github/actions/query-lkg@main
+      - name: Get latest commit
+        id: latest
+        uses: leanprover-community/downstream-reports/.github/actions/query-latest@main
         # no inputs needed — defaults to github.repository
 
-      - run: echo "LKG is ${{ steps.lkg.outputs.lkg-commit }}"
+      - run: echo "LKG is ${{ steps.latest.outputs.commit }}"
+```
+
+**Check the first-known-bad commit during an active regression:**
+
+```yaml
+      - name: Get first-known-bad commit
+        id: fkb
+        uses: leanprover-community/downstream-reports/.github/actions/query-latest@main
+        with:
+          query-type: first-known-bad
+
+      - run: echo "FKB is ${{ steps.fkb.outputs.commit }}"
 ```

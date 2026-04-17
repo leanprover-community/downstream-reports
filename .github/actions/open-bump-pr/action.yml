@@ -2,7 +2,7 @@ name: 'Open Bump PR'
 description: >
   Commit working-tree changes and create or update a pull request.
   Accepts an optional message (e.g. the bump-description output from
-  bump-to-lkg) which is placed in the PR body above an automated footer.
+  bump-to-latest) which is placed in the PR body above an automated footer.
 
 inputs:
   branch:
@@ -37,7 +37,7 @@ inputs:
     default: ''
     description: >
       Content to place in the PR body above the automated footer.
-      Pass the bump-description output from bump-to-lkg here.
+      Pass the bump-description output from bump-to-latest here.
 
 outputs:
   pr-number:

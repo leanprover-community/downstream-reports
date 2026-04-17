@@ -1,9 +1,9 @@
-name: bump-dependency-to-lkg
+name: bump-dependency-to-latest
 
 # Reusable workflow: bump a Lean downstream's dependency to its current
 # last-known-good (LKG) commit and open (or update) a PR.
 #
-# Wraps bump-to-lkg + open-bump-pr. Intended as the zero-boilerplate option
+# Wraps bump-to-latest + open-bump-pr. Intended as the zero-boilerplate option
 # for downstreams that just want a scheduled PR — no job structure required.
 #
 # Minimal calling workflow:
@@ -15,7 +15,7 @@ name: bump-dependency-to-lkg
 #
 #   jobs:
 #     bump:
-#       uses: leanprover-community/downstream-reports/.github/workflows/bump-dependency-to-lkg.yml@main
+#       uses: leanprover-community/downstream-reports/.github/workflows/bump-dependency-to-latest.yml@main
 #       permissions:
 #         contents: write
 #         pull-requests: write
@@ -51,6 +51,14 @@ on:
         default: 'v1.3.0'
         required: false
         type: string
+      query-type:
+        description: >
+          Which commit to bump to. One of:
+            last-known-good  (default) — the last commit known to build successfully
+            first-known-bad            — the first commit known to break the build
+        default: 'last-known-good'
+        required: false
+        type: string
     outputs:
       pr-number:
         description: 'PR number. Empty when no bump was needed (skipped or build-failed).'
@@ -65,10 +73,10 @@ on:
         description: '"true" if hopscotch successfully bumped the project.'
         value: ${{ jobs.bump.outputs.updated }}
       skipped:
-        description: '"true" if the project was already at the LKG commit.'
+        description: '"true" if the project was already at the target commit.'
         value: ${{ jobs.bump.outputs.skipped }}
       build-failed:
-        description: '"true" if hopscotch ran but the build failed at the LKG commit.'
+        description: '"true" if hopscotch ran but the build failed at the target commit.'
         value: ${{ jobs.bump.outputs.build-failed }}
 
 jobs:
@@ -87,12 +95,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Bump to LKG
+      - name: Bump to latest
         id: bump
-        uses: leanprover-community/downstream-reports/.github/actions/bump-to-lkg@main
+        uses: leanprover-community/downstream-reports/.github/actions/bump-to-latest@main
         with:
-          dependency-name:  ${{ inputs.dependency-name }}
+          dependency-name:   ${{ inputs.dependency-name }}
           hopscotch-version: ${{ inputs.hopscotch-version }}
+          query-type:       ${{ inputs.query-type }}
 
       - name: Open or update PR
         id: open-pr

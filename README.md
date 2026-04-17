@@ -30,19 +30,19 @@ bumps:
 
 | Name | Kind | Description |
 |------|------|-------------|
-| [`bump-dependency-to-lkg`](.github/workflows/bump-dependency-to-lkg.yml) | Reusable workflow | Zero-boilerplate scheduled bumping — the simplest option. |
-| [`bump-to-lkg`](.github/actions/bump-to-lkg) | Composite action | Looks up the current LKG commit, checks the current pin, and runs `hopscotch` to bump and build. |
+| [`bump-dependency-to-latest`](.github/workflows/bump-dependency-to-latest.yml) | Reusable workflow | Zero-boilerplate scheduled bumping — the simplest option. |
+| [`bump-to-latest`](.github/actions/bump-to-latest) | Composite action | Looks up the target commit (LKG or FKB), checks the current pin, and runs `hopscotch` to bump and build. |
 | [`open-bump-pr`](.github/actions/open-bump-pr) | Composite action | Commits working-tree changes and creates or updates a PR. |
-| [`query-lkg`](.github/actions/query-lkg) | Composite action | Lightweight read-only lookup — returns the LKG commit for a downstream without cloning or building. |
+| [`query-latest`](.github/actions/query-latest) | Composite action | Lightweight read-only lookup — returns the target commit for a downstream without cloning or building. |
 
 See [`docs/actions.md`](docs/actions.md) for the full input/output reference and
 example workflows.
 
-> **SHA pinning:** the reusable workflow (`bump-dependency-to-lkg`) internally
+> **SHA pinning:** the reusable workflow (`bump-dependency-to-latest`) internally
 > pins the composite actions to `@main`, so callers cannot override their
 > version. If you need to pin to a specific SHA for security or stability, use
 > the composite actions directly (Options 2–4 above) and specify the SHA in each
-> `uses:` line, e.g. `uses: leanprover-community/downstream-reports/.github/actions/bump-to-lkg@<sha>`.
+> `uses:` line, e.g. `uses: leanprover-community/downstream-reports/.github/actions/bump-to-latest@<sha>`.
 
 ## Keeping your downstream up to date with the public last-known-good (LKG) data
 
@@ -53,7 +53,7 @@ mathlib commit known to build cleanly against your downstream's **main branch**.
 Note that the LKG data reflects the state of your downstream at the time of the
 last validation run. If your downstream has changed since then, the recorded LKG
 commit may no longer build cleanly against its current state. This is why
-`bump-to-lkg` re-runs the build rather than blindly applying the recorded commit
+`bump-to-latest` re-runs the build rather than blindly applying the recorded commit
 — it verifies the bump still works before touching your working tree.
 
 You can consume the LKG data from your own repo in several ways depending on how
@@ -61,7 +61,7 @@ much automation you want.
 
 ### Option 1 — Reusable workflow (simplest)
 
-The `bump-dependency-to-lkg` reusable workflow looks up your downstream's current
+The `bump-dependency-to-latest` reusable workflow looks up your downstream's current
 LKG commit, runs `hopscotch` to bump and verify the build, and opens (or updates)
 a single PR with an auto-generated title and description. If the project is
 already at the LKG commit the run is a no-op; if the build fails the run exits
@@ -76,7 +76,7 @@ without touching any PR.
 - You want to push the bump directly to a branch instead of opening a PR (use Option 3)
 
 ```yaml
-name: Bump mathlib to LKG
+name: Bump mathlib to latest
 
 on:
   schedule:
@@ -85,7 +85,7 @@ on:
 
 jobs:
   bump:
-    uses: leanprover-community/downstream-reports/.github/workflows/bump-dependency-to-lkg.yml@main
+    uses: leanprover-community/downstream-reports/.github/workflows/bump-dependency-to-latest.yml@main
     permissions:
       contents: write
       pull-requests: write
@@ -100,17 +100,18 @@ Optional inputs — pass any of these under `with:` if you need to customise:
 | `labels` | — | Comma-separated labels to apply (e.g. `"dependencies"`) |
 | `dependency-name` | `mathlib` | Dependency name in the lakefile |
 | `hopscotch-version` | `v1.3.0` | Hopscotch release tag |
+| `commit-type` | `last-known-good` | Which commit to bump to: `last-known-good` or `first-known-bad` |
 
 ### Option 2 — Composite actions (custom workflow)
 
-Use `bump-to-lkg` followed by `open-bump-pr` directly when you need extra steps
+Use `bump-to-latest` followed by `open-bump-pr` directly when you need extra steps
 — for example, running your own checks between the build and the PR, or
-combining the bump with other automation. The action builds against the LKG
+combining the bump with other automation. The action builds against the target
 commit, and if successful it opens (or updates) a PR in your repo. The PR is
 kept to a single commit and its description is updated on every run.
 
 ```yaml
-name: Bump mathlib to LKG
+name: Bump mathlib to latest
 
 on:
   schedule:
@@ -127,9 +128,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Bump to LKG
+      - name: Bump to latest
         id: bump
-        uses: leanprover-community/downstream-reports/.github/actions/bump-to-lkg@main
+        uses: leanprover-community/downstream-reports/.github/actions/bump-to-latest@main
         with:
           downstream: MyProject   # must match the name in ci/inventory/downstreams.json
 
@@ -145,12 +146,12 @@ jobs:
 ### Option 3 — Bump and push directly
 
 If you prefer to commit the bump straight to your default branch (no PR), use
-`bump-to-lkg` alone and then push:
+`bump-to-latest` alone and then push:
 
 ```yaml
-      - name: Bump to LKG
+      - name: Bump to latest
         id: bump
-        uses: leanprover-community/downstream-reports/.github/actions/bump-to-lkg@main
+        uses: leanprover-community/downstream-reports/.github/actions/bump-to-latest@main
         with:
           downstream: MyProject
 
@@ -164,9 +165,9 @@ If you prefer to commit the bump straight to your default branch (no PR), use
           git push
 ```
 
-### Option 4 — Just fetch the LKG
+### Option 4 — Just fetch the target commit
 
-Use `query-lkg` to retrieve the current LKG commit SHA without cloning,
+Use `query-latest` to retrieve the current LKG or FKB commit SHA without cloning,
 building, or touching your working tree. This is the right starting point for
 custom workflows — for example, posting a notification, triggering a separate
 CI job, or driving a bespoke update script. Keep in mind that this skips the
@@ -175,13 +176,13 @@ last updated, the commit is not guaranteed to still be good.
 
 ```yaml
       - name: Get LKG commit
-        id: lkg
-        uses: leanprover-community/downstream-reports/.github/actions/query-lkg@main
+        id: latest
+        uses: leanprover-community/downstream-reports/.github/actions/query-latest@main
         # defaults to github.repository — no inputs needed if the repo slug
         # matches the registered downstream's repo field
 
       - name: Do something with the LKG commit
-        run: echo "LKG is ${{ steps.lkg.outputs.lkg-commit }}"
+        run: echo "LKG is ${{ steps.latest.outputs.commit }}"
 ```
 
 Full input/output documentation is in [`docs/actions.md`](docs/actions.md).

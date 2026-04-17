@@ -13,7 +13,7 @@ automatically.
 downstream-reports                         Downstream repos
 ─────────────────                         ────────────────
 mathlib-downstream-report workflow        scheduled workflow
-  └─ report job writes DB                   └─ bump-to-lkg action
+  └─ report job writes DB                   └─ bump-to-latest action
                                                 ├─ fetches lkg/latest.json
 publish-lkg workflow                            ├─ runs hopscotch dep
   └─ export_lkg_snapshot.py                    └─ outputs: updated, skipped, …
@@ -75,8 +75,8 @@ long-lived secrets — via `azure/login@v2` with a federated credential scoped t
 
 ### Composite actions
 
-Three composite actions are available for downstream repos: `bump-to-lkg`,
-`open-bump-pr`, and `query-lkg`. See [docs/actions.md](actions.md) for full
+Three composite actions are available for downstream repos: `bump-to-latest`,
+`open-bump-pr`, and `query-latest`. See [docs/actions.md](actions.md) for full
 input/output reference and example workflows.
 
 ---
@@ -148,5 +148,5 @@ container and no subscription-level operations are performed.
 See [docs/actions.md](actions.md) for the full input/output reference and a
 complete example workflow.
 
-The `downstream` input to `bump-to-lkg` must match the `name` field of the
+The `downstream` input to `bump-to-latest` must match the `name` field of the
 entry in `ci/inventory/downstreams.json`.
