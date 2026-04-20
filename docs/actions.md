@@ -83,6 +83,44 @@ jobs:
       labels: dependencies
 ```
 
+**With a GitHub App token** (to open PRs as a bot account rather than `github-actions[bot]`):
+
+Use the composite actions directly so the token stays within one job — GitHub masks step outputs automatically, but job outputs are plaintext and cannot safely carry a token.
+
+```yaml
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/create-github-app-token@v1
+        id: app-token
+        with:
+          app-id: ${{ vars.MY_BOT_APP_ID }}
+          private-key: ${{ secrets.MY_BOT_PRIVATE_KEY }}
+
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+
+      - name: Bump to latest
+        id: bump
+        uses: leanprover-community/downstream-reports/.github/actions/bump-to-latest@main
+
+      - name: Open PR
+        if: steps.bump.outputs.updated == 'true'
+        uses: leanprover-community/downstream-reports/.github/actions/open-bump-pr@main
+        with:
+          title:           ${{ steps.bump.outputs.pr-title }}
+          message:         ${{ steps.bump.outputs.bump-description }}
+          commit-message:  ${{ steps.bump.outputs.commit-message }}
+          token:           ${{ steps.app-token.outputs.token }}
+          git-user-name:   my-bot[bot]
+          git-user-email:  ${{ vars.MY_BOT_APP_ID }}+my-bot[bot]@users.noreply.github.com
+```
+
 ---
 
 ## `bump-to-latest`
@@ -151,6 +189,9 @@ If there are no working-tree changes (`git diff` is clean) the action exits with
 | `commit-message` | no | `chore: dependency update` | Git commit message |
 | `labels` | no | `''` | Comma-separated labels to apply to the PR |
 | `message` | no | `''` | Content to place in the PR body above the automated footer. Pass the `bump-description` output from `bump-to-latest` here. |
+| `token` | no | `GITHUB_TOKEN` | Token used to push the branch and create/update the PR. Pass a GitHub App installation token to have PRs opened by a bot account instead of `github-actions[bot]`. |
+| `git-user-name` | no | `github-actions[bot]` | `git user.name` for the bump commit. |
+| `git-user-email` | no | `41898282+github-actions[bot]@users.noreply.github.com` | `git user.email` for the bump commit. |
 
 ### Outputs
 

@@ -38,6 +38,22 @@ inputs:
     description: >
       Content to place in the PR body above the automated footer.
       Pass the bump-description output from bump-to-latest here.
+  token:
+    required: false
+    default: ${{ github.token }}
+    description: >
+      GitHub token used to push the branch and create/update the PR.
+      Defaults to the built-in GITHUB_TOKEN. Pass a GitHub App installation
+      token here to have PRs opened by a bot account instead of
+      github-actions[bot].
+  git-user-name:
+    required: false
+    default: 'github-actions[bot]'
+    description: 'git user.name for the bump commit.'
+  git-user-email:
+    required: false
+    default: '41898282+github-actions[bot]@users.noreply.github.com'
+    description: 'git user.email for the bump commit.'
 
 outputs:
   pr-number:
@@ -77,18 +93,21 @@ runs:
       env:
         BRANCH: ${{ inputs.branch }}
         COMMIT_MESSAGE: ${{ inputs.commit-message }}
+        TOKEN: ${{ inputs.token }}
+        GIT_USER_NAME: ${{ inputs.git-user-name }}
+        GIT_USER_EMAIL: ${{ inputs.git-user-email }}
       run: |
         set -euo pipefail
 
         MSG="${COMMIT_MESSAGE:-chore: dependency update}"
 
-        git config user.name  "github-actions[bot]"
-        git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+        git config user.name  "$GIT_USER_NAME"
+        git config user.email "$GIT_USER_EMAIL"
 
         git checkout -B "$BRANCH"
         git add -A
         git commit -m "$MSG"
-        git push --force origin "$BRANCH"
+        git push --force "https://x-access-token:${TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "$BRANCH"
 
     # ------------------------------------------------------------------
     # Step 3: Create or update the PR.
@@ -98,7 +117,7 @@ runs:
       if: steps.check-changes.outputs.no_changes != 'true'
       shell: bash
       env:
-        GH_TOKEN: ${{ github.token }}
+        GH_TOKEN: ${{ inputs.token }}
         BRANCH: ${{ inputs.branch }}
         BASE: ${{ inputs.base }}
         TITLE: ${{ inputs.title }}
