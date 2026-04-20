@@ -139,6 +139,9 @@ def fetch_release_tags_api(
     for ds_name, lkg in lkg_commits.items():
         found: tuple[str | None, str | None] = (None, None)
         for _, tag_name, tag_sha in semver_tags:
+            if tag_sha == lkg:
+                found = (tag_name, tag_sha)
+                break
             url = f"{GITHUB_API}/repos/{repo}/compare/{tag_sha}...{lkg}"
             req = urllib.request.Request(url, headers=headers)
             try:

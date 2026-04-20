@@ -553,6 +553,18 @@ class FetchReleaseTagsApiTests(unittest.TestCase):
 
         self.assertEqual(result["physlib"], ("v4.13.0", "sha_413"))
 
+    def test_exact_match_short_circuits_without_api_call(self) -> None:
+        """Scenario: LKG SHA equals tag SHA — compare endpoint must not be called."""
+        import scripts.aggregate_results as agg
+
+        tags_page = [self._make_tag("v4.13.0", "sha_413"), self._make_tag("v4.12.0", "sha_412")]
+        # Only one response (the tag list); a compare call would exhaust the mock and raise.
+        responses = [tags_page]
+        with self._mock_urlopen(responses):
+            result = agg.fetch_release_tags_api("owner/repo", {"physlib": "sha_413"}, None)
+
+        self.assertEqual(result["physlib"], ("v4.13.0", "sha_413"))
+
     def test_tag_list_fetched_once_for_multiple_downstreams(self) -> None:
         """Scenario: two downstreams share one tag-list fetch; two ancestry checks run."""
         import scripts.aggregate_results as agg
