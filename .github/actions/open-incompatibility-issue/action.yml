@@ -34,7 +34,7 @@ inputs:
     default: ''
     description: >
       Full issue title.  When empty, the action generates one of the form
-      "[regression] <dep-name> <fkb-short> breaks the build".
+      "[hopscotch] <dep-name> <fkb-short> breaks the build".
   close-on-resolve:
     required: false
     default: 'true'
@@ -209,14 +209,16 @@ runs:
         UPSTREAM: ${{ inputs.upstream }}
         FKB_COMMIT: ${{ steps.fkb.outputs.commit }}
         LKG_COMMIT: ${{ steps.lkg.outputs.commit }}
+        DS_REPO: ${{ steps.fkb.outputs.repo }}
+        DOWNSTREAM_COMMIT: ${{ steps.run.outputs.downstream_commit }}
       run: |
         set -euo pipefail
 
         fetch_info() {
-          local sha="$1"
+          local repo="$1" sha="$2"
           # Returns <subject>\t<author-name>\t<committer-date YYYY-MM-DD>,
           # or empty on any failure (private repo, missing SHA, network error).
-          gh api "repos/${UPSTREAM}/commits/${sha}" \
+          gh api "repos/${repo}/commits/${sha}" \
             --jq '[
               (.commit.message | split("\n")[0]),
               (.commit.author.name // ""),
@@ -238,18 +240,30 @@ runs:
           } >> "$GITHUB_OUTPUT"
         }
 
-        FKB_INFO=$(fetch_info "$FKB_COMMIT")
+        empty_triple() {
+          local prefix="$1"
+          {
+            echo "${prefix}_subject="
+            echo "${prefix}_author="
+            echo "${prefix}_date="
+          } >> "$GITHUB_OUTPUT"
+        }
+
+        FKB_INFO=$(fetch_info "$UPSTREAM" "$FKB_COMMIT")
         write_triple "fkb" "$FKB_INFO"
 
         if [ -n "$LKG_COMMIT" ]; then
-          LKG_INFO=$(fetch_info "$LKG_COMMIT")
+          LKG_INFO=$(fetch_info "$UPSTREAM" "$LKG_COMMIT")
           write_triple "lkg" "$LKG_INFO"
         else
-          {
-            echo "lkg_subject="
-            echo "lkg_author="
-            echo "lkg_date="
-          } >> "$GITHUB_OUTPUT"
+          empty_triple "lkg"
+        fi
+
+        if [ -n "$DOWNSTREAM_COMMIT" ] && [ -n "$DS_REPO" ]; then
+          DS_INFO=$(fetch_info "$DS_REPO" "$DOWNSTREAM_COMMIT")
+          write_triple "ds" "$DS_INFO"
+        else
+          empty_triple "ds"
         fi
 
     # ------------------------------------------------------------------
@@ -288,7 +302,7 @@ runs:
         if [ -n "$CUSTOM_TITLE" ]; then
           TITLE="$CUSTOM_TITLE"
         else
-          TITLE="[regression] ${DEP_NAME:-dependency} ${FKB_SHORT} breaks the build"
+          TITLE="[hopscotch] ${DEP_NAME:-dependency} ${FKB_SHORT} breaks the build"
         fi
 
         # --- Body ---
@@ -361,7 +375,7 @@ runs:
         {
           echo "title=${TITLE}"
           echo "body<<BODY_EOF"
-          echo "## ${DEP_NAME:-Dependency} regression detected"
+          echo "## ${DEP_NAME:-Dependency} incompatibility detected"
           echo
           echo "An incompatibility has been detected between this project and \`${UPSTREAM}\`."
           echo
@@ -369,7 +383,7 @@ runs:
           echo
           echo "**Last-known-good ${DEP_NAME:-dependency} commit:** ${LKG_LINE}"
           echo
-          echo "**Downstream commit tested:** ${DS_LINE}"
+          echo "**Commit tested:** ${DS_LINE}"
           echo
           printf '%s' "$REPORTED_LINE"
           printf '%s' "$TARGET_LINE"
