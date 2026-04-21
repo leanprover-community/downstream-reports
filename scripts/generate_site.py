@@ -730,10 +730,10 @@ def render_table_row(
     fkb_cell      = commit_link(UPSTREAM_REPO, fkb,    ct(fkb),    tg(fkb),    cd(fkb))
     _pin_link = commit_link(UPSTREAM_REPO, pin, ct(pin), tg(pin), cd(pin))
     if r.get("search_base_not_ancestor"):
-        _tip = "Pinned commit is not an ancestor of the current target — no bisect window was available; head-only probe only"
+        _tip = "Pinned commit is not an ancestor of the current target\n No bisect window available: the validation only performed a HEAD probe"
         pin_cell = (
             f'<div>{_pin_link}</div>'
-            f'<div><span class="badge badge-yellow" data-tooltip="{esc(_tip)}">not ancestor</span></div>'
+            f'<div><span class="badge badge-yellow" data-tooltip="{esc(_tip)}">detached</span></div>'
         )
     else:
         pin_cell = _pin_link
