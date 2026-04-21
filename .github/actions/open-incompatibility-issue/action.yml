@@ -1,0 +1,453 @@
+name: 'Open FKB Issue'
+description: >
+  Consume the downstream snapshot and open or maintain a single persistent
+  GitHub issue describing the current regression (first-known-bad) affecting
+  this downstream.  When the snapshot clears the first-known-bad commit
+  (regression resolved), the action closes the issue with a resolution
+  comment.  Identified by a label (default: hopscotch-regression) rather
+  than by title, so one persistent issue exists per downstream.
+
+inputs:
+  downstream:
+    required: false
+    default: ${{ github.repository }}
+    description: >
+      Downstream to look up.  May be a registered downstream name (e.g.
+      "physlib") or a GitHub repo slug (e.g. "leanprover-community/physlib").
+      Values containing "/" are treated as repo slugs; otherwise as name
+      keys.  Defaults to the repository running this action.
+  upstream:
+    required: false
+    default: 'leanprover-community/mathlib4'
+    description: >
+      Upstream repository slug used to fetch commit metadata for the FKB/LKG
+      commits.  Must match the upstream field in the published snapshot.
+  label:
+    required: false
+    default: 'hopscotch-regression'
+    description: >
+      Label used to identify the persistent issue.  Created if missing in
+      the consuming repo.  Using a label (not the title) to track the issue
+      means humans can edit the title without breaking idempotency.
+  title:
+    required: false
+    default: ''
+    description: >
+      Full issue title.  When empty, the action generates one of the form
+      "[regression] <dep-name> <fkb-short> breaks the build".
+  close-on-resolve:
+    required: false
+    default: 'true'
+    description: >
+      When the snapshot's first-known-bad commit is null (regression
+      resolved), if an open issue with the label exists, post a resolution
+      comment and close it.  Set to "false" to leave resolved issues open.
+  token:
+    required: false
+    default: ${{ github.token }}
+    description: >
+      Token used for "gh issue"/"gh api" calls.  Needs "issues: write" and
+      read access to the upstream repo (the default GITHUB_TOKEN has both
+      for public upstreams).
+
+outputs:
+  issue-number:
+    description: 'Issue number (empty when action=noop)'
+    value: ${{ steps.resolve-outputs.outputs.issue_number }}
+  issue-url:
+    description: 'Issue URL (empty when action=noop)'
+    value: ${{ steps.resolve-outputs.outputs.issue_url }}
+  action:
+    description: '"created", "updated", "closed", or "noop"'
+    value: ${{ steps.resolve-outputs.outputs.action }}
+
+runs:
+  using: 'composite'
+  steps:
+    # ------------------------------------------------------------------
+    # Step 1: Look up the FKB commit (also yields downstream name / repo /
+    # dependency name from the snapshot).
+    # ------------------------------------------------------------------
+    - name: Look up first-known-bad
+      id: fkb
+      shell: bash
+      env:
+        DOWNSTREAM: ${{ inputs.downstream }}
+        QUERY_TYPE: first-known-bad
+      run: bash "${{ github.action_path }}/../../scripts/fetch-latest.sh"
+
+    # ------------------------------------------------------------------
+    # Step 2: Look up the LKG commit (for contrast in the issue body).
+    # Uses the same snapshot file; cost is one extra curl — acceptable.
+    # ------------------------------------------------------------------
+    - name: Look up last-known-good
+      id: lkg
+      shell: bash
+      env:
+        DOWNSTREAM: ${{ inputs.downstream }}
+        QUERY_TYPE: last-known-good
+      run: bash "${{ github.action_path }}/../../scripts/fetch-latest.sh"
+
+    # ------------------------------------------------------------------
+    # Step 3: Fetch per-downstream latest regression-run metadata.  Best
+    # effort — the script exits 0 with empty outputs if the runs snapshot
+    # is unavailable or the entry is missing.
+    # ------------------------------------------------------------------
+    - name: Look up latest run metadata
+      id: run
+      shell: bash
+      env:
+        DOWNSTREAM: ${{ inputs.downstream }}
+      run: bash "${{ github.action_path }}/../../scripts/fetch-run-latest.sh"
+
+    # ------------------------------------------------------------------
+    # Step 4: Ensure the tracking label exists in the consuming repo.
+    # Skip when the regression is resolved AND close-on-resolve is false
+    # (no issue will be touched, so no label needed).
+    # ------------------------------------------------------------------
+    - name: Ensure tracking label exists
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        LABEL: ${{ inputs.label }}
+        FKB_COMMIT: ${{ steps.fkb.outputs.commit }}
+        CLOSE_ON_RESOLVE: ${{ inputs.close-on-resolve }}
+      run: |
+        set -euo pipefail
+        if [ -z "$FKB_COMMIT" ] && [ "$CLOSE_ON_RESOLVE" != "true" ]; then
+          echo "No FKB and close-on-resolve=false — skipping label creation."
+          exit 0
+        fi
+        gh label create "$LABEL" \
+          --color 'B60205' \
+          --description 'Automated regression tracker opened by downstream-reports' \
+          --force
+
+    # ------------------------------------------------------------------
+    # Step 5: Branch on FKB presence.  When FKB is empty, handle the
+    # "resolved" case: close an existing open issue (if any) with a
+    # comment.  Emits action=closed or action=noop.
+    # ------------------------------------------------------------------
+    - name: Handle resolved regression
+      id: resolve
+      if: steps.fkb.outputs.commit == ''
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        LABEL: ${{ inputs.label }}
+        CLOSE_ON_RESOLVE: ${{ inputs.close-on-resolve }}
+        LKG_COMMIT: ${{ steps.lkg.outputs.commit }}
+        RUN_URL: ${{ steps.run.outputs.run_url }}
+        UPSTREAM: ${{ inputs.upstream }}
+      run: |
+        set -euo pipefail
+
+        echo "No first-known-bad commit in snapshot — regression is resolved."
+
+        EXISTING=$(gh issue list \
+          --label "$LABEL" \
+          --state open \
+          --json number,url \
+          --jq '.[0] // empty')
+
+        if [ -z "$EXISTING" ]; then
+          echo "No open issue with label '$LABEL' — nothing to do."
+          echo "action=noop"      >> "$GITHUB_OUTPUT"
+          echo "issue_number="    >> "$GITHUB_OUTPUT"
+          echo "issue_url="       >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+
+        ISSUE_NUMBER=$(echo "$EXISTING" | jq -r '.number')
+        ISSUE_URL=$(echo "$EXISTING"    | jq -r '.url')
+
+        if [ "$CLOSE_ON_RESOLVE" != "true" ]; then
+          echo "Regression resolved but close-on-resolve=false — leaving issue #$ISSUE_NUMBER open."
+          echo "action=noop"                      >> "$GITHUB_OUTPUT"
+          echo "issue_number=$ISSUE_NUMBER"       >> "$GITHUB_OUTPUT"
+          echo "issue_url=$ISSUE_URL"             >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+
+        TODAY=$(date -u +"%Y-%m-%d")
+        WORKFLOW_RUN_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+
+        LKG_LINE=""
+        if [ -n "$LKG_COMMIT" ]; then
+          LKG_SHORT="${LKG_COMMIT:0:7}"
+          LKG_URL="https://github.com/${UPSTREAM}/commit/${LKG_COMMIT}"
+          LKG_LINE=$(printf 'Current last-known-good: [`%s`](%s).\n\n' "$LKG_SHORT" "$LKG_URL")
+        fi
+
+        RUN_LINE=""
+        if [ -n "$RUN_URL" ]; then
+          RUN_LINE=$(printf 'Most recent validation run: %s.\n\n' "$RUN_URL")
+        fi
+
+        COMMENT=$(printf '✅ Regression resolved as of %s.\n\n%s%s_Closed automatically by [this workflow run](%s)._\n' \
+          "$TODAY" "$LKG_LINE" "$RUN_LINE" "$WORKFLOW_RUN_URL")
+
+        gh issue comment "$ISSUE_NUMBER" --body "$COMMENT"
+        gh issue close "$ISSUE_NUMBER"
+
+        echo "Closed issue #$ISSUE_NUMBER: $ISSUE_URL"
+        echo "action=closed"                    >> "$GITHUB_OUTPUT"
+        echo "issue_number=$ISSUE_NUMBER"       >> "$GITHUB_OUTPUT"
+        echo "issue_url=$ISSUE_URL"             >> "$GITHUB_OUTPUT"
+
+    # ------------------------------------------------------------------
+    # Step 6: Active regression — fetch commit metadata for FKB and LKG
+    # from the upstream repo.  Mirrors the fetch_info helper used in the
+    # bump-to-latest action (https://github.com/.../bump-to-latest).
+    # ------------------------------------------------------------------
+    - name: Fetch commit metadata
+      id: meta
+      if: steps.fkb.outputs.commit != ''
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        UPSTREAM: ${{ inputs.upstream }}
+        FKB_COMMIT: ${{ steps.fkb.outputs.commit }}
+        LKG_COMMIT: ${{ steps.lkg.outputs.commit }}
+      run: |
+        set -euo pipefail
+
+        fetch_info() {
+          local sha="$1"
+          # Returns <subject>\t<author-name>\t<committer-date YYYY-MM-DD>,
+          # or empty on any failure (private repo, missing SHA, network error).
+          gh api "repos/${UPSTREAM}/commits/${sha}" \
+            --jq '[
+              (.commit.message | split("\n")[0]),
+              (.commit.author.name // ""),
+              (.commit.committer.date // "")[:10]
+            ] | join("\t")' \
+            2>/dev/null || true
+        }
+
+        write_triple() {
+          local prefix="$1" info="$2"
+          local subject author date
+          subject=$(printf '%s' "$info" | cut -f1)
+          author=$(printf  '%s' "$info" | cut -f2)
+          date=$(printf    '%s' "$info" | cut -f3)
+          {
+            echo "${prefix}_subject=${subject}"
+            echo "${prefix}_author=${author}"
+            echo "${prefix}_date=${date}"
+          } >> "$GITHUB_OUTPUT"
+        }
+
+        FKB_INFO=$(fetch_info "$FKB_COMMIT")
+        write_triple "fkb" "$FKB_INFO"
+
+        if [ -n "$LKG_COMMIT" ]; then
+          LKG_INFO=$(fetch_info "$LKG_COMMIT")
+          write_triple "lkg" "$LKG_INFO"
+        else
+          {
+            echo "lkg_subject="
+            echo "lkg_author="
+            echo "lkg_date="
+          } >> "$GITHUB_OUTPUT"
+        fi
+
+    # ------------------------------------------------------------------
+    # Step 7: Compose the issue title and body from the gathered inputs.
+    # ------------------------------------------------------------------
+    - name: Compose issue content
+      id: compose
+      if: steps.fkb.outputs.commit != ''
+      shell: bash
+      env:
+        UPSTREAM: ${{ inputs.upstream }}
+        CUSTOM_TITLE: ${{ inputs.title }}
+        FKB_COMMIT: ${{ steps.fkb.outputs.commit }}
+        LKG_COMMIT: ${{ steps.lkg.outputs.commit }}
+        DEP_NAME: ${{ steps.fkb.outputs.dependency_name }}
+        DS_NAME: ${{ steps.fkb.outputs.downstream_name }}
+        DS_REPO: ${{ steps.fkb.outputs.repo }}
+        FKB_SUBJECT: ${{ steps.meta.outputs.fkb_subject }}
+        FKB_AUTHOR: ${{ steps.meta.outputs.fkb_author }}
+        FKB_DATE: ${{ steps.meta.outputs.fkb_date }}
+        LKG_SUBJECT: ${{ steps.meta.outputs.lkg_subject }}
+        LKG_AUTHOR: ${{ steps.meta.outputs.lkg_author }}
+        LKG_DATE: ${{ steps.meta.outputs.lkg_date }}
+        RUN_URL: ${{ steps.run.outputs.run_url }}
+        JOB_URL: ${{ steps.run.outputs.job_url }}
+        DOWNSTREAM_COMMIT: ${{ steps.run.outputs.downstream_commit }}
+        REPORTED_AT: ${{ steps.run.outputs.reported_at }}
+        TARGET_COMMIT: ${{ steps.run.outputs.target_commit }}
+      run: |
+        set -euo pipefail
+
+        FKB_SHORT="${FKB_COMMIT:0:7}"
+        FKB_URL="https://github.com/${UPSTREAM}/commit/${FKB_COMMIT}"
+
+        # --- Title ---
+        if [ -n "$CUSTOM_TITLE" ]; then
+          TITLE="$CUSTOM_TITLE"
+        else
+          TITLE="[regression] ${DEP_NAME:-dependency} ${FKB_SHORT} breaks the build"
+        fi
+
+        # --- Body ---
+        # Short helper: line like "[abc1234](url) — subject (author, date)"
+        commit_line() {
+          local sha="$1" url="$2" subject="$3" author="$4" date="$5"
+          local short="${sha:0:7}"
+          local line
+          line="[\`${short}\`](${url})"
+          if [ -n "$subject" ]; then
+            line="${line} — ${subject}"
+          fi
+          local meta=""
+          if [ -n "$author" ] && [ -n "$date" ]; then
+            meta=" _(${author}, ${date})_"
+          elif [ -n "$author" ]; then
+            meta=" _(${author})_"
+          elif [ -n "$date" ]; then
+            meta=" _(${date})_"
+          fi
+          printf '%s%s' "$line" "$meta"
+        }
+
+        FKB_LINE=$(commit_line "$FKB_COMMIT" "$FKB_URL" "$FKB_SUBJECT" "$FKB_AUTHOR" "$FKB_DATE")
+
+        if [ -n "$LKG_COMMIT" ]; then
+          LKG_SHORT="${LKG_COMMIT:0:7}"
+          LKG_URL="https://github.com/${UPSTREAM}/commit/${LKG_COMMIT}"
+          LKG_LINE=$(commit_line "$LKG_COMMIT" "$LKG_URL" "$LKG_SUBJECT" "$LKG_AUTHOR" "$LKG_DATE")
+        else
+          LKG_LINE="_(none)_"
+        fi
+
+        # Downstream commit tested — from the runs snapshot if available;
+        # fall back to an explicit note.
+        if [ -n "$DOWNSTREAM_COMMIT" ] && [ -n "$DS_REPO" ]; then
+          DS_SHORT="${DOWNSTREAM_COMMIT:0:7}"
+          DS_URL="https://github.com/${DS_REPO}/commit/${DOWNSTREAM_COMMIT}"
+          DS_LINE="[\`${DS_SHORT}\`](${DS_URL})"
+        else
+          DS_LINE="_(not yet recorded in the runs snapshot)_"
+        fi
+
+        # Validation run / job links.
+        VALIDATION_LINE=""
+        if [ -n "$RUN_URL" ]; then
+          VALIDATION_LINE="[Workflow run](${RUN_URL})"
+          if [ -n "$JOB_URL" ]; then
+            VALIDATION_LINE="${VALIDATION_LINE} · [Job log](${JOB_URL})"
+          fi
+        else
+          VALIDATION_LINE="_(not yet recorded in the runs snapshot)_"
+        fi
+
+        REPORTED_LINE=""
+        if [ -n "$REPORTED_AT" ]; then
+          REPORTED_LINE=$(printf 'Last reported at: \`%s\`\n\n' "$REPORTED_AT")
+        fi
+
+        TARGET_LINE=""
+        if [ -n "$TARGET_COMMIT" ] && [ "$TARGET_COMMIT" != "$FKB_COMMIT" ]; then
+          TSHORT="${TARGET_COMMIT:0:7}"
+          TURL="https://github.com/${UPSTREAM}/commit/${TARGET_COMMIT}"
+          TARGET_LINE=$(printf 'HEAD commit tested in the latest run: [`%s`](%s).\n\n' "$TSHORT" "$TURL")
+        fi
+
+        WORKFLOW_RUN_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+        TODAY=$(date -u +"%Y-%m-%d")
+
+        {
+          echo "title=${TITLE}"
+          echo "body<<BODY_EOF"
+          echo "## ${DEP_NAME:-Dependency} regression detected"
+          echo
+          echo "An incompatibility has been detected between this project and \`${UPSTREAM}\`."
+          echo
+          echo "**First-known-bad ${DEP_NAME:-dependency} commit:** ${FKB_LINE}"
+          echo
+          echo "**Last-known-good ${DEP_NAME:-dependency} commit:** ${LKG_LINE}"
+          echo
+          echo "**Downstream commit tested:** ${DS_LINE}"
+          echo
+          printf '%s' "$REPORTED_LINE"
+          printf '%s' "$TARGET_LINE"
+          echo "**Validation run:** ${VALIDATION_LINE}"
+          echo
+          echo "---"
+          echo
+          echo "_This issue was last updated on ${TODAY} by [this workflow run](${WORKFLOW_RUN_URL}). It is maintained automatically by [downstream-reports/open-incompatibility-issue](https://github.com/leanprover-community/downstream-reports). When the regression is resolved, the issue is closed automatically with a comment._"
+          echo "BODY_EOF"
+        } >> "$GITHUB_OUTPUT"
+
+    # ------------------------------------------------------------------
+    # Step 8: Create or update the tracking issue.
+    # ------------------------------------------------------------------
+    - name: Create or update issue
+      id: upsert
+      if: steps.fkb.outputs.commit != ''
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        LABEL: ${{ inputs.label }}
+        ISSUE_TITLE: ${{ steps.compose.outputs.title }}
+        ISSUE_BODY: ${{ steps.compose.outputs.body }}
+      run: |
+        set -euo pipefail
+
+        EXISTING=$(gh issue list \
+          --label "$LABEL" \
+          --state open \
+          --json number,url \
+          --jq '.[0] // empty')
+
+        if [ -n "$EXISTING" ]; then
+          ISSUE_NUMBER=$(echo "$EXISTING" | jq -r '.number')
+          ISSUE_URL=$(echo "$EXISTING"    | jq -r '.url')
+          gh issue edit "$ISSUE_NUMBER" \
+            --title "$ISSUE_TITLE" \
+            --body  "$ISSUE_BODY"
+          echo "Updated issue #$ISSUE_NUMBER: $ISSUE_URL"
+          echo "action=updated"               >> "$GITHUB_OUTPUT"
+        else
+          ISSUE_URL=$(gh issue create \
+            --title "$ISSUE_TITLE" \
+            --body  "$ISSUE_BODY" \
+            --label "$LABEL")
+          ISSUE_NUMBER="${ISSUE_URL##*/}"
+          echo "Created issue #$ISSUE_NUMBER: $ISSUE_URL"
+          echo "action=created"               >> "$GITHUB_OUTPUT"
+        fi
+
+        echo "issue_number=$ISSUE_NUMBER"     >> "$GITHUB_OUTPUT"
+        echo "issue_url=$ISSUE_URL"           >> "$GITHUB_OUTPUT"
+
+    # ------------------------------------------------------------------
+    # Final step: consolidate outputs from whichever branch ran.
+    # ------------------------------------------------------------------
+    - name: Resolve outputs
+      id: resolve-outputs
+      if: always()
+      shell: bash
+      env:
+        RESOLVE_ACTION: ${{ steps.resolve.outputs.action }}
+        RESOLVE_NUMBER: ${{ steps.resolve.outputs.issue_number }}
+        RESOLVE_URL: ${{ steps.resolve.outputs.issue_url }}
+        UPSERT_ACTION: ${{ steps.upsert.outputs.action }}
+        UPSERT_NUMBER: ${{ steps.upsert.outputs.issue_number }}
+        UPSERT_URL: ${{ steps.upsert.outputs.issue_url }}
+      run: |
+        if [ -n "${UPSERT_ACTION:-}" ]; then
+          echo "action=${UPSERT_ACTION}"            >> "$GITHUB_OUTPUT"
+          echo "issue_number=${UPSERT_NUMBER:-}"    >> "$GITHUB_OUTPUT"
+          echo "issue_url=${UPSERT_URL:-}"          >> "$GITHUB_OUTPUT"
+        elif [ -n "${RESOLVE_ACTION:-}" ]; then
+          echo "action=${RESOLVE_ACTION}"           >> "$GITHUB_OUTPUT"
+          echo "issue_number=${RESOLVE_NUMBER:-}"   >> "$GITHUB_OUTPUT"
+          echo "issue_url=${RESOLVE_URL:-}"         >> "$GITHUB_OUTPUT"
+        else
+          echo "action=noop"                        >> "$GITHUB_OUTPUT"
+          echo "issue_number="                      >> "$GITHUB_OUTPUT"
+          echo "issue_url="                         >> "$GITHUB_OUTPUT"
+        fi

@@ -1,12 +1,14 @@
-# Reusable workflow and composite actions
+# Reusable workflows and composite actions
 
-This repo publishes a reusable workflow and three composite actions for
+This repo publishes two reusable workflows and four composite actions for
 downstream Lean projects to consume.
 
 For the common case — a scheduled job that bumps a dependency and opens a PR
-— use the `bump-dependency-to-latest` reusable workflow directly (see below). The composite
-actions (`bump-to-latest`, `open-bump-pr`, `query-latest`) are the building blocks
-for custom workflows that need more control.
+— use the `bump-dependency-to-latest` reusable workflow directly (see below).
+For tracking active incompatibilities in a persistent issue, use
+`open-incompatibility-issue`. The composite actions (`bump-to-latest`, `open-bump-pr`,
+`query-latest`, `open-incompatibility-issue`) are the building blocks for custom workflows
+that need more control.
 
 > **Extensibility note.** Today the actions are used exclusively for the
 > mathlib upstream. The intent is to keep them general enough to support other
@@ -200,6 +202,71 @@ If there are no working-tree changes (`git diff` is clean) the action exits with
 | `pr-number` | PR number (empty when `action=noop`) |
 | `pr-url` | PR URL (empty when `action=noop`) |
 | `action` | `"created"`, `"updated"`, or `"noop"` |
+
+---
+
+## `open-incompatibility-issue`
+
+**Path:** `.github/actions/open-incompatibility-issue`
+
+Looks up this downstream's first-known-bad (FKB) commit in the snapshot and
+opens or maintains a single persistent GitHub issue describing the current
+incompatibility.  When the FKB clears (regression resolved), the action posts
+a resolution comment and closes the issue.
+
+Identity is tracked by a **label** (default `hopscotch-regression`), not by
+title — so a human can edit the title without breaking idempotency, and the
+label can be searched or filtered independently.  The label is created
+automatically if missing.
+
+The issue body includes:
+- the FKB upstream commit (linked SHA + title + author + date),
+- the LKG upstream commit for contrast,
+- the downstream commit the failure was observed against,
+- links to the validation workflow run and the specific matrix job,
+- a footer pointing back at the workflow run that last updated the issue.
+
+### Inputs
+
+| Input | Required | Default | Description |
+|-------|----------|---------|-------------|
+| `downstream` | no | `${{ github.repository }}` | Downstream name key or repo slug (`owner/repo`). Auto-detected by presence of `/`. |
+| `upstream` | no | `leanprover-community/mathlib4` | Upstream repo slug used to fetch commit metadata for the FKB/LKG commits. Must match the `upstream` field in the snapshot. |
+| `label` | no | `hopscotch-regression` | Label used to identify the persistent issue. Created if missing. |
+| `title` | no | auto | Full issue title. When empty, auto-generated as `[regression] <dep-name> <fkb-short> breaks the build`. |
+| `close-on-resolve` | no | `true` | When the snapshot clears the FKB, close the open tracking issue with a resolution comment. |
+| `token` | no | `github.token` | Token used for `gh issue` and `gh api`. Needs `issues: write`. |
+
+### Outputs
+
+| Output | Description |
+|--------|-------------|
+| `issue-number` | Issue number (empty when `action=noop`) |
+| `issue-url` | Issue URL (empty when `action=noop`) |
+| `action` | `"created"`, `"updated"`, `"closed"`, or `"noop"` |
+
+### Reusable workflow
+
+**Path:** `.github/workflows/open-incompatibility-issue.yml`
+
+Thin wrapper around the composite action.  Minimal usage:
+
+```yaml
+name: Track mathlib regression
+
+on:
+  schedule:
+    - cron: "0 19 * * *"
+  workflow_dispatch:
+
+jobs:
+  regression-issue:
+    uses: leanprover-community/downstream-reports/.github/workflows/open-incompatibility-issue.yml@main
+    permissions:
+      issues: write
+```
+
+Accepts the same inputs as the composite action and forwards them through.
 
 ---
 

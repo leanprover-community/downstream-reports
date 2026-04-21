@@ -86,6 +86,29 @@ class ValidateJobRecord:
 
 
 @dataclass
+class LatestRunRecord:
+    """Subset of run metadata exposed publicly per downstream.
+
+    Produced by ``load_latest_run_per_downstream`` (SQL-only).  Maps to one
+    entry inside ``runs/latest.json`` on the public Azure blob endpoint.  Any
+    field may be ``None`` when the underlying row is missing (e.g. no
+    validate_job recorded for that run).
+    """
+
+    run_id: str
+    run_url: str
+    reported_at: str                  # ISO-8601 timestamp
+    target_commit: str | None
+    downstream_commit: str | None
+    outcome: str                      # 'passed' | 'failed' | 'error'
+    episode_state: str
+    first_known_bad: str | None
+    last_known_good: str | None
+    job_id: str | None = None
+    job_url: str | None = None
+
+
+@dataclass
 class RunResultRecord:
     """Complete result for one downstream in one workflow run.
 
@@ -823,6 +846,95 @@ def latest_regression_run_id(engine: Any) -> str | None:
     )
     with engine.connect() as conn:
         return conn.execute(stmt).scalar()
+
+
+def load_latest_run_per_downstream(
+    engine: Any, workflow: str, upstream: str
+) -> dict[str, LatestRunRecord]:
+    """Return the most recent run_result per downstream for (workflow, upstream).
+
+    The underlying query mirrors the "latest per downstream" subquery used by
+    ``load_run_for_site`` but is scoped to a single ``(workflow, upstream)``
+    pair so that the public runs snapshot can be built without any mixing of
+    regression / on-demand state.  ``validate_job`` is left-joined so
+    ``job_id`` / ``job_url`` are populated on a best-effort basis.
+    """
+
+    if not _SA_AVAILABLE:
+        raise ImportError("sqlalchemy is required; pip install sqlalchemy")
+
+    rr = _sa_run_result
+    r = _sa_run
+    vj = _sa_validate_job
+
+    latest_per_ds = (
+        sa_select(
+            rr.c.downstream,
+            func.max(r.c.reported_at).label("latest_at"),
+        )
+        .join(r, rr.c.run_id == r.c.run_id)
+        .where(r.c.workflow == workflow, r.c.upstream == upstream)
+        .group_by(rr.c.downstream)
+        .subquery()
+    )
+
+    stmt = (
+        sa_select(
+            rr.c.downstream,
+            rr.c.run_id,
+            r.c.run_url,
+            r.c.reported_at,
+            rr.c.target_commit,
+            rr.c.downstream_commit,
+            rr.c.outcome,
+            rr.c.episode_state,
+            rr.c.first_known_bad,
+            rr.c.last_known_good,
+            vj.c.job_id,
+            vj.c.job_url,
+        )
+        .join(latest_per_ds, rr.c.downstream == latest_per_ds.c.downstream)
+        .join(
+            r,
+            and_(
+                rr.c.run_id == r.c.run_id,
+                r.c.reported_at == latest_per_ds.c.latest_at,
+            ),
+        )
+        .outerjoin(
+            vj,
+            and_(
+                rr.c.run_id == vj.c.run_id,
+                rr.c.downstream == vj.c.downstream,
+            ),
+        )
+    )
+
+    with engine.connect() as conn:
+        rows = conn.execute(stmt).fetchall()
+
+    result: dict[str, LatestRunRecord] = {}
+    for row in rows:
+        reported_at = row[3]
+        reported_at_str = (
+            reported_at.isoformat().replace("+00:00", "Z")
+            if reported_at is not None
+            else ""
+        )
+        result[row[0]] = LatestRunRecord(
+            run_id=row[1],
+            run_url=row[2],
+            reported_at=reported_at_str,
+            target_commit=row[4],
+            downstream_commit=row[5],
+            outcome=row[6],
+            episode_state=row[7],
+            first_known_bad=row[8],
+            last_known_good=row[9],
+            job_id=row[10],
+            job_url=row[11],
+        )
+    return result
 
 
 def load_run_for_site(engine: Any, run_id: str) -> tuple[dict, list[dict]]:
