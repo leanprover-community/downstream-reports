@@ -192,6 +192,7 @@ class ValidationResult:
     head_probe_outcome: str | None = None
     head_probe_failure_stage: str | None = None
     pinned_commit: str | None = None
+    search_base_not_ancestor: bool = False
 
     @classmethod
     def from_json(cls, payload: dict[str, Any]) -> "ValidationResult":
@@ -215,6 +216,7 @@ class ValidationResult:
             head_probe_outcome=payload.get("head_probe_outcome"),
             head_probe_failure_stage=payload.get("head_probe_failure_stage"),
             pinned_commit=payload.get("pinned_commit"),
+            search_base_not_ancestor=payload.get("search_base_not_ancestor", False),
         )
 
 
@@ -501,6 +503,11 @@ def render_report(
             if row["head_probe_failure_stage"] is not None:
                 head_probe = f"{head_probe} (stage={row['head_probe_failure_stage']})"
             lines.append(f"- Head probe: `{head_probe}`")
+        if row.get("search_base_not_ancestor"):
+            lines.append(
+                "- **Warning:** pinned commit is not an ancestor of the target — "
+                "no bisect window was available; head-only probe only"
+            )
         if row["tested_commit_details"]:
             if row["search_mode"] == "bisect":
                 lines.append("- Bisect window boundary:")
@@ -672,6 +679,7 @@ def main() -> int:
             head_probe_failure_stage=result.head_probe_failure_stage,
             culprit_log_text=loaded.culprit_log_text,
             pinned_commit=result.pinned_commit,
+            search_base_not_ancestor=result.search_base_not_ancestor,
         )
         result_records.append(record)
         tested_details_per_record.append(

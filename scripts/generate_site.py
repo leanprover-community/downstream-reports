@@ -728,7 +728,15 @@ def render_table_row(
     lkg_cell      = commit_link(UPSTREAM_REPO, lkg,    ct(lkg),    tg(lkg),    cd(lkg))
     lgr_link      = commit_link(UPSTREAM_REPO, lgr,    ct(lgr),    lgr_tag,    cd(lgr))
     fkb_cell      = commit_link(UPSTREAM_REPO, fkb,    ct(fkb),    tg(fkb),    cd(fkb))
-    pin_cell      = commit_link(UPSTREAM_REPO, pin,    ct(pin),    tg(pin),    cd(pin))
+    _pin_link = commit_link(UPSTREAM_REPO, pin, ct(pin), tg(pin), cd(pin))
+    if r.get("search_base_not_ancestor"):
+        _tip = "Pinned commit is not an ancestor of the current target — no bisect window was available; head-only probe only"
+        pin_cell = (
+            f'<div>{_pin_link}</div>'
+            f'<div><span class="badge badge-yellow" data-tooltip="{esc(_tip)}">not ancestor</span></div>'
+        )
+    else:
+        pin_cell = _pin_link
     age_days  = days_between(cd(pin), cd(target))
     age_cell  = distance_cell(age_val, age_days)
     bump_cell = distance_cell(bump_val)

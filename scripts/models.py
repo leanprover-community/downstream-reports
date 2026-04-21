@@ -66,6 +66,9 @@ class WindowSelection:
     head_probe_summary: str | None = None
     pinned_commit: str | None = None
     selected_lower_bound_commit: str | None = None
+    # True when the selected lower-bound commit is not an ancestor of the target,
+    # making a bisect window impossible regardless of window size.
+    search_base_not_ancestor: bool = False
     decision_reason: str | None = None
     next_action: str | None = None
     # `--from`/`--to` refs for the bisect probe step.  Computed by the window-
@@ -132,6 +135,7 @@ class ValidationResult:
     head_probe_failure_stage: str | None = None
     head_probe_summary: str | None = None
     pinned_commit: str | None = None
+    search_base_not_ancestor: bool = False
 
     def to_json(self) -> dict[str, Any]:
         """Serialize the result using plain JSON-compatible values."""

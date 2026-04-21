@@ -109,6 +109,7 @@ def try_skip_known_bad_bisect(
         head_probe_failure_stage=selection.head_probe_failure_stage,
         head_probe_summary=selection.head_probe_summary,
         pinned_commit=selection.pinned_commit,
+        search_base_not_ancestor=selection.search_base_not_ancestor,
     )
 
 
@@ -314,6 +315,7 @@ def main() -> int:
                 state=state,
                 tool_summary=tool_summary,
                 pinned_commit=selection.pinned_commit,
+                search_base_not_ancestor=selection.search_base_not_ancestor,
                 **head_probe_kwargs,
             )
 

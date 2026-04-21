@@ -140,6 +140,12 @@ def render_selection_summary(selection: WindowSelection) -> str:
     lines.append(f"- Head probe outcome: `{head_probe}`")
     if selection.selected_lower_bound_commit is not None:
         lines.append(f"- Selected lower bound: `{short_commit_label(selection.selected_lower_bound_commit)}`")
+    if getattr(selection, "search_base_not_ancestor", False):
+        lines.append("")
+        lines.append(
+            "> **Warning:** The pinned commit is not an ancestor of the target commit. "
+            "No bisect window is available; falling back to head-only probe."
+        )
     if selection.has_bisect_window:
         lines.append(f"- Bisect window size: `{len(selection.tested_commits)}` commits")
     lines.append("")
@@ -335,6 +341,7 @@ def build_result_from_tool(
     head_probe_failure_stage: str | None = None,
     head_probe_summary: str | None = None,
     pinned_commit: str | None = None,
+    search_base_not_ancestor: bool = False,
 ) -> ValidationResult:
     """Translate the tool output into the JSON schema used by reporting."""
 
@@ -358,6 +365,7 @@ def build_result_from_tool(
         head_probe_failure_stage=head_probe_failure_stage,
         head_probe_summary=head_probe_summary,
         pinned_commit=pinned_commit,
+        search_base_not_ancestor=search_base_not_ancestor,
     )
 
     if tool_run.returncode == 0:

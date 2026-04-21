@@ -118,6 +118,7 @@ class RunResultRecord:
     age_commits: int | None = None   # commits between pinned_commit and target_commit
     bump_commits: int | None = None  # commits between pinned_commit and last_known_good
     last_good_release: str | None = None  # latest semver release tag reachable from LKG
+    search_base_not_ancestor: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -489,6 +490,7 @@ try:
         Column("pinned_commit", String),
         Column("age_commits", Integer),
         Column("bump_commits", Integer),
+        Column("search_base_not_ancestor", Boolean, nullable=False, server_default="false"),
     )
 
     _sa_validate_job = Table(
@@ -668,6 +670,7 @@ class SqlBackend:
                     "pinned_commit": r.pinned_commit,
                     "age_commits": r.age_commits,
                     "bump_commits": r.bump_commits,
+                    "search_base_not_ancestor": r.search_base_not_ancestor,
                 })
 
             for downstream, s in updated_statuses.items():
@@ -877,6 +880,7 @@ def load_run_for_site(engine: Any, run_id: str) -> tuple[dict, list[dict]]:
                 _sa_run_result.c.pinned_commit,
                 _sa_run_result.c.age_commits,
                 _sa_run_result.c.bump_commits,
+                _sa_run_result.c.search_base_not_ancestor,
                 _sa_run.c.run_url,
                 _sa_validate_job.c.job_url,
                 _sa_validate_job.c.started_at.label("job_started_at"),

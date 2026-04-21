@@ -24,6 +24,7 @@ from scripts.git_ops import (
     clone_downstream,
     clone_upstream,
     describe_commits,
+    is_strict_ancestor,
     parent_commit,
     resolve_search_base_commit,
     resolve_upstream_target,
@@ -233,6 +234,21 @@ def main() -> int:
         commit_window, truncated = build_commit_window(
             upstream_dir, target_commit, search_base_commit, args.max_commits,
         )
+
+        if (
+            search_base_commit is not None
+            and search_base_commit != target_commit
+            and len(commit_window) <= 1
+            and not is_strict_ancestor(upstream_dir, search_base_commit, target_commit)
+        ):
+            selection.search_base_not_ancestor = True
+            print(
+                f"::warning title=search-base-not-ancestor::[{config.name}] "
+                f"pinned commit {search_base_commit[:12]} is not an ancestor of "
+                f"target {target_commit[:12]} — no bisect window is available; "
+                f"falling back to head-only probe"
+            )
+
         commit_plan_path = commit_plan_artifact_path(args.output_dir)
 
         if search_base_commit is not None and len(commit_window) > 1:
