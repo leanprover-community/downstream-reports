@@ -4,7 +4,7 @@ description: >
   GitHub issue describing the current regression (first-known-bad) affecting
   this downstream.  When the snapshot clears the first-known-bad commit
   (regression resolved), the action closes the issue with a resolution
-  comment.  Identified by a label (default: hopscotch-regression) rather
+  comment.  Identified by a label (default: hopscotch-incompatibility) rather
   than by title, so one persistent issue exists per downstream.
 
 inputs:
@@ -24,7 +24,7 @@ inputs:
       commits.  Must match the upstream field in the published snapshot.
   label:
     required: false
-    default: 'hopscotch-regression'
+    default: 'hopscotch-incompatibility'
     description: >
       Label used to identify the persistent issue.  Created if missing in
       the consuming repo.  Using a label (not the title) to track the issue

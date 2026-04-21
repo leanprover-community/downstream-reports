@@ -214,7 +214,7 @@ opens or maintains a single persistent GitHub issue describing the current
 incompatibility.  When the FKB clears (regression resolved), the action posts
 a resolution comment and closes the issue.
 
-Identity is tracked by a **label** (default `hopscotch-regression`), not by
+Identity is tracked by a **label** (default `hopscotch-incompatibility`), not by
 title — so a human can edit the title without breaking idempotency, and the
 label can be searched or filtered independently.  The label is created
 automatically if missing.
@@ -232,7 +232,7 @@ The issue body includes:
 |-------|----------|---------|-------------|
 | `downstream` | no | `${{ github.repository }}` | Downstream name key or repo slug (`owner/repo`). Auto-detected by presence of `/`. |
 | `upstream` | no | `leanprover-community/mathlib4` | Upstream repo slug used to fetch commit metadata for the FKB/LKG commits. Must match the `upstream` field in the snapshot. |
-| `label` | no | `hopscotch-regression` | Label used to identify the persistent issue. Created if missing. |
+| `label` | no | `hopscotch-incompatibility` | Label used to identify the persistent issue. Created if missing. |
 | `title` | no | auto | Full issue title. When empty, auto-generated as `[regression] <dep-name> <fkb-short> breaks the build`. |
 | `close-on-resolve` | no | `true` | When the snapshot clears the FKB, close the open tracking issue with a resolution comment. |
 | `token` | no | `github.token` | Token used for `gh issue` and `gh api`. Needs `issues: write`. |

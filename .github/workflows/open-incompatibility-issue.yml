@@ -43,7 +43,7 @@ on:
         description: >
           Label used to identify the persistent issue.  Created if missing
           in the consuming repo.
-        default: 'hopscotch-regression'
+        default: 'hopscotch-incompatibility'
         required: false
         type: string
       title:
