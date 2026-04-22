@@ -370,13 +370,13 @@ runs:
           echo "body<<BODY_EOF"
           echo "## ${DEP_NAME:-Dependency} incompatibility detected"
           echo
-          echo "An incompatibility has been detected between this project and \`${UPSTREAM}\`."
+          echo "An incompatibility has been detected between this project and recent changes in \`${UPSTREAM}\`."
           echo
           echo "**First incompatible ${DEP_NAME:-dependency} commit:** ${FKB_LINE}"
           echo
           echo "**Last-known-good ${DEP_NAME:-dependency} commit:** ${LKG_LINE}"
           echo
-          echo "**Verified when `${UPSTREAM}` was at:** ${DS_LINE}"
+          echo "**Verified when \`${UPSTREAM}\` was at:** ${DS_LINE}"
           echo
           echo
           echo "${VALIDATION_LINE}"
