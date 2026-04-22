@@ -238,6 +238,13 @@ class TruncateLogTextTests(unittest.TestCase):
         self.assertIn("[log truncated]", result)
         self.assertLessEqual(len(result), 40020)  # some slack for the notice
 
+    def test_default_line_limit_is_50(self) -> None:
+        """Scenario: default max_lines is 50 so summaries stay under GitHub's 1024k limit."""
+        lines = [f"line{i}" for i in range(100)]
+        result = truncate_log_text("\n".join(lines))
+        self.assertIn("[log truncated]", result)
+        self.assertLessEqual(result.count("\n"), 51)  # 50 lines + truncation notice
+
 
 class LoadCulpritLogTextTests(unittest.TestCase):
     """Tests for locating the culprit log in the artifact directory tree."""
@@ -384,6 +391,68 @@ class RenderReportSkippedTests(unittest.TestCase):
         md = render_report(**self._COMMON_KWARGS, skipped_rows=skipped)
         self.assertIn("bad123456789", md)
         self.assertIn("incompatible", md)
+
+
+class RenderReportCulpritLogTests(unittest.TestCase):
+    """Tests for culprit log rendering and truncation notices in render_report."""
+
+    _BASE_ROW: dict = dict(
+        upstream="leanprover-community/mathlib4",
+        downstream="TestProject",
+        repo="owner/TestProject",
+        downstream_commit="ds_abc",
+        outcome="failed",
+        episode_state="new_failure",
+        target_commit="target_abc",
+        previous_last_known_good=None,
+        previous_first_known_bad=None,
+        last_known_good=None,
+        first_known_bad="bad_abc",
+        current_last_successful=None,
+        current_first_failing="bad_abc",
+        failure_stage=None,
+        search_mode="head-only",
+        commit_window_truncated=False,
+        error=None,
+        head_probe_outcome="failed",
+        head_probe_failure_stage=None,
+        culprit_log_text=None,
+        pinned_commit=None,
+        search_base_not_ancestor=False,
+        tested_commit_details=[],
+    )
+
+    _COMMON_KWARGS = dict(
+        recorded_at="2026-04-22T00:00:00Z",
+        upstream_ref="master",
+        run_id="run_1",
+        run_url="https://example.com/run/1",
+    )
+
+    def test_truncated_log_with_job_url_shows_download_link(self) -> None:
+        """Scenario: truncated culprit log gets a download link pointing to the probe job."""
+        truncated_log = "line1\nline2\n[log truncated]"
+        row = {**self._BASE_ROW, "culprit_log_text": truncated_log}
+        job_urls = {"TestProject": "https://example.com/job/42"}
+        md = render_report(**self._COMMON_KWARGS, rows=[row], job_urls=job_urls)
+        self.assertIn("probe job", md)
+        self.assertIn("https://example.com/job/42", md)
+
+    def test_non_truncated_log_has_no_download_link(self) -> None:
+        """Scenario: complete log (not truncated) does not add a download link."""
+        short_log = "line1\nline2\nbuild failed"
+        row = {**self._BASE_ROW, "culprit_log_text": short_log}
+        job_urls = {"TestProject": "https://example.com/job/42"}
+        md = render_report(**self._COMMON_KWARGS, rows=[row], job_urls=job_urls)
+        self.assertNotIn("probe job", md)
+
+    def test_truncated_log_without_job_url_has_no_download_link(self) -> None:
+        """Scenario: truncated log without a known job URL shows no download link."""
+        truncated_log = "line1\nline2\n[log truncated]"
+        row = {**self._BASE_ROW, "culprit_log_text": truncated_log}
+        md = render_report(**self._COMMON_KWARGS, rows=[row], job_urls=None)
+        self.assertNotIn("probe job", md)
+        self.assertIn("[log truncated]", md)
 
 
 class ReleaseEnrichmentTests(unittest.TestCase):

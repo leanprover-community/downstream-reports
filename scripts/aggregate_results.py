@@ -279,7 +279,7 @@ def render_named_commit(details: list[dict[str, Any]], sha: str | None, upstream
     return render_commit_link(sha, upstream)
 
 
-def truncate_log_text(text: str, *, max_lines: int = 200, max_chars: int = 40000) -> str:
+def truncate_log_text(text: str, *, max_lines: int = 50, max_chars: int = 10000) -> str:
     """Limit embedded log output so reports stay readable."""
 
     lines = text.splitlines()
@@ -546,7 +546,10 @@ def render_report(
             + render_named_commit(details, row["first_known_bad"], upstream)
         )
         if row.get("culprit_log_text"):
-            lines.extend(["", "First incompatible commit logs:", "```text", row["culprit_log_text"], "```"])
+            log_text = row["culprit_log_text"]
+            lines.extend(["", "First incompatible commit logs:", "```text", log_text, "```"])
+            if log_text.rstrip().endswith("[log truncated]") and job_url:
+                lines.append(f"\n_Full log available in the [probe job]({job_url})._")
         lines.extend(["", "</details>", ""])
 
     if skipped_rows:
