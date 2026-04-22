@@ -109,6 +109,7 @@ runs:
       shell: bash
       env:
         GH_TOKEN: ${{ inputs.token }}
+        GH_REPO: ${{ github.repository }}
         LABEL: ${{ inputs.label }}
         FKB_COMMIT: ${{ steps.fkb.outputs.commit }}
         CLOSE_ON_RESOLVE: ${{ inputs.close-on-resolve }}
@@ -134,6 +135,7 @@ runs:
       shell: bash
       env:
         GH_TOKEN: ${{ inputs.token }}
+        GH_REPO: ${{ github.repository }}
         LABEL: ${{ inputs.label }}
         CLOSE_ON_RESOLVE: ${{ inputs.close-on-resolve }}
         LKG_COMMIT: ${{ steps.lkg.outputs.commit }}
@@ -402,6 +404,7 @@ runs:
       shell: bash
       env:
         GH_TOKEN: ${{ inputs.token }}
+        GH_REPO: ${{ github.repository }}
         LABEL: ${{ inputs.label }}
         ISSUE_TITLE: ${{ steps.compose.outputs.title }}
         ISSUE_BODY: ${{ steps.compose.outputs.body }}
