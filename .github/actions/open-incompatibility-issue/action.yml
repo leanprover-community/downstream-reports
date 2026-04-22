@@ -1,9 +1,9 @@
 name: 'Open FKB Issue'
 description: >
   Consume the downstream snapshot and open or maintain a single persistent
-  GitHub issue describing the current regression (first-known-bad) affecting
+  GitHub issue describing the current incompatibility (first-known-bad) affecting
   this downstream.  When the snapshot clears the first-known-bad commit
-  (regression resolved), the action closes the issue with a resolution
+  (incompatibility resolved), the action closes the issue with a resolution
   comment.  Identified by a label (default: hopscotch-incompatibility) rather
   than by title, so one persistent issue exists per downstream.
 
@@ -39,7 +39,7 @@ inputs:
     required: false
     default: 'true'
     description: >
-      When the snapshot's first-known-bad commit is null (regression
+      When the snapshot's first-known-bad commit is null (incompatibility
       resolved), if an open issue with the label exists, post a resolution
       comment and close it.  Set to "false" to leave resolved issues open.
   token:
@@ -102,7 +102,7 @@ runs:
 
     # ------------------------------------------------------------------
     # Step 4: Ensure the tracking label exists in the consuming repo.
-    # Skip when the regression is resolved AND close-on-resolve is false
+    # Skip when the incompatibility is resolved AND close-on-resolve is false
     # (no issue will be touched, so no label needed).
     # ------------------------------------------------------------------
     - name: Ensure tracking label exists
@@ -120,7 +120,7 @@ runs:
         fi
         gh label create "$LABEL" \
           --color 'B60205' \
-          --description 'Automated regression tracker opened by downstream-reports' \
+          --description 'Automated tracker opened by downstream-reports' \
           --force
 
     # ------------------------------------------------------------------
@@ -128,7 +128,7 @@ runs:
     # "resolved" case: close an existing open issue (if any) with a
     # comment.  Emits action=closed or action=noop.
     # ------------------------------------------------------------------
-    - name: Handle resolved regression
+    - name: Handle resolved incompatibility
       id: resolve
       if: steps.fkb.outputs.commit == ''
       shell: bash
@@ -142,7 +142,7 @@ runs:
       run: |
         set -euo pipefail
 
-        echo "No first-known-bad commit in snapshot — regression is resolved."
+        echo "No incompatible commit in snapshot — incompatibility is resolved."
 
         EXISTING=$(gh issue list \
           --label "$LABEL" \
@@ -162,7 +162,7 @@ runs:
         ISSUE_URL=$(echo "$EXISTING"    | jq -r '.url')
 
         if [ "$CLOSE_ON_RESOLVE" != "true" ]; then
-          echo "Regression resolved but close-on-resolve=false — leaving issue #$ISSUE_NUMBER open."
+          echo "incompatibility resolved but close-on-resolve=false — leaving issue #$ISSUE_NUMBER open."
           echo "action=noop"                      >> "$GITHUB_OUTPUT"
           echo "issue_number=$ISSUE_NUMBER"       >> "$GITHUB_OUTPUT"
           echo "issue_url=$ISSUE_URL"             >> "$GITHUB_OUTPUT"
@@ -184,7 +184,7 @@ runs:
           RUN_LINE=$(printf 'Most recent validation run: %s.\n\n' "$RUN_URL")
         fi
 
-        COMMENT=$(printf '✅ Regression resolved as of %s.\n\n%s%s_Closed automatically by [this workflow run](%s)._\n' \
+        COMMENT=$(printf '✅ incompatibility resolved as of %s.\n\n%s%s_Closed automatically by [this workflow run](%s)._\n' \
           "$TODAY" "$LKG_LINE" "$RUN_LINE" "$WORKFLOW_RUN_URL")
 
         gh issue comment "$ISSUE_NUMBER" --body "$COMMENT"
@@ -196,7 +196,7 @@ runs:
         echo "issue_url=$ISSUE_URL"             >> "$GITHUB_OUTPUT"
 
     # ------------------------------------------------------------------
-    # Step 6: Active regression — fetch commit metadata for FKB and LKG
+    # Step 6: Active incompatibility — fetch commit metadata for FKB and LKG
     # from the upstream repo.  Mirrors the fetch_info helper used in the
     # bump-to-latest action (https://github.com/.../bump-to-latest).
     # ------------------------------------------------------------------
@@ -287,6 +287,9 @@ runs:
         LKG_SUBJECT: ${{ steps.meta.outputs.lkg_subject }}
         LKG_AUTHOR: ${{ steps.meta.outputs.lkg_author }}
         LKG_DATE: ${{ steps.meta.outputs.lkg_date }}
+        DS_SUBJECT: ${{ steps.meta.outputs.ds_subject }}
+        DS_AUTHOR: ${{ steps.meta.outputs.ds_author }}
+        DS_DATE: ${{ steps.meta.outputs.ds_date }}
         RUN_URL: ${{ steps.run.outputs.run_url }}
         JOB_URL: ${{ steps.run.outputs.job_url }}
         DOWNSTREAM_COMMIT: ${{ steps.run.outputs.downstream_commit }}
@@ -339,9 +342,8 @@ runs:
         # Downstream commit tested — from the runs snapshot if available;
         # fall back to an explicit note.
         if [ -n "$DOWNSTREAM_COMMIT" ] && [ -n "$DS_REPO" ]; then
-          DS_SHORT="${DOWNSTREAM_COMMIT:0:7}"
           DS_URL="https://github.com/${DS_REPO}/commit/${DOWNSTREAM_COMMIT}"
-          DS_LINE="[\`${DS_SHORT}\`](${DS_URL})"
+          DS_LINE=$(commit_line "$DOWNSTREAM_COMMIT" "$DS_URL" "$DS_SUBJECT" "$DS_AUTHOR" "$DS_DATE")
         else
           DS_LINE="_(not yet recorded in the runs snapshot)_"
         fi
@@ -366,7 +368,7 @@ runs:
         if [ -n "$TARGET_COMMIT" ] && [ "$TARGET_COMMIT" != "$FKB_COMMIT" ]; then
           TSHORT="${TARGET_COMMIT:0:7}"
           TURL="https://github.com/${UPSTREAM}/commit/${TARGET_COMMIT}"
-          TARGET_LINE=$(printf 'HEAD commit tested in the latest run: [`%s`](%s).\n\n' "$TSHORT" "$TURL")
+          TARGET_LINE=$(printf 'Results scanned with ${UPSTREAM} at: [`%s`](%s).\n\n' "$TSHORT" "$TURL")
         fi
 
         WORKFLOW_RUN_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
@@ -379,19 +381,21 @@ runs:
           echo
           echo "An incompatibility has been detected between this project and \`${UPSTREAM}\`."
           echo
-          echo "**First-known-bad ${DEP_NAME:-dependency} commit:** ${FKB_LINE}"
+          echo "**First incompatible ${DEP_NAME:-dependency} commit:** ${FKB_LINE}"
           echo
           echo "**Last-known-good ${DEP_NAME:-dependency} commit:** ${LKG_LINE}"
           echo
-          echo "**Commit tested:** ${DS_LINE}"
+          echo "**Tested ${UPSTREAM} at:** ${DS_LINE}"
           echo
-          printf '%s' "$REPORTED_LINE"
-          printf '%s' "$TARGET_LINE"
+          echo "${REPORTED_LINE}"
+          echo
+          echo "${TARGET_LINE}"
+          echo
           echo "**Validation run:** ${VALIDATION_LINE}"
           echo
           echo "---"
           echo
-          echo "_This issue was last updated on ${TODAY} by [this workflow run](${WORKFLOW_RUN_URL}). It is maintained automatically by [downstream-reports/open-incompatibility-issue](https://github.com/leanprover-community/downstream-reports). When the regression is resolved, the issue is closed automatically with a comment._"
+          echo "_This issue was last updated on ${TODAY} by [this workflow run](${WORKFLOW_RUN_URL}). It is maintained automatically by [downstream-reports/open-incompatibility-issue](https://github.com/leanprover-community/downstream-reports). When the incompatibility is resolved, the issue is closed automatically with a comment._"
           echo "BODY_EOF"
         } >> "$GITHUB_OUTPUT"
 
