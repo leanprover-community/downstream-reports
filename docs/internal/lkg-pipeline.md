@@ -1,3 +1,12 @@
+
+> [!WARNING]
+> **If you are an external user of this dashboard, do not depend on the details of this document directly.** 
+> The snapshot files and their schemas are internal implementation details subject to change without notice.
+> External consumers (downstream repos) must use the provided composite actions
+> (`bump-to-latest`, `open-bump-pr`, `query-latest`, `open-incompatibility-issue`)
+> which abstract over the snapshot format and will be kept stable across schema
+> changes. See [docs/actions.md](../actions.md) for the full reference.
+
 # LKG publication pipeline
 
 This document describes the pipeline that exports per-downstream state from
@@ -106,7 +115,7 @@ long-lived secrets — via `azure/login@v2` with a federated credential scoped t
 
 Four composite actions are available for downstream repos: `bump-to-latest`,
 `open-bump-pr`, `query-latest`, and `open-incompatibility-issue`. See
-[docs/actions.md](actions.md) for full input/output reference and example
+[docs/actions.md](../actions.md) for full input/output reference and example
 workflows.
 
 ---
@@ -219,7 +228,7 @@ container and no subscription-level operations are performed.
 
 ## Downstream integration
 
-See [docs/actions.md](actions.md) for the full input/output reference and a
+See [docs/actions.md](../actions.md) for the full input/output reference and a
 complete example workflow.
 
 The `downstream` input to `bump-to-latest` must match the `name` field of the
