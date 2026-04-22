@@ -103,7 +103,7 @@ jobs:
           app-id: ${{ vars.MY_BOT_APP_ID }}
           private-key: ${{ secrets.MY_BOT_PRIVATE_KEY }}
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           token: ${{ steps.app-token.outputs.token }}
 
@@ -340,7 +340,7 @@ jobs:
   bump:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Bump to latest
         id: bump
