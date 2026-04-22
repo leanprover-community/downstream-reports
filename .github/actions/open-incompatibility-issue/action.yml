@@ -352,11 +352,11 @@ runs:
         fi
 
         # Validation run / job links.
-        VALIDATION_LINE=""
+        VALIDATION_LINE="[`downstream-reports`](https://leanprover-community.github.io/downstream-reports/) reported at ${REPORTED_AT}"
         if [ -n "$RUN_URL" ]; then
-          VALIDATION_LINE="[Workflow run](${RUN_URL})"
+          VALIDATION_LINE="${VALIDATION_LINE}  · [Workflow run](${RUN_URL})"
           if [ -n "$JOB_URL" ]; then
-            VALIDATION_LINE="Reported at ${REPORTED_AT} · ${VALIDATION_LINE} · [Job log](${JOB_URL})"
+            VALIDATION_LINE="${VALIDATION_LINE} · [Job log](${JOB_URL})"
           fi
         else
           VALIDATION_LINE="_(not yet recorded in the runs snapshot)_"
@@ -379,7 +379,7 @@ runs:
           echo "**Verified when `${UPSTREAM}` was at:** ${DS_LINE}"
           echo
           echo
-          echo "_`downstream-reports` run: ${VALIDATION_LINE}_"
+          echo "${VALIDATION_LINE}"
           echo
           echo "---"
           echo
