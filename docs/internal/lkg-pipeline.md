@@ -201,8 +201,8 @@ The snapshot is hosted on Azure Blob Storage via the static website endpoint:
 - **Storage account:** `downstreamreports`
 - **Container:** `$web` (static website)
 - **Public URLs:**
-  - `https://downstreamreports.z13.web.core.windows.net/lkg/latest.json`
-  - `https://downstreamreports.z13.web.core.windows.net/runs/latest.json`
+  - `lkg/latest.json`
+  - `runs/latest.json`
 
 The upload identity is an Entra app registration with a federated credential:
 
