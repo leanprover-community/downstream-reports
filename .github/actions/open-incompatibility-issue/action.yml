@@ -221,6 +221,7 @@ runs:
           gh api "repos/${repo}/commits/${sha}" \
             --jq '[
               (.commit.message | split("\n")[0]),
+              (.author.usernam // ""),
               (.commit.author.name // ""),
               (.commit.committer.date // "")[:10]
             ] | join("\t")' \
@@ -231,8 +232,8 @@ runs:
           local prefix="$1" info="$2"
           local subject author date
           subject=$(printf '%s' "$info" | cut -f1)
-          author=$(printf  '%s' "$info" | cut -f2)
-          date=$(printf    '%s' "$info" | cut -f3)
+          author=$(printf  '%s (%s)' ("$info" | cut -f3) ($"$info" | cut -f2))
+          date=$(printf    '%s' "$info" | cut -f4)
           {
             echo "${prefix}_subject=${subject}"
             echo "${prefix}_author=${author}"
@@ -368,7 +369,7 @@ runs:
         if [ -n "$TARGET_COMMIT" ] && [ "$TARGET_COMMIT" != "$FKB_COMMIT" ]; then
           TSHORT="${TARGET_COMMIT:0:7}"
           TURL="https://github.com/${UPSTREAM}/commit/${TARGET_COMMIT}"
-          TARGET_LINE=$(printf 'Results scanned with ${UPSTREAM} at: [`%s`](%s).\n\n' "$TSHORT" "$TURL")
+          TARGET_LINE=$(printf 'Results scanned with %s at: [`%s`](%s).\n\n' "$TSHORT" "$UPSTREAM" "$TURL")
         fi
 
         WORKFLOW_RUN_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
