@@ -356,22 +356,10 @@ runs:
         if [ -n "$RUN_URL" ]; then
           VALIDATION_LINE="[Workflow run](${RUN_URL})"
           if [ -n "$JOB_URL" ]; then
-            VALIDATION_LINE="${VALIDATION_LINE} · [Job log](${JOB_URL})"
+            VALIDATION_LINE="Reported at ${REPORTED_AT} · ${VALIDATION_LINE} · [Job log](${JOB_URL})"
           fi
         else
           VALIDATION_LINE="_(not yet recorded in the runs snapshot)_"
-        fi
-
-        REPORTED_LINE=""
-        if [ -n "$REPORTED_AT" ]; then
-          REPORTED_LINE=$(printf 'Last reported at: \`%s\`\n\n' "$REPORTED_AT")
-        fi
-
-        TARGET_LINE=""
-        if [ -n "$TARGET_COMMIT" ] && [ "$TARGET_COMMIT" != "$FKB_COMMIT" ]; then
-          TSHORT="${TARGET_COMMIT:0:7}"
-          TURL="https://github.com/${UPSTREAM}/commit/${TARGET_COMMIT}"
-          TARGET_LINE=$(printf 'Results scanned with %s at: [`%s`](%s).\n\n' "$TSHORT" "$UPSTREAM" "$TURL")
         fi
 
         WORKFLOW_RUN_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
@@ -388,13 +376,10 @@ runs:
           echo
           echo "**Last-known-good ${DEP_NAME:-dependency} commit:** ${LKG_LINE}"
           echo
-          echo "**Tested ${UPSTREAM} at:** ${DS_LINE}"
+          echo "**Verified when `${UPSTREAM}` was at:** ${DS_LINE}"
           echo
-          echo "${REPORTED_LINE}"
           echo
-          echo "${TARGET_LINE}"
-          echo
-          echo "**Validation run:** ${VALIDATION_LINE}"
+          echo "_`downstream-reports` run: ${VALIDATION_LINE}_"
           echo
           echo "---"
           echo
