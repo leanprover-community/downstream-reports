@@ -81,9 +81,6 @@ jobs:
       issue-url:    ${{ steps.open.outputs.issue-url }}
       action:       ${{ steps.open.outputs.action }}
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v6
-
       - name: Open or maintain incompatibility issue
         id: open
         uses: leanprover-community/downstream-reports/.github/actions/open-incompatibility-issue@main
