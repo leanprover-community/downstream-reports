@@ -34,7 +34,7 @@ inputs:
     default: ''
     description: >
       Full issue title.  When empty, the action generates one of the form
-      "[hopscotch] <dep-name> <fkb-short> breaks the build".
+      "[hopscotch] Bumping <dep-name> to <fkb-short> would break the build".
   close-on-resolve:
     required: false
     default: 'true'
@@ -308,7 +308,7 @@ runs:
         if [ -n "$CUSTOM_TITLE" ]; then
           TITLE="$CUSTOM_TITLE"
         else
-          TITLE="[hopscotch] ${DEP_NAME:-dependency} ${FKB_SHORT} breaks the build"
+          TITLE="[hopscotch] Bumping ${DEP_NAME:-dependency} to ${FKB_SHORT} would break the build"
         fi
 
         # --- Body ---
@@ -371,6 +371,7 @@ runs:
           echo "## ${DEP_NAME:-Dependency} incompatibility detected"
           echo
           echo "An incompatibility has been detected between this project and recent changes in \`${UPSTREAM}\`."
+          echo "In other words, this project can't advance to the tip of \`${UPSTREAM}\`"
           echo
           echo "**First incompatible ${DEP_NAME:-dependency} commit:** ${FKB_LINE}"
           echo

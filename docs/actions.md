@@ -233,7 +233,7 @@ The issue body includes:
 | `downstream` | no | `${{ github.repository }}` | Downstream name key or repo slug (`owner/repo`). Auto-detected by presence of `/`. |
 | `upstream` | no | `leanprover-community/mathlib4` | Upstream repo slug used to fetch commit metadata for the FKB/LKG commits. Must match the `upstream` field in the snapshot. |
 | `label` | no | `hopscotch-incompatibility` | Label used to identify the persistent issue. Created if missing. |
-| `title` | no | auto | Full issue title. When empty, auto-generated as `[regression] <dep-name> <fkb-short> breaks the build`. |
+| `title` | no | auto | Full issue title. When empty, auto-generated as `[hopcotch] Bumping <dep-name> to <fkb-short> would break the build`. |
 | `close-on-resolve` | no | `true` | When the snapshot clears the FKB, close the open tracking issue with a resolution comment. |
 | `token` | no | `github.token` | Token used for `gh issue` and `gh api`. Needs `issues: write`. |
 
