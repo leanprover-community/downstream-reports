@@ -43,13 +43,13 @@ on:
         description: >
           Label used to identify the persistent issue.  Created if missing
           in the consuming repo.
-        default: 'hopscotch-incompatibility'
+        default: 'dependency-incompatibility'
         required: false
         type: string
       title:
         description: >
           Full issue title.  When empty, the action auto-generates one of
-          the form "[hopscotch] Bumping <dep-name> to <fkb-short> would break the build".
+          the form "Bumping <dep-name> to <fkb-short> would break the build".
         default: ''
         required: false
         type: string

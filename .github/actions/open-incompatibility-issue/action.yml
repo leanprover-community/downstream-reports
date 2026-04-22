@@ -4,7 +4,7 @@ description: >
   GitHub issue describing the current incompatibility (first-known-bad) affecting
   this downstream.  When the snapshot clears the first-known-bad commit
   (incompatibility resolved), the action closes the issue with a resolution
-  comment.  Identified by a label (default: hopscotch-incompatibility) rather
+  comment.  Identified by a label (default: dependency-incompatibility) rather
   than by title, so one persistent issue exists per downstream.
 
 inputs:
@@ -24,7 +24,7 @@ inputs:
       commits.  Must match the upstream field in the published snapshot.
   label:
     required: false
-    default: 'hopscotch-incompatibility'
+    default: 'dependency-incompatibility'
     description: >
       Label used to identify the persistent issue.  Created if missing in
       the consuming repo.  Using a label (not the title) to track the issue
@@ -34,7 +34,7 @@ inputs:
     default: ''
     description: >
       Full issue title.  When empty, the action generates one of the form
-      "[hopscotch] Bumping <dep-name> to <fkb-short> would break the build".
+      "Bumping <dep-name> to <fkb-short> would break the build".
   close-on-resolve:
     required: false
     default: 'true'
@@ -309,7 +309,7 @@ runs:
         if [ -n "$CUSTOM_TITLE" ]; then
           TITLE="$CUSTOM_TITLE"
         else
-          TITLE="[hopscotch] Bumping ${DEP_NAME:-dependency} to ${FKB_SHORT} would break the build"
+          TITLE="Bumping ${DEP_NAME:-dependency} to ${FKB_SHORT} would break the build"
         fi
 
         # --- Body ---
