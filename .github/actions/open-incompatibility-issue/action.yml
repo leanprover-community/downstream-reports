@@ -278,6 +278,7 @@ runs:
       shell: bash
       env:
         UPSTREAM: ${{ inputs.upstream }}
+        DOWNSTREAM: ${{ inputs.downstream }}
         CUSTOM_TITLE: ${{ inputs.title }}
         FKB_COMMIT: ${{ steps.fkb.outputs.commit }}
         LKG_COMMIT: ${{ steps.lkg.outputs.commit }}
@@ -377,7 +378,7 @@ runs:
           echo
           echo "**Last-known-good ${DEP_NAME:-dependency} commit:** ${LKG_LINE}"
           echo
-          echo "**Verified when \`${UPSTREAM}\` was at:** ${DS_LINE}".
+          echo "**Verified when \`${DOWNSTREAM}\` was at:** ${DS_LINE}".
           echo "You can reproduce this break by:"
           echo "- updating the \`${DEP_NAME:-Dependency}\` \`rev\` field in your \`lakefile\` to \`${FKB_COMMIT}\`"
           echo "- running \`lake update ${DEP_NAME:-Dependency}\`"
