@@ -370,14 +370,17 @@ runs:
           echo "body<<BODY_EOF"
           echo "## ${DEP_NAME:-Dependency} incompatibility detected"
           echo
-          echo "An incompatibility has been detected between this project and recent changes in \`${UPSTREAM}\`."
-          echo "In other words, this project can't advance to the tip of \`${UPSTREAM}\`"
+          echo "An incompatibility has been detected between this project and recent changes in \`${DEP_NAME:-Dependency}\`."
+          echo "In other words, this project can't advance to the tip of \`${DEP_NAME:-Dependency}\` without breaking."
           echo
-          echo "**First incompatible ${DEP_NAME:-dependency} commit:** ${FKB_LINE}"
+          echo "**First incompatible ${DEP_NAME:-dependency} commit:** ${FKB_LINE}".
           echo
           echo "**Last-known-good ${DEP_NAME:-dependency} commit:** ${LKG_LINE}"
           echo
-          echo "**Verified when \`${UPSTREAM}\` was at:** ${DS_LINE}"
+          echo "**Verified when \`${UPSTREAM}\` was at:** ${DS_LINE}". "You can reproduce this break by:"
+          echo "- updating the \`${DEP_NAME:-Dependency}\` \`rev\` field in your \`lakefile\` to \`${FKB_COMMIT}\`"
+          echo "- running \`lake update ${DEP_NAME:-Dependency}\`"
+          echo "- running \`lake build\`"
           echo
           echo
           echo "${VALIDATION_LINE}"
