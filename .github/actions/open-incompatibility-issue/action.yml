@@ -221,7 +221,7 @@ runs:
           gh api "repos/${repo}/commits/${sha}" \
             --jq '[
               (.commit.message | split("\n")[0]),
-              (.author.usernam // ""),
+              (.author.username // ""),
               (.commit.author.name // ""),
               (.commit.committer.date // "")[:10]
             ] | join("\t")' \
@@ -230,19 +230,21 @@ runs:
 
         write_triple() {
           local prefix="$1" info="$2"
-          local subject author date
-          subject=$(printf '%s' "$info" | cut -f1)
-          author=$(printf  '%s (%s)' ("$info" | cut -f3) ($"$info" | cut -f2))
-          date=$(printf    '%s' "$info" | cut -f4)
+          local subject author_username author date
+
+          # assumes tab-separated fields
+          IFS=$'\t' read -r subject author_username author date <<< "$info"
+
           {
             echo "${prefix}_subject=${subject}"
-            echo "${prefix}_author=${author}"
+            echo "${prefix}_author=${author} (${author_username})"
             echo "${prefix}_date=${date}"
           } >> "$GITHUB_OUTPUT"
         }
 
         empty_triple() {
           local prefix="$1"
+
           {
             echo "${prefix}_subject="
             echo "${prefix}_author="
