@@ -352,7 +352,7 @@ runs:
         fi
 
         # Validation run / job links.
-        VALIDATION_LINE="[`downstream-reports`](https://leanprover-community.github.io/downstream-reports/) reported at ${REPORTED_AT}"
+        VALIDATION_LINE="[downstream-reports](https://leanprover-community.github.io/downstream-reports/) reported at ${REPORTED_AT}"
         if [ -n "$RUN_URL" ]; then
           VALIDATION_LINE="${VALIDATION_LINE}  · [Workflow run](${RUN_URL})"
           if [ -n "$JOB_URL" ]; then
