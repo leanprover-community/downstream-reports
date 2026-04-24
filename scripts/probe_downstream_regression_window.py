@@ -281,7 +281,7 @@ def main() -> int:
         )
 
         selection.head_probe_outcome = classify_exit_code(head_probe_run.returncode).value
-        selection.head_probe_failure_stage = head_probe_state.get("stage")
+        selection.head_probe_failure_stage = head_probe_state.get("failureStage")
         selection.head_probe_summary = tool_summary_text(head_probe_run, head_probe_summary_text)
 
         head_probe_kwargs: dict = dict(

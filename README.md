@@ -99,7 +99,7 @@ Optional inputs — pass any of these under `with:` if you need to customise:
 | `base` | repo default branch | Base branch for the PR |
 | `labels` | — | Comma-separated labels to apply (e.g. `"dependencies"`) |
 | `dependency-name` | `mathlib` | Dependency name in the lakefile |
-| `hopscotch-version` | `v1.3.0` | Hopscotch release tag |
+| `hopscotch-version` | `v1.4.0` | Hopscotch release tag |
 | `commit-type` | `last-known-good` | Which commit to bump to: `last-known-good` or `first-known-bad` |
 
 ### Option 2 — Composite actions (custom workflow)

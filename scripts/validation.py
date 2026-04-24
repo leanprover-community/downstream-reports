@@ -189,13 +189,13 @@ def copy_tool_artifacts(project_dir: Path, output_dir: Path) -> None:
     shutil.copytree(state_root, destination)
 
 
-def parse_state_file(output_dir: Path) -> dict[str, Any]:
-    """Read the copied tool state when the CLI reached its persistence layer."""
+def parse_results_file(output_dir: Path) -> dict[str, Any]:
+    """Read the results.json written by hopscotch via --results-json."""
 
-    state_path = output_dir / "tool-state" / "state.json"
-    if not state_path.exists():
+    results_path = output_dir / "results.json"
+    if not results_path.exists():
         return {}
-    return json.loads(state_path.read_text())
+    return json.loads(results_path.read_text())
 
 
 def parse_summary_file(output_dir: Path) -> str | None:
@@ -235,6 +235,7 @@ def invoke_tool(
     stdout_path = output_dir / "tool-stdout.txt"
     stderr_path = output_dir / "tool-stderr.txt"
     git_url = git_url_from_manifest(project_dir, config.dependency_name)
+    results_json_path = output_dir / "results.json"
     command = (
         [
             str(tool_exe),
@@ -248,6 +249,8 @@ def invoke_tool(
             str(project_dir),
             "--scan-mode",
             "bisect" if bisect else "linear",
+            "--results-json",
+            str(results_json_path),
             *(["--git-url", git_url] if git_url else []),
             *(["--quiet"] if quiet else []),
         ]
@@ -316,7 +319,7 @@ def run_validation_attempt(
         quiet=quiet,
     )
     copy_tool_artifacts(project_dir, output_dir)
-    return tool_run, parse_state_file(output_dir), parse_summary_file(output_dir)
+    return tool_run, parse_results_file(output_dir), parse_summary_file(output_dir)
 
 
 # ---------------------------------------------------------------------------
@@ -379,8 +382,8 @@ def build_result_from_tool(
     elif tool_run.returncode == 1:
         base.update(
             outcome=Outcome.FAILED,
-            failure_stage=state.get("stage"),
-            first_failing_commit=state.get("currentCommit"),
+            failure_stage=state.get("failureStage"),
+            first_failing_commit=state.get("firstFailingCommit"),
             last_successful_commit=state.get("lastSuccessfulCommit"),
             error=None,
         )

@@ -521,7 +521,7 @@ class TrySkipKnownBadBisectTests(unittest.TestCase):
     """Scenarios for the known-bad-bisect skip heuristic."""
 
     _head_probe_run = subprocess.CompletedProcess(["tool"], 1, stdout="failed", stderr="failed")
-    _head_probe_state: dict = {"stage": "build", "currentCommit": "t" * 40}
+    _head_probe_state: dict = {"failureStage": "lake build", "firstFailingCommit": "t" * 40}
 
     def _call(self, *, skip_enabled=True, previous=None, selection=None, ancestor=True):
         selection = selection or _make_selection(

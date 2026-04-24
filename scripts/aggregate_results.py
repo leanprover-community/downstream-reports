@@ -443,7 +443,7 @@ def render_report(
     }
 
     lines = [
-        "# Downstream Regression Report",
+        "# Downstream report",
         "",
         f"- Generated at: `{recorded_at}`",
         f"- Upstream ref: `{upstream_ref}`",
