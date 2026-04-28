@@ -1,10 +1,12 @@
 name: bump-dependency-to-latest
 
 # Reusable workflow: bump a Lean downstream's dependency to its current
-# last-known-good (LKG) commit and open (or update) a PR.
+# last-known-good (LKG) commit, open (or update) a PR, and maintain a
+# persistent GitHub issue tracking any active first-known-bad regression.
 #
-# Wraps bump-to-latest + open-bump-pr. Intended as the zero-boilerplate option
-# for downstreams that just want a scheduled PR — no job structure required.
+# Wraps bump-to-latest + open-bump-pr + open-incompatibility-issue.
+# Intended as the zero-boilerplate option for downstreams that just want
+# a scheduled PR and issue — no job structure required.
 #
 # Minimal calling workflow:
 #
@@ -19,6 +21,7 @@ name: bump-dependency-to-latest
 #       permissions:
 #         contents: write
 #         pull-requests: write
+#         issues: write
 
 on:
   workflow_call:
@@ -48,7 +51,7 @@ on:
         type: string
       hopscotch-version:
         description: 'Hopscotch release tag to download.'
-        default: 'v1.3.0'
+        default: 'v1.4.1'
         required: false
         type: string
       query-type:
@@ -59,6 +62,29 @@ on:
         default: 'last-known-good'
         required: false
         type: string
+      skip-build:
+        description: >
+          Set to "true" to skip the build step and only update the dependency pin
+          via "lake update". When true, build-failed is always false; the bump
+          succeeds as long as "lake update" succeeds.
+        default: false
+        required: false
+        type: boolean
+      open-pr:
+        description: >
+          Set to false to skip opening or updating the bump PR even when the
+          dependency was successfully bumped.
+        default: true
+        required: false
+        type: boolean
+      open-issue:
+        description: >
+          Set to false to skip the open-incompatibility-issue job entirely.
+          When true (default), a persistent GitHub issue is opened or maintained
+          tracking the current first-known-bad regression.
+        default: true
+        required: false
+        type: boolean
     outputs:
       pr-number:
         description: 'PR number. Empty when no bump was needed (skipped or build-failed).'
@@ -101,11 +127,12 @@ jobs:
         with:
           dependency-name:   ${{ inputs.dependency-name }}
           hopscotch-version: ${{ inputs.hopscotch-version }}
-          query-type:       ${{ inputs.query-type }}
+          query-type:        ${{ inputs.query-type }}
+          skip-build:        ${{ inputs.skip-build }}
 
       - name: Open or update PR
         id: open-pr
-        if: steps.bump.outputs.updated == 'true'
+        if: steps.bump.outputs.updated == 'true' && inputs.open-pr
         uses: leanprover-community/downstream-reports/.github/actions/open-bump-pr@main
         with:
           branch:         ${{ inputs.branch }}
@@ -114,3 +141,14 @@ jobs:
           title:          ${{ steps.bump.outputs.pr-title }}
           message:        ${{ steps.bump.outputs.bump-description }}
           commit-message: ${{ steps.bump.outputs.commit-message }}
+
+  open-issue:
+    runs-on: ubuntu-latest
+    if: inputs.open-issue
+    permissions:
+      issues: write
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Open or update incompatibility issue
+        uses: leanprover-community/downstream-reports/.github/actions/open-incompatibility-issue@main

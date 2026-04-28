@@ -24,8 +24,16 @@ inputs:
     description: 'Name of the dependency in the lakefile'
   hopscotch-version:
     required: false
-    default: 'v1.3.0'
+    default: 'v1.4.1'
     description: 'Hopscotch release tag to download'
+  skip-build:
+    required: false
+    default: false
+    description: >
+      Set to "true" to skip the build step and only update the dependency pin
+      in the lakefile and lake-manifest.json via "lake update". When true,
+      build-failed is always false; the bump succeeds as long as "lake update"
+      succeeds.
   generate-description:
     required: false
     default: 'true'
@@ -264,6 +272,7 @@ runs:
         TARGET_COMMIT: ${{ steps.fetch-snapshot.outputs.rev }}
         PROJECT_DIR: ${{ inputs.project-dir }}
         GITHUB_TOKEN: ${{ github.token }}
+        HOPSCOTCH_SKIP_BUILD: ${{ inputs.skip-build }}
       run: |
         set +e
         hopscotch dep "$DEPENDENCY_NAME" \
