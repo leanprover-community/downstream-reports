@@ -273,31 +273,50 @@ runs:
         PROJECT_DIR: ${{ inputs.project-dir }}
         GITHUB_TOKEN: ${{ github.token }}
         HOPSCOTCH_SKIP_BUILD: ${{ inputs.skip-build }}
+        KEEP_LAST_GOOD: ${{ inputs.query-type != 'first-known-bad' }}
       run: |
         set +e
-        hopscotch dep "$DEPENDENCY_NAME" \
-          --from "${TARGET_COMMIT}~1" \
-          --to "$TARGET_COMMIT" \
-          --project-dir "$PROJECT_DIR" \
-          --scan-mode linear \
-          --keep-last-good \
+
+        ARGS=(
+          dep "$DEPENDENCY_NAME"
+          --from "${TARGET_COMMIT}~1"
+          --to "$TARGET_COMMIT"
+          --project-dir "$PROJECT_DIR"
+          --scan-mode linear
           --allow-dirty-workspace
+        )
+
+        # Only pass the flag if enabled
+        if [ "$KEEP_LAST_GOOD" = "true" ]; then
+          ARGS+=(--keep-last-good)
+        fi
+
+        hopscotch "${ARGS[@]}"
         EXIT_CODE=$?
+
         set -e
 
         if [ "$EXIT_CODE" -eq 0 ]; then
           echo "hopscotch: bump succeeded."
           echo "updated=true" >> "$GITHUB_OUTPUT"
           echo "build_failed=false" >> "$GITHUB_OUTPUT"
+
         elif [ "$EXIT_CODE" -eq 1 ]; then
-          echo "hopscotch: build failed (lakefile unchanged due to --keep-last-good)."
-          echo "updated=false" >> "$GITHUB_OUTPUT"
-          echo "build_failed=true" >> "$GITHUB_OUTPUT"
+          if [ "$KEEP_LAST_GOOD" = "true" ]; then
+            echo "hopscotch: build failed with the LKG (this is unexpected)."
+            echo "updated=false" >> "$GITHUB_OUTPUT"
+            echo "build_failed=true" >> "$GITHUB_OUTPUT"
+            exit "$EXIT_CODE"
+          else
+            echo "hopscotch: build failed but expected (no keep-last-good)."
+            echo "updated=true" >> "$GITHUB_OUTPUT"
+            echo "build_failed=true" >> "$GITHUB_OUTPUT"
+          fi
+
         else
           echo "hopscotch: tool error (exit $EXIT_CODE)."
           exit "$EXIT_CODE"
         fi
-
     # ------------------------------------------------------------------
     # Final step: consolidate outputs with safe defaults so callers never
     # see empty strings for boolean-valued outputs.
