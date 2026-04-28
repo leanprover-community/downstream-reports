@@ -41,6 +41,7 @@
       "repo": "ImperialCollegeLondon/FLT",
       "default_branch": "main",
       "dependency_name": "mathlib",
+      "skip_known_bad_bisect": false,
       "enabled": true
     },
     {
