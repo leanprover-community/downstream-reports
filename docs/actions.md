@@ -5,9 +5,10 @@ downstream Lean projects to consume.
 
 For the common case — a scheduled job that bumps a dependency and opens a PR
 — use the `bump-dependency-to-latest` reusable workflow directly (see below).
-For tracking active incompatibilities in a persistent issue, use
-`open-incompatibility-issue`. The composite actions (`bump-to-latest`, `open-bump-pr`,
-`query-latest`, `open-incompatibility-issue`) are the building blocks for custom workflows
+For tracking active incompatibilities in a persistent issue **and** opening a
+ready-to-work fix PR, use `track-incompatibility` (the recommended option). 
+The composite actions (`bump-to-latest`,
+`open-bump-pr`, `query-latest`, `track-incompatibility`) are the building blocks for custom workflows
 that need more control.
 
 > **Extensibility note.** Today the actions are used exclusively for the
@@ -205,51 +206,56 @@ If there are no working-tree changes (`git diff` is clean) the action exits with
 
 ---
 
-## `open-incompatibility-issue`
+## `track-incompatibility`
 
-**Path:** `.github/actions/open-incompatibility-issue`
+**Path:** `.github/actions/track-incompatibility`
 
-Looks up this downstream's first-known-bad (FKB) commit in the snapshot and
-opens or maintains a single persistent GitHub issue describing the current
-incompatibility.  When the FKB clears (regression resolved), the action posts
-a resolution comment and closes the issue.
+Opens or maintains a persistent tracking issue **and** (by default) a fix PR
+with the lakefile bumped to the FKB commit, so downstream maintainers have a
+ready starting point for investigation.  When the FKB advances, stale fix PRs
+are closed automatically.  When the regression clears, both the issue and any
+open fix PRs are closed with resolution comments.
 
-Identity is tracked by a **label** (default `dependency-incompatibility`), not by
-title — so a human can edit the title without breaking idempotency, and the
-label can be searched or filtered independently.  The label is created
-automatically if missing.
-
-The issue body includes:
-- the FKB upstream commit (linked SHA + title + author + date),
-- the LKG upstream commit for contrast,
-- the downstream commit the failure was observed against,
-- links to the validation workflow run and the specific matrix job,
-- a footer pointing back at the workflow run that last updated the issue.
+Set `open-pr: false` to run in issue-only mode, where no PR is opened.
 
 ### Inputs
 
 | Input | Required | Default | Description |
 |-------|----------|---------|-------------|
-| `downstream` | no | `${{ github.repository }}` | Downstream name key or repo slug (`owner/repo`). Auto-detected by presence of `/`. |
-| `upstream` | no | `leanprover-community/mathlib4` | Upstream repo slug used to fetch commit metadata for the FKB/LKG commits. Must match the `upstream` field in the snapshot. |
-| `label` | no | `dependency-incompatibility` | Label used to identify the persistent issue. Created if missing. |
-| `title` | no | auto | Full issue title. When empty, auto-generated as `Bumping <dep-name> to <fkb-short> would break the build`. |
-| `close-on-resolve` | no | `true` | When the snapshot clears the FKB, close the open tracking issue with a resolution comment. |
-| `token` | no | `github.token` | Token used for `gh issue` and `gh api`. Needs `issues: write`. |
+| `downstream` | no | `${{ github.repository }}` | Downstream name key or repo slug (`owner/repo`). |
+| `upstream` | no | `leanprover-community/mathlib4` | Upstream repo slug for commit metadata lookups. |
+| `label` | no | `dependency-incompatibility` | Label identifying the tracking issue. Created if missing. |
+| `title` | no | auto | Full issue title; auto-generated when empty. |
+| `close-on-resolve` | no | `true` | Close the tracking issue with a resolution comment when FKB clears. |
+| `token` | no | `github.token` | Token for `gh issue` / `gh pr` / `gh api`. Needs `issues: write`; also `contents: write` and `pull-requests: write` when `open-pr: true`. |
+| `open-pr` | no | `true` | Master switch for the fix-PR side. Set `false` for issue-only mode. |
+| `pr-label` | no | `dependency-incompatibility-fix` | Label applied to fix PRs; primary key for stale-PR detection. Created automatically. |
+| `branch-prefix` | no | `bump-<dependency-name>/fix` | Prefix for the fix-PR branch. Final branch: `<prefix>-<fkb-short7>` (e.g. `bump-mathlib/fix-abc1234`). Stable per FKB SHA. |
+| `project-dir` | no | `.` | Path to the downstream project root. Forwarded to `bump-to-latest`. |
+| `dependency-name` | no | `mathlib` | Dependency name in the lakefile. Forwarded to `bump-to-latest`. |
+| `base` | no | repo default | Base branch for the fix PR. |
+| `git-user-name` | no | `github-actions[bot]` | `git user.name` for the bump commit. |
+| `git-user-email` | no | `41898282+github-actions[bot]@users.noreply.github.com` | `git user.email` for the bump commit. |
+| `close-stale-prs` | no | `true` | Close fix PRs whose head branch no longer matches the current FKB branch. The branch is retained; WIP commits stay reachable. |
+| `close-prs-on-resolve` | no | `true` | Close open fix PRs when the FKB clears. Independent of `close-on-resolve`. |
 
 ### Outputs
 
 | Output | Description |
 |--------|-------------|
 | `issue-number` | Issue number (empty when `action=noop`) |
-| `issue-url` | Issue URL (empty when `action=noop`) |
-| `action` | `"created"`, `"updated"`, `"closed"`, or `"noop"` |
+| `issue-url` | Issue URL |
+| `action` | `"created"`, `"updated"`, `"closed"`, or `"noop"` — describes the **issue** lifecycle |
+| `pr-number` | Fix PR number (empty when `pr-action` is non-creating) |
+| `pr-url` | Fix PR URL |
+| `pr-action` | `"created"`, `"noop-existing"`, `"noop-no-changes"`, `"noop-resolved"`, or `"disabled"` (when `open-pr: false`) |
+| `closed-pr-numbers` | JSON array of PR numbers closed as stale or resolved (`"[]"` when none) |
 
 ### Reusable workflow
 
-**Path:** `.github/workflows/open-incompatibility-issue.yml`
+**Path:** `.github/workflows/track-incompatibility.yml`
 
-Thin wrapper around the composite action.  Minimal usage:
+Thin wrapper around the composite action.  Minimal usage (with PR side):
 
 ```yaml
 name: Track mathlib regression
@@ -260,13 +266,32 @@ on:
   workflow_dispatch:
 
 jobs:
-  regression-issue:
-    uses: leanprover-community/downstream-reports/.github/workflows/open-incompatibility-issue.yml@main
+  track:
+    uses: leanprover-community/downstream-reports/.github/workflows/track-incompatibility.yml@main
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+```
+
+Issue-only mode:
+
+```yaml
+jobs:
+  track:
+    uses: leanprover-community/downstream-reports/.github/workflows/track-incompatibility.yml@main
     permissions:
       issues: write
+    with:
+      open-pr: 'false'
 ```
 
 Accepts the same inputs as the composite action and forwards them through.
+
+---
+
+## `open-incompatibility-issue` _(deprecated — use `track-incompatibility`)_
+**Path:** `.github/actions/open-incompatibility-issue`
 
 ---
 
