@@ -249,7 +249,6 @@ Set `open-pr: false` to run in issue-only mode, where no PR is opened.
 | `pr-number` | Fix PR number (empty when `pr-action` is non-creating) |
 | `pr-url` | Fix PR URL |
 | `pr-action` | `"created"`, `"noop-existing"`, `"noop-no-changes"`, `"noop-resolved"`, or `"disabled"` (when `open-pr: false`) |
-| `closed-pr-numbers` | JSON array of PR numbers closed as stale or resolved (`"[]"` when none) |
 
 ### Reusable workflow
 

@@ -134,9 +134,6 @@ outputs:
   pr-action:
     description: '"created", "noop-existing", "noop-no-changes", "noop-resolved", or "disabled" (when open-pr: false)'
     value: ${{ steps.resolve-outputs.outputs.pr_action }}
-  closed-pr-numbers:
-    description: 'JSON array of PR numbers closed as stale or resolved (empty array "[]" when none)'
-    value: ${{ steps.resolve-outputs.outputs.closed_pr_numbers }}
 
 runs:
   using: 'composite'
@@ -550,7 +547,6 @@ runs:
         PR_COUNT=$(echo "$OPEN_PRS" | jq 'length')
         if [ "$PR_COUNT" -eq 0 ]; then
           echo "No open fix PRs with label '$PR_LABEL' — nothing to close."
-          echo "closed_pr_numbers=[]" >> "$GITHUB_OUTPUT"
           exit 0
         fi
 
@@ -576,10 +572,8 @@ runs:
           gh pr close "$PR_NUMBER"
           echo "Closed fix PR #$PR_NUMBER: $PR_URL"
 
-          CLOSED_NUMBERS=$(echo "$CLOSED_NUMBERS" | jq --argjson n "$PR_NUMBER" '. + [$n]')
+          CLOSED_NUMBERS=$(echo "$CLOSED_NUMBERS" | jq -c --argjson n "$PR_NUMBER" '. + [$n]')
         done < <(echo "$OPEN_PRS" | jq -c '.[]')
-
-        echo "closed_pr_numbers=${CLOSED_NUMBERS}" >> "$GITHUB_OUTPUT"
 
     # ------------------------------------------------------------------
     # Step 11: Close stale fix PRs (FKB advanced to a new commit).
@@ -634,10 +628,8 @@ runs:
           gh pr close "$PR_NUMBER"
           echo "Closed stale fix PR #$PR_NUMBER (was on branch '$HEAD_REF'): $PR_URL"
 
-          CLOSED_NUMBERS=$(echo "$CLOSED_NUMBERS" | jq --argjson n "$PR_NUMBER" '. + [$n]')
+          CLOSED_NUMBERS=$(echo "$CLOSED_NUMBERS" | jq -c --argjson n "$PR_NUMBER" '. + [$n]')
         done < <(echo "$OPEN_PRS" | jq -c '.[]')
-
-        echo "closed_pr_numbers=${CLOSED_NUMBERS}" >> "$GITHUB_OUTPUT"
 
     # ------------------------------------------------------------------
     # Step 12: Check whether an open fix PR already exists on the current
@@ -824,8 +816,6 @@ runs:
         BUMP_UPDATED: ${{ steps.bump.outputs.updated }}
         CREATE_PR_NUMBER: ${{ steps.create-pr.outputs.pr_number }}
         CREATE_PR_URL: ${{ steps.create-pr.outputs.pr_url }}
-        CLOSED_RESOLVED: ${{ steps.close-prs-resolved.outputs.closed_pr_numbers }}
-        CLOSED_STALE: ${{ steps.close-stale-prs.outputs.closed_pr_numbers }}
       run: |
         set -euo pipefail
 
@@ -866,9 +856,3 @@ runs:
           echo "pr_number="                  >> "$GITHUB_OUTPUT"
           echo "pr_url="                     >> "$GITHUB_OUTPUT"
         fi
-
-        # --- Closed PR numbers: merge resolved + stale arrays ---
-        RESOLVED_ARRAY="${CLOSED_RESOLVED:-[]}"
-        STALE_ARRAY="${CLOSED_STALE:-[]}"
-        MERGED=$(printf '%s\n%s' "$RESOLVED_ARRAY" "$STALE_ARRAY" | jq -cs 'add')
-        echo "closed_pr_numbers=${MERGED}" >> "$GITHUB_OUTPUT"

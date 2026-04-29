@@ -152,9 +152,6 @@ on:
       pr-action:
         description: '"created", "noop-existing", "noop-no-changes", "noop-resolved", or "disabled".'
         value: ${{ jobs.track.outputs.pr-action }}
-      closed-pr-numbers:
-        description: 'JSON array of PR numbers closed as stale or resolved.'
-        value: ${{ jobs.track.outputs.closed-pr-numbers }}
 
 jobs:
   track:
@@ -170,7 +167,6 @@ jobs:
       pr-number:          ${{ steps.track.outputs.pr-number }}
       pr-url:             ${{ steps.track.outputs.pr-url }}
       pr-action:          ${{ steps.track.outputs.pr-action }}
-      closed-pr-numbers:  ${{ steps.track.outputs.closed-pr-numbers }}
     steps:
       - uses: actions/checkout@v6
 
