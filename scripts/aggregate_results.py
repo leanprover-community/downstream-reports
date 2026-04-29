@@ -3,13 +3,19 @@
 
 State machine overview:
 
-    passing --failed--> failing
+    passing --failed--> new_failure
     failing --failed--> failing
-    failing --passed--> passing
+    failing --failed (pin past fkb)--> new_failure
+    failing --passed--> recovered
     passing --passed--> passing
 
 Results tagged as `error` do not open or close a regression episode. They are
 recorded on the downstream status entry but leave the episode cursor unchanged.
+
+When a downstream's pin has advanced past the stored first_known_bad_commit (the
+episode opener), the old failure boundary is no longer meaningful.  A new failure
+run in that situation is treated as a fresh NEW_FAILURE episode rather than a
+continuation of the old one.
 """
 
 from __future__ import annotations
@@ -369,10 +375,16 @@ def load_results(results_dir: Path) -> list[LoadedResult]:
 def apply_result(
     current: DownstreamStatusRecord | None,
     result: ValidationResult,
+    pin_past_fkb: bool = False,
 ) -> tuple[DownstreamStatusRecord, EpisodeState]:
     """Apply one validation result to the persisted regression state.
 
     Returns a *new* ``DownstreamStatusRecord`` — the input is never mutated.
+
+    ``pin_past_fkb`` should be True when the caller has determined (via the
+    GitHub compare API) that the downstream's current pin is strictly ahead of
+    the stored ``first_known_bad_commit``.  In that case a continuing FAILED
+    result opens a new episode rather than prolonging the old one.
     """
 
     was_failing = current is not None and current.first_known_bad_commit is not None
@@ -402,7 +414,7 @@ def apply_result(
     last_good = result.last_successful_commit or (
         current.last_known_good_commit if current else None
     )
-    if was_failing and current is not None:
+    if was_failing and current is not None and not pin_past_fkb:
         return DownstreamStatusRecord(
             last_known_good_commit=last_good,
             first_known_bad_commit=current.first_known_bad_commit,
@@ -655,10 +667,32 @@ def main() -> int:
     # tested_commit_details is not stored; keep it alongside for the markdown report.
     tested_details_per_record: list[list[dict[str, Any]]] = []
 
+    # Pre-fetch commit distances for (stored_fkb, new_pin) pairs so we can detect
+    # when a downstream's pin has advanced past the stored failure boundary.
+    fkb_pin_pairs: set[tuple[str, str]] = set()
+    for loaded in loaded_results:
+        r = loaded.result
+        prior = prior_statuses.get(r.downstream)
+        if (
+            prior
+            and prior.first_known_bad_commit
+            and r.pinned_commit
+            and prior.first_known_bad_commit != r.pinned_commit
+        ):
+            fkb_pin_pairs.add((prior.first_known_bad_commit, r.pinned_commit))
+    fkb_pin_distances: dict[tuple[str, str], int | None] = {}
+    if fkb_pin_pairs:
+        print(f"Checking if pins have advanced past stored FKB for {len(fkb_pin_pairs)} pair(s)…")
+        fkb_pin_distances = fetch_commit_distances(fkb_pin_pairs, args.upstream, args.github_token)
+
     for loaded in sorted(loaded_results, key=lambda item: item.result.downstream):
         result = loaded.result
         prior = prior_statuses.get(result.downstream)
-        updated, episode_state = apply_result(prior, result)
+        pin_past_fkb = False
+        if prior and prior.first_known_bad_commit and result.pinned_commit:
+            dist = fkb_pin_distances.get((prior.first_known_bad_commit, result.pinned_commit))
+            pin_past_fkb = dist is not None and dist > 0
+        updated, episode_state = apply_result(prior, result, pin_past_fkb=pin_past_fkb)
         updated_statuses[result.downstream] = updated
         record = RunResultRecord(
             upstream=args.upstream,

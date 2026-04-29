@@ -127,6 +127,56 @@ class ApplyResultTests(unittest.TestCase):
         # Updates last-known-good from the new run's bisect
         self.assertEqual(updated.last_known_good_commit, "new_good")
 
+    # -- pin advanced past FKB: new episode --
+
+    def test_pin_past_fkb_failing_opens_new_episode(self) -> None:
+        """Scenario: downstream pinned forward past the stored FKB; run still fails."""
+        current = DownstreamStatusRecord(
+            last_known_good_commit="good_old",
+            first_known_bad_commit="original_bad",
+        )
+        result = _make_result(
+            outcome=Outcome.FAILED,
+            target_commit="still_bad",
+            first_failing_commit="new_bad",
+            last_successful_commit="new_good",
+        )
+        updated, state = apply_result(current, result, pin_past_fkb=True)
+        self.assertEqual(state, EpisodeState.NEW_FAILURE)
+        # Uses the new run's first_failing_commit, not the old episode's FKB
+        self.assertEqual(updated.first_known_bad_commit, "new_bad")
+        self.assertEqual(updated.last_known_good_commit, "new_good")
+
+    def test_pin_past_fkb_uses_target_when_no_first_failing(self) -> None:
+        """Scenario: pin advanced past FKB but head-only probe found no first_failing_commit."""
+        current = DownstreamStatusRecord(
+            last_known_good_commit="good_old",
+            first_known_bad_commit="original_bad",
+        )
+        result = _make_result(
+            outcome=Outcome.FAILED,
+            target_commit="bad_target",
+            first_failing_commit=None,
+        )
+        updated, state = apply_result(current, result, pin_past_fkb=True)
+        self.assertEqual(state, EpisodeState.NEW_FAILURE)
+        self.assertEqual(updated.first_known_bad_commit, "bad_target")
+
+    def test_pin_past_fkb_false_preserves_old_episode(self) -> None:
+        """Scenario: pin_past_fkb=False leaves the episode intact (default behaviour)."""
+        current = DownstreamStatusRecord(
+            last_known_good_commit="good_old",
+            first_known_bad_commit="original_bad",
+        )
+        result = _make_result(
+            outcome=Outcome.FAILED,
+            target_commit="still_bad",
+            first_failing_commit="new_bad",
+        )
+        updated, state = apply_result(current, result, pin_past_fkb=False)
+        self.assertEqual(state, EpisodeState.FAILING)
+        self.assertEqual(updated.first_known_bad_commit, "original_bad")
+
     # -- recovery --
 
     def test_failing_plus_passed_is_recovered(self) -> None:
