@@ -1,5 +1,8 @@
 name: 'Open FKB Issue'
 description: >
+  DEPRECATED: use track-incompatibility instead.  With open-pr: false,
+  track-incompatibility is a byte-equivalent drop-in replacement.
+
   Consume the downstream snapshot and open or maintain a single persistent
   GitHub issue describing the current incompatibility (first-known-bad) affecting
   this downstream.  When the snapshot clears the first-known-bad commit
