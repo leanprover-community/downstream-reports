@@ -372,6 +372,35 @@ def load_results(results_dir: Path) -> list[LoadedResult]:
     return results
 
 
+def _pin_crossed_fkb(
+    fkb: str,
+    prior_pin: str | None,
+    current_pin: str | None,
+    distances: dict[tuple[str, str], int | None],
+) -> bool:
+    """Return True when current_pin has just crossed past fkb but prior_pin had not.
+
+    A positive result means the downstream's pin advanced past the stored failure
+    boundary between the previous run and this one — a genuine new-episode signal.
+
+    Checking only current_pin > fkb is insufficient: bisect can find a FKB that is
+    older than the pin (the window is [LKG, target] and pin may sit anywhere in it).
+    In that case current_pin > fkb from the very start, with no pin advancement.
+    The prior_pin guard distinguishes "pin was already past FKB" from "pin just moved
+    past FKB".
+    """
+    if current_pin is None:
+        return False
+    dist_cur = 0 if current_pin == fkb else distances.get((fkb, current_pin))
+    dist_prv = 0 if prior_pin == fkb else (
+        distances.get((fkb, prior_pin)) if prior_pin is not None else None
+    )
+    return (
+        dist_cur is not None and dist_cur > 0
+        and dist_prv is not None and dist_prv == 0
+    )
+
+
 def apply_result(
     current: DownstreamStatusRecord | None,
     result: ValidationResult,
@@ -667,19 +696,18 @@ def main() -> int:
     # tested_commit_details is not stored; keep it alongside for the markdown report.
     tested_details_per_record: list[list[dict[str, Any]]] = []
 
-    # Pre-fetch commit distances for (stored_fkb, new_pin) pairs so we can detect
-    # when a downstream's pin has advanced past the stored failure boundary.
+    # Pre-fetch commit distances for (stored_fkb, pin) pairs — both the prior run's
+    # pin and the current run's pin — consumed by _pin_crossed_fkb() below.
     fkb_pin_pairs: set[tuple[str, str]] = set()
     for loaded in loaded_results:
         r = loaded.result
         prior = prior_statuses.get(r.downstream)
-        if (
-            prior
-            and prior.first_known_bad_commit
-            and r.pinned_commit
-            and prior.first_known_bad_commit != r.pinned_commit
-        ):
-            fkb_pin_pairs.add((prior.first_known_bad_commit, r.pinned_commit))
+        if prior and prior.first_known_bad_commit:
+            fkb = prior.first_known_bad_commit
+            if r.pinned_commit and r.pinned_commit != fkb:
+                fkb_pin_pairs.add((fkb, r.pinned_commit))
+            if prior.pinned_commit and prior.pinned_commit != fkb:
+                fkb_pin_pairs.add((fkb, prior.pinned_commit))
     fkb_pin_distances: dict[tuple[str, str], int | None] = {}
     if fkb_pin_pairs:
         print(f"Checking if pins have advanced past stored FKB for {len(fkb_pin_pairs)} pair(s)…")
@@ -689,9 +717,13 @@ def main() -> int:
         result = loaded.result
         prior = prior_statuses.get(result.downstream)
         pin_past_fkb = False
-        if prior and prior.first_known_bad_commit and result.pinned_commit:
-            dist = fkb_pin_distances.get((prior.first_known_bad_commit, result.pinned_commit))
-            pin_past_fkb = dist is not None and dist > 0
+        if prior and prior.first_known_bad_commit:
+            pin_past_fkb = _pin_crossed_fkb(
+                fkb=prior.first_known_bad_commit,
+                prior_pin=prior.pinned_commit,
+                current_pin=result.pinned_commit,
+                distances=fkb_pin_distances,
+            )
         updated, episode_state = apply_result(prior, result, pin_past_fkb=pin_past_fkb)
         updated_statuses[result.downstream] = updated
         record = RunResultRecord(

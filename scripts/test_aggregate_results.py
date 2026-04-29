@@ -14,6 +14,7 @@ from scripts.aggregate_results import (
     EpisodeState,
     Outcome,
     ValidationResult,
+    _pin_crossed_fkb,
     apply_result,
     load_culprit_log_text,
     render_report,
@@ -266,6 +267,52 @@ class ApplyResultTests(unittest.TestCase):
         )
         updated, _ = apply_result(current, result)
         self.assertEqual(updated.downstream_commit, "old_ds_head")
+
+
+class PinCrossedFkbTests(unittest.TestCase):
+    """Tests for the _pin_crossed_fkb helper that guards new-episode detection."""
+
+    def _distances(self, mapping: dict[tuple[str, str], int]) -> dict[tuple[str, str], int | None]:
+        return dict(mapping)
+
+    def test_returns_true_when_pin_crosses_fkb(self) -> None:
+        """Scenario: prior pin was behind FKB, current pin is ahead."""
+        distances = self._distances({("fkb", "new_pin"): 5, ("fkb", "old_pin"): 0})
+        self.assertTrue(_pin_crossed_fkb("fkb", "old_pin", "new_pin", distances))
+
+    def test_returns_false_when_pin_already_past_fkb(self) -> None:
+        """Scenario: pin was already ahead of FKB when episode opened — no advancement."""
+        distances = self._distances({("fkb", "old_pin"): 3, ("fkb", "old_pin"): 3})
+        self.assertFalse(_pin_crossed_fkb("fkb", "old_pin", "old_pin", distances))
+
+    def test_returns_false_when_prior_pin_was_already_past_fkb(self) -> None:
+        """Scenario: prior and current pins differ but prior was already past FKB."""
+        distances = self._distances({("fkb", "new_pin"): 7, ("fkb", "old_pin"): 3})
+        self.assertFalse(_pin_crossed_fkb("fkb", "old_pin", "new_pin", distances))
+
+    def test_returns_false_when_current_pin_equals_fkb(self) -> None:
+        """Scenario: pin is exactly at FKB — not past it."""
+        distances: dict[tuple[str, str], int | None] = {}
+        self.assertFalse(_pin_crossed_fkb("fkb", "old_pin", "fkb", distances))
+
+    def test_returns_false_when_current_pin_is_none(self) -> None:
+        """Scenario: no pin information in result."""
+        distances: dict[tuple[str, str], int | None] = {}
+        self.assertFalse(_pin_crossed_fkb("fkb", "old_pin", None, distances))
+
+    def test_returns_false_when_prior_pin_is_none(self) -> None:
+        """Scenario: no prior pin stored; cannot confirm it was behind FKB."""
+        distances = self._distances({("fkb", "new_pin"): 5})
+        self.assertFalse(_pin_crossed_fkb("fkb", None, "new_pin", distances))
+
+    def test_returns_false_when_api_distance_missing(self) -> None:
+        """Scenario: GitHub API call failed for this pair; fall back to no-op."""
+        self.assertFalse(_pin_crossed_fkb("fkb", "old_pin", "new_pin", {}))
+
+    def test_prior_pin_equals_fkb_counts_as_not_past(self) -> None:
+        """Scenario: prior pin was exactly at FKB; current pin is ahead — new episode."""
+        distances = self._distances({("fkb", "new_pin"): 2})
+        self.assertTrue(_pin_crossed_fkb("fkb", "fkb", "new_pin", distances))
 
 
 class TruncateLogTextTests(unittest.TestCase):
