@@ -76,6 +76,7 @@ class ApplyResultTests(unittest.TestCase):
     # -- new failure --
 
     def test_passing_plus_failed_is_new_failure(self) -> None:
+        """Scenario: head-only failure opens a new episode without a known LKG."""
         current = DownstreamStatusRecord(last_known_good_commit="good_old")
         result = _make_result(
             outcome=Outcome.FAILED,
@@ -85,6 +86,24 @@ class ApplyResultTests(unittest.TestCase):
         updated, state = apply_result(current, result)
         self.assertEqual(state, EpisodeState.NEW_FAILURE)
         self.assertEqual(updated.first_known_bad_commit, "bad_commit")
+        # No bisect data: prior LKG belongs to a different episode and is not
+        # adjacent to the new FKB, so it is dropped to keep the invariant vacuous.
+        self.assertIsNone(updated.last_known_good_commit)
+
+    def test_passing_plus_bisect_failed_is_new_failure_with_adjacent_pair(self) -> None:
+        """Scenario: bisect-mode failure opens a new episode with an adjacent (LKG, FKB) pair."""
+        current = DownstreamStatusRecord(last_known_good_commit="good_old")
+        result = _make_result(
+            outcome=Outcome.FAILED,
+            target_commit="bad_target",
+            first_failing_commit="bad_commit",
+            last_successful_commit="good_parent",
+            search_mode="bisect",
+        )
+        updated, state = apply_result(current, result)
+        self.assertEqual(state, EpisodeState.NEW_FAILURE)
+        self.assertEqual(updated.first_known_bad_commit, "bad_commit")
+        self.assertEqual(updated.last_known_good_commit, "good_parent")
 
     def test_no_prior_state_plus_failed_is_new_failure(self) -> None:
         result = _make_result(
@@ -98,6 +117,7 @@ class ApplyResultTests(unittest.TestCase):
         self.assertIsNone(updated.last_known_good_commit)
 
     def test_new_failure_uses_target_when_no_first_failing(self) -> None:
+        """Scenario: head-only failure with no first_failing_commit falls back to the target."""
         current = DownstreamStatusRecord(last_known_good_commit="good_old")
         result = _make_result(
             outcome=Outcome.FAILED,
@@ -107,10 +127,76 @@ class ApplyResultTests(unittest.TestCase):
         updated, state = apply_result(current, result)
         self.assertEqual(state, EpisodeState.NEW_FAILURE)
         self.assertEqual(updated.first_known_bad_commit, "bad_target")
+        # Stale prior LKG is not adjacent to the new FKB; drop it.
+        self.assertIsNone(updated.last_known_good_commit)
 
     # -- failing --
 
-    def test_failing_plus_failed_is_failing(self) -> None:
+    def test_failing_head_only_preserves_both_endpoints(self) -> None:
+        """Scenario: continuing FAILING with no fresh bisect data preserves both endpoints.
+
+        Covers the head-only-known-bad skip path and head-only failures: the
+        prior (LKG, FKB) pair is the only adjacent pair we have, so we keep it.
+        """
+        current = DownstreamStatusRecord(
+            last_known_good_commit="good_old",
+            first_known_bad_commit="original_bad",
+        )
+        result = _make_result(
+            outcome=Outcome.FAILED,
+            target_commit="still_bad",
+            first_failing_commit=None,
+            last_successful_commit=None,
+            search_mode="head-only-known-bad",
+        )
+        updated, state = apply_result(current, result)
+        self.assertEqual(state, EpisodeState.FAILING)
+        self.assertEqual(updated.first_known_bad_commit, "original_bad")
+        self.assertEqual(updated.last_known_good_commit, "good_old")
+
+    def test_failing_bisect_same_transition_is_noop(self) -> None:
+        """Scenario: continuing FAILING and bisect identifies the same transition as before."""
+        current = DownstreamStatusRecord(
+            last_known_good_commit="good_old",
+            first_known_bad_commit="original_bad",
+        )
+        result = _make_result(
+            outcome=Outcome.FAILED,
+            target_commit="still_bad",
+            first_failing_commit="original_bad",
+            last_successful_commit="good_old",
+            search_mode="bisect",
+        )
+        updated, state = apply_result(current, result)
+        self.assertEqual(state, EpisodeState.FAILING)
+        self.assertEqual(updated.first_known_bad_commit, "original_bad")
+        self.assertEqual(updated.last_known_good_commit, "good_old")
+
+    def test_failing_head_only_no_window_preserves_both_endpoints(self) -> None:
+        """Scenario: continuing FAILING with a head-only failure (no bisect window) preserves prior pair."""
+        current = DownstreamStatusRecord(
+            last_known_good_commit="good_old",
+            first_known_bad_commit="original_bad",
+        )
+        result = _make_result(
+            outcome=Outcome.FAILED,
+            target_commit="still_bad",
+            first_failing_commit=None,
+            last_successful_commit=None,
+            search_mode="head-only",
+        )
+        updated, state = apply_result(current, result)
+        self.assertEqual(state, EpisodeState.FAILING)
+        self.assertEqual(updated.first_known_bad_commit, "original_bad")
+        self.assertEqual(updated.last_known_good_commit, "good_old")
+
+    def test_failing_bisect_finds_earlier_transition_replaces_pair(self) -> None:
+        """Scenario: continuing FAILING and bisect identifies a different transition.
+
+        When the downstream commit changed and a fresh bisect now binds the
+        regression to an earlier upstream commit, we replace BOTH endpoints
+        with the new bisect's adjacent pair rather than keeping a stale FKB.
+        """
         current = DownstreamStatusRecord(
             last_known_good_commit="good_old",
             first_known_bad_commit="original_bad",
@@ -120,18 +206,17 @@ class ApplyResultTests(unittest.TestCase):
             target_commit="still_bad",
             first_failing_commit="new_bad",
             last_successful_commit="new_good",
+            search_mode="bisect",
         )
         updated, state = apply_result(current, result)
         self.assertEqual(state, EpisodeState.FAILING)
-        # Preserves original first-known-bad from the episode opener
-        self.assertEqual(updated.first_known_bad_commit, "original_bad")
-        # Updates last-known-good from the new run's bisect
+        self.assertEqual(updated.first_known_bad_commit, "new_bad")
         self.assertEqual(updated.last_known_good_commit, "new_good")
 
     # -- pin advanced past FKB: new episode --
 
     def test_pin_past_fkb_failing_opens_new_episode(self) -> None:
-        """Scenario: downstream pinned forward past the stored FKB; run still fails."""
+        """Scenario: downstream pinned forward past the stored FKB; bisect finds a new transition."""
         current = DownstreamStatusRecord(
             last_known_good_commit="good_old",
             first_known_bad_commit="original_bad",
@@ -141,10 +226,11 @@ class ApplyResultTests(unittest.TestCase):
             target_commit="still_bad",
             first_failing_commit="new_bad",
             last_successful_commit="new_good",
+            search_mode="bisect",
         )
         updated, state = apply_result(current, result, pin_past_fkb=True)
         self.assertEqual(state, EpisodeState.NEW_FAILURE)
-        # Uses the new run's first_failing_commit, not the old episode's FKB
+        # Uses the new run's adjacent pair, not the old episode's endpoints.
         self.assertEqual(updated.first_known_bad_commit, "new_bad")
         self.assertEqual(updated.last_known_good_commit, "new_good")
 
@@ -162,6 +248,9 @@ class ApplyResultTests(unittest.TestCase):
         updated, state = apply_result(current, result, pin_past_fkb=True)
         self.assertEqual(state, EpisodeState.NEW_FAILURE)
         self.assertEqual(updated.first_known_bad_commit, "bad_target")
+        # Stale prior LKG belongs to the old episode and is not adjacent to
+        # the new FKB; drop it to keep the invariant vacuous.
+        self.assertIsNone(updated.last_known_good_commit)
 
     def test_pin_past_fkb_false_preserves_old_episode(self) -> None:
         """Scenario: pin_past_fkb=False leaves the episode intact (default behaviour)."""
@@ -177,6 +266,7 @@ class ApplyResultTests(unittest.TestCase):
         updated, state = apply_result(current, result, pin_past_fkb=False)
         self.assertEqual(state, EpisodeState.FAILING)
         self.assertEqual(updated.first_known_bad_commit, "original_bad")
+        self.assertEqual(updated.last_known_good_commit, "good_old")
 
     # -- recovery --
 

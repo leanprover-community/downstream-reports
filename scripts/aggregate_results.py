@@ -414,6 +414,15 @@ def apply_result(
     GitHub compare API) that the downstream's current pin is strictly ahead of
     the stored ``first_known_bad_commit``.  In that case a continuing FAILED
     result opens a new episode rather than prolonging the old one.
+
+    Adjacency invariant: when this function returns a record with both
+    ``last_known_good_commit`` and ``first_known_bad_commit`` set, the LKG is
+    the immediate parent of the FKB.  We can only guarantee that when the run
+    that produced ``result`` was a successful bisect (``search_mode="bisect"``
+    with both ``last_successful_commit`` and ``first_failing_commit``
+    populated) — those endpoints are adjacent by construction.  In every
+    other failed-run path we either (a) inherit a previously-adjacent pair
+    verbatim, or (b) leave the LKG unset so the invariant stays vacuous.
     """
 
     was_failing = current is not None and current.first_known_bad_commit is not None
@@ -439,22 +448,54 @@ def apply_result(
             downstream_commit=ds_commit,
         ), episode_state
 
-    # FAILED
-    last_good = result.last_successful_commit or (
-        current.last_known_good_commit if current else None
+    # FAILED.  A successful bisect run is the only failed path that produces a
+    # fresh internally-adjacent (LKG, FKB) pair.  Detect that here so both the
+    # FAILING and NEW_FAILURE branches can prefer the new pair when present.
+    bisect_produced_pair = (
+        result.search_mode == "bisect"
+        and result.first_failing_commit is not None
+        and result.last_successful_commit is not None
     )
+
     if was_failing and current is not None and not pin_past_fkb:
+        if bisect_produced_pair:
+            # A fresh bisect supersedes the stored boundary.  When the new
+            # bisect identifies the same transition as before this is a no-op
+            # (last_successful == prior LKG, first_failing == prior FKB); when
+            # it identifies a different transition (typically because the
+            # downstream commit changed and the regression now binds to an
+            # earlier upstream commit) the new pair replaces the stored one.
+            # Either way the persisted (LKG, FKB) stays adjacent.
+            return DownstreamStatusRecord(
+                last_known_good_commit=result.last_successful_commit,
+                first_known_bad_commit=result.first_failing_commit,
+                pinned_commit=pin,
+                downstream_commit=ds_commit,
+            ), EpisodeState.FAILING
+        # No fresh bisect (head-only failure, or head-only-known-bad skip):
+        # preserve both endpoints verbatim from the prior record so an
+        # already-adjacent pair stays adjacent.
         return DownstreamStatusRecord(
-            last_known_good_commit=last_good,
+            last_known_good_commit=current.last_known_good_commit,
             first_known_bad_commit=current.first_known_bad_commit,
             pinned_commit=pin,
             downstream_commit=ds_commit,
         ), EpisodeState.FAILING
 
-    first_bad = result.first_failing_commit or result.target_commit
+    # NEW_FAILURE — was passing (or had no prior state), or pin crossed FKB.
+    if bisect_produced_pair:
+        return DownstreamStatusRecord(
+            last_known_good_commit=result.last_successful_commit,
+            first_known_bad_commit=result.first_failing_commit,
+            pinned_commit=pin,
+            downstream_commit=ds_commit,
+        ), EpisodeState.NEW_FAILURE
+    # Head-only failure with no bisect data.  The prior LKG (if any) belongs
+    # to a different episode and cannot be assumed to be the parent of the new
+    # FKB — leave it unset so the invariant is vacuous rather than false.
     return DownstreamStatusRecord(
-        last_known_good_commit=last_good,
-        first_known_bad_commit=first_bad,
+        last_known_good_commit=None,
+        first_known_bad_commit=result.first_failing_commit or result.target_commit,
         pinned_commit=pin,
         downstream_commit=ds_commit,
     ), EpisodeState.NEW_FAILURE
