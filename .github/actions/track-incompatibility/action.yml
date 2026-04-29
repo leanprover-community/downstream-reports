@@ -1,0 +1,874 @@
+name: 'Track Incompatibility'
+description: >
+  Consume the downstream snapshot and open or maintain a single persistent
+  GitHub issue describing the current incompatibility (first-known-bad).
+  When open-pr is true (the default), also opens a fix PR with the lakefile
+  bumped to the FKB commit so downstream maintainers have a ready starting
+  point.  Stale fix PRs (from a previous FKB) are closed automatically when
+  the FKB advances.  When the regression clears, the tracking issue and any
+  open fix PRs are closed with resolution comments.
+
+  Set open-pr to false to avoid opening a bumping PR.
+
+inputs:
+  downstream:
+    required: false
+    default: ${{ github.repository }}
+    description: >
+      Downstream to look up.  May be a registered downstream name (e.g.
+      "physlib") or a GitHub repo slug (e.g. "leanprover-community/physlib").
+      Values containing "/" are treated as repo slugs; otherwise as name
+      keys.  Defaults to the repository running this action.
+  upstream:
+    required: false
+    default: 'leanprover-community/mathlib4'
+    description: >
+      Upstream repository slug used to fetch commit metadata for the FKB/LKG
+      commits.  Must match the upstream field in the published snapshot.
+  label:
+    required: false
+    default: 'dependency-incompatibility'
+    description: >
+      Label used to identify the persistent tracking issue.  Created if
+      missing.  Identity is tracked by label rather than title so humans can
+      edit the title without breaking idempotency.
+  title:
+    required: false
+    default: ''
+    description: >
+      Full issue title.  When empty, auto-generated as
+      "Bumping <dep-name> to <fkb-short> would break the build".
+  close-on-resolve:
+    required: false
+    default: 'true'
+    description: >
+      When the snapshot clears the first-known-bad commit, close the open
+      tracking issue with a resolution comment.  Set to "false" to leave
+      resolved issues open.
+  token:
+    required: false
+    default: ${{ github.token }}
+    description: >
+      Token for gh issue / gh pr / gh api calls.  Needs "issues: write" when
+      open-pr is false; additionally needs "contents: write" and
+      "pull-requests: write" when open-pr is true.
+
+  # --- New inputs: PR side ---
+  open-pr:
+    required: false
+    default: 'true'
+    description: >
+      Master switch for the fix-PR side.  When true (the default), the action
+      opens a PR bumping the lakefile to the FKB commit, closes stale fix PRs
+      when the FKB advances, and closes fix PRs when the regression resolves.
+      Set to false for exact open-incompatibility-issue parity.
+  pr-label:
+    required: false
+    default: 'dependency-incompatibility-fix'
+    description: >
+      Label applied to fix PRs.  Used as the primary key when listing stale
+      PRs.  Created automatically when open-pr is true.
+  branch-prefix:
+    required: false
+    default: ''
+    description: >
+      Prefix for the fix-PR branch.  Final branch name is
+      <prefix>-<fkb-short7> (e.g. bump-mathlib/fix-abc1234).  Defaults to
+      bump-<dependency-name>/fix.  Stable per FKB SHA so the same FKB always
+      maps to the same branch; FKB change means a new branch and a new PR.
+  project-dir:
+    required: false
+    default: '.'
+    description: >
+      Path to the downstream project root.  Forwarded to bump-to-latest.
+  dependency-name:
+    required: false
+    default: 'mathlib'
+    description: >
+      Name of the dependency in the lakefile.  Forwarded to bump-to-latest
+      and used to compute the default branch prefix.
+  base:
+    required: false
+    default: ''
+    description: >
+      Base branch for the fix PR.  Defaults to the repository default branch.
+  git-user-name:
+    required: false
+    default: 'github-actions[bot]'
+    description: 'git user.name for the bump commit.'
+  git-user-email:
+    required: false
+    default: '41898282+github-actions[bot]@users.noreply.github.com'
+    description: 'git user.email for the bump commit.'
+  close-stale-prs:
+    required: false
+    default: 'true'
+    description: >
+      When true (the default), close open fix PRs whose head branch does not
+      match the current FKB branch (i.e. the FKB has advanced).  The branch
+      is retained so any WIP commits remain reachable.
+  close-prs-on-resolve:
+    required: false
+    default: 'true'
+    description: >
+      When true (the default), close open fix PRs with a resolution comment
+      when the FKB clears.  Independent of close-on-resolve (which governs
+      the tracking issue).
+
+outputs:
+  issue-number:
+    description: 'Issue number (empty when action=noop)'
+    value: ${{ steps.resolve-outputs.outputs.issue_number }}
+  issue-url:
+    description: 'Issue URL (empty when action=noop)'
+    value: ${{ steps.resolve-outputs.outputs.issue_url }}
+  action:
+    description: '"created", "updated", "closed", or "noop" — describes the issue lifecycle'
+    value: ${{ steps.resolve-outputs.outputs.action }}
+  pr-number:
+    description: 'Fix PR number (empty when pr-action is non-creating)'
+    value: ${{ steps.resolve-outputs.outputs.pr_number }}
+  pr-url:
+    description: 'Fix PR URL'
+    value: ${{ steps.resolve-outputs.outputs.pr_url }}
+  pr-action:
+    description: '"created", "noop-existing", "noop-no-changes", "noop-resolved", or "disabled" (when open-pr: false)'
+    value: ${{ steps.resolve-outputs.outputs.pr_action }}
+  closed-pr-numbers:
+    description: 'JSON array of PR numbers closed as stale or resolved (empty array "[]" when none)'
+    value: ${{ steps.resolve-outputs.outputs.closed_pr_numbers }}
+
+runs:
+  using: 'composite'
+  steps:
+    # ------------------------------------------------------------------
+    # Step 1: Look up the FKB commit (also yields downstream name / repo /
+    # dependency name from the snapshot).
+    # ------------------------------------------------------------------
+    - name: Look up first-known-bad
+      id: fkb
+      shell: bash
+      env:
+        DOWNSTREAM: ${{ inputs.downstream }}
+        QUERY_TYPE: first-known-bad
+      run: bash "${{ github.action_path }}/../../scripts/fetch-latest.sh"
+
+    # ------------------------------------------------------------------
+    # Step 2: Look up the LKG commit (for contrast in the issue body).
+    # ------------------------------------------------------------------
+    - name: Look up last-known-good
+      id: lkg
+      shell: bash
+      env:
+        DOWNSTREAM: ${{ inputs.downstream }}
+        QUERY_TYPE: last-known-good
+      run: bash "${{ github.action_path }}/../../scripts/fetch-latest.sh"
+
+    # ------------------------------------------------------------------
+    # Step 3: Fetch per-downstream latest regression-run metadata.  Best
+    # effort — the script exits 0 with empty outputs if the runs snapshot
+    # is unavailable or the entry is missing.
+    # ------------------------------------------------------------------
+    - name: Look up latest run metadata
+      id: run
+      shell: bash
+      env:
+        DOWNSTREAM: ${{ inputs.downstream }}
+      run: bash "${{ github.action_path }}/../../scripts/fetch-run-latest.sh"
+
+    # ------------------------------------------------------------------
+    # Step 4: Ensure the tracking issue label exists in the consuming repo.
+    # Skip when the incompatibility is resolved AND close-on-resolve is
+    # false (no issue will be touched, so no label needed).
+    # ------------------------------------------------------------------
+    - name: Ensure tracking label exists
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        GH_REPO: ${{ github.repository }}
+        LABEL: ${{ inputs.label }}
+        FKB_COMMIT: ${{ steps.fkb.outputs.commit }}
+        CLOSE_ON_RESOLVE: ${{ inputs.close-on-resolve }}
+      run: |
+        set -euo pipefail
+        if [ -z "$FKB_COMMIT" ] && [ "$CLOSE_ON_RESOLVE" != "true" ]; then
+          echo "No FKB and close-on-resolve=false — skipping label creation."
+          exit 0
+        fi
+        gh label create "$LABEL" \
+          --color 'B60205' \
+          --description 'Automated tracker opened by downstream-reports' \
+          --force
+
+    # ------------------------------------------------------------------
+    # Step 5: Ensure the fix-PR label exists (only when open-pr is true).
+    # The label is the primary key used to find and close stale fix PRs.
+    # ------------------------------------------------------------------
+    - name: Ensure fix-PR label exists
+      if: inputs.open-pr == 'true'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        GH_REPO: ${{ github.repository }}
+        PR_LABEL: ${{ inputs.pr-label }}
+      run: |
+        set -euo pipefail
+        gh label create "$PR_LABEL" \
+          --color '0075CA' \
+          --description 'Fix PR for a dependency incompatibility, opened by downstream-reports' \
+          --force
+
+    # ------------------------------------------------------------------
+    # Step 6: Branch on FKB presence.  When FKB is empty, handle the
+    # "resolved" case: close an existing open issue (if any) with a
+    # comment.  Emits action=closed or action=noop.
+    # ------------------------------------------------------------------
+    - name: Handle resolved incompatibility
+      id: resolve
+      if: steps.fkb.outputs.commit == ''
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        GH_REPO: ${{ github.repository }}
+        LABEL: ${{ inputs.label }}
+        CLOSE_ON_RESOLVE: ${{ inputs.close-on-resolve }}
+        LKG_COMMIT: ${{ steps.lkg.outputs.commit }}
+        RUN_URL: ${{ steps.run.outputs.run_url }}
+        UPSTREAM: ${{ inputs.upstream }}
+      run: |
+        set -euo pipefail
+
+        echo "No incompatible commit in snapshot — incompatibility is resolved."
+
+        EXISTING=$(gh issue list \
+          --label "$LABEL" \
+          --state open \
+          --json number,url \
+          --jq '.[0] // empty')
+
+        if [ -z "$EXISTING" ]; then
+          echo "No open issue with label '$LABEL' — nothing to do."
+          echo "action=noop"      >> "$GITHUB_OUTPUT"
+          echo "issue_number="    >> "$GITHUB_OUTPUT"
+          echo "issue_url="       >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+
+        ISSUE_NUMBER=$(echo "$EXISTING" | jq -r '.number')
+        ISSUE_URL=$(echo "$EXISTING"    | jq -r '.url')
+
+        if [ "$CLOSE_ON_RESOLVE" != "true" ]; then
+          echo "incompatibility resolved but close-on-resolve=false — leaving issue #$ISSUE_NUMBER open."
+          echo "action=noop"                      >> "$GITHUB_OUTPUT"
+          echo "issue_number=$ISSUE_NUMBER"       >> "$GITHUB_OUTPUT"
+          echo "issue_url=$ISSUE_URL"             >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+
+        TODAY=$(date -u +"%Y-%m-%d")
+        WORKFLOW_RUN_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+
+        LKG_LINE=""
+        if [ -n "$LKG_COMMIT" ]; then
+          LKG_SHORT="${LKG_COMMIT:0:7}"
+          LKG_URL="https://github.com/${UPSTREAM}/commit/${LKG_COMMIT}"
+          LKG_LINE=$(printf 'Current last-known-good: [`%s`](%s).' "$LKG_SHORT" "$LKG_URL")$'\n\n'
+        fi
+
+        RUN_LINE=""
+        if [ -n "$RUN_URL" ]; then
+          RUN_LINE=$(printf 'Most recent validation run: [downstream-reports](%s).' "$RUN_URL")$'\n\n'
+        fi
+
+        COMMENT=$(printf '✅ incompatibility resolved as of %s.\n\n%s%s_Closed automatically by [this workflow run](%s)._\n' \
+          "$TODAY" "$LKG_LINE" "$RUN_LINE" "$WORKFLOW_RUN_URL")
+
+        gh issue comment "$ISSUE_NUMBER" --body "$COMMENT"
+        gh issue close "$ISSUE_NUMBER"
+
+        echo "Closed issue #$ISSUE_NUMBER: $ISSUE_URL"
+        echo "action=closed"                    >> "$GITHUB_OUTPUT"
+        echo "issue_number=$ISSUE_NUMBER"       >> "$GITHUB_OUTPUT"
+        echo "issue_url=$ISSUE_URL"             >> "$GITHUB_OUTPUT"
+
+    # ------------------------------------------------------------------
+    # Step 7: Active incompatibility — fetch commit metadata for FKB and
+    # LKG from the upstream repo.
+    # ------------------------------------------------------------------
+    - name: Fetch commit metadata
+      id: meta
+      if: steps.fkb.outputs.commit != ''
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        UPSTREAM: ${{ inputs.upstream }}
+        FKB_COMMIT: ${{ steps.fkb.outputs.commit }}
+        LKG_COMMIT: ${{ steps.lkg.outputs.commit }}
+        DS_REPO: ${{ steps.fkb.outputs.repo }}
+        DOWNSTREAM_COMMIT: ${{ steps.run.outputs.downstream_commit }}
+      run: |
+        set -euo pipefail
+
+        fetch_info() {
+          local repo="$1" sha="$2"
+          gh api "repos/${repo}/commits/${sha}" \
+            --jq '[
+              (.commit.message | split("\n")[0]),
+              (.author.username // ""),
+              (.commit.author.name // ""),
+              (.commit.committer.date // "")[:10]
+            ] | join("\t")' \
+            2>/dev/null || true
+        }
+
+        write_triple() {
+          local prefix="$1" info="$2"
+          local subject author_username author date
+
+          IFS=$'\t' read -r subject author_username author date <<< "$info"
+
+          {
+            echo "${prefix}_subject=${subject}"
+            echo "${prefix}_author=${author} (${author_username})"
+            echo "${prefix}_date=${date}"
+          } >> "$GITHUB_OUTPUT"
+        }
+
+        empty_triple() {
+          local prefix="$1"
+
+          {
+            echo "${prefix}_subject="
+            echo "${prefix}_author="
+            echo "${prefix}_date="
+          } >> "$GITHUB_OUTPUT"
+        }
+
+        FKB_INFO=$(fetch_info "$UPSTREAM" "$FKB_COMMIT")
+        write_triple "fkb" "$FKB_INFO"
+
+        if [ -n "$LKG_COMMIT" ]; then
+          LKG_INFO=$(fetch_info "$UPSTREAM" "$LKG_COMMIT")
+          write_triple "lkg" "$LKG_INFO"
+        else
+          empty_triple "lkg"
+        fi
+
+        if [ -n "$DOWNSTREAM_COMMIT" ] && [ -n "$DS_REPO" ]; then
+          DS_INFO=$(fetch_info "$DS_REPO" "$DOWNSTREAM_COMMIT")
+          write_triple "ds" "$DS_INFO"
+        else
+          empty_triple "ds"
+        fi
+
+    # ------------------------------------------------------------------
+    # Step 8: Compose the issue title and body from the gathered inputs.
+    # ------------------------------------------------------------------
+    - name: Compose issue content
+      id: compose
+      if: steps.fkb.outputs.commit != ''
+      shell: bash
+      env:
+        UPSTREAM: ${{ inputs.upstream }}
+        DOWNSTREAM: ${{ inputs.downstream }}
+        CUSTOM_TITLE: ${{ inputs.title }}
+        FKB_COMMIT: ${{ steps.fkb.outputs.commit }}
+        LKG_COMMIT: ${{ steps.lkg.outputs.commit }}
+        DEP_NAME: ${{ steps.fkb.outputs.dependency_name }}
+        DS_NAME: ${{ steps.fkb.outputs.downstream_name }}
+        DS_REPO: ${{ steps.fkb.outputs.repo }}
+        FKB_SUBJECT: ${{ steps.meta.outputs.fkb_subject }}
+        FKB_AUTHOR: ${{ steps.meta.outputs.fkb_author }}
+        FKB_DATE: ${{ steps.meta.outputs.fkb_date }}
+        LKG_SUBJECT: ${{ steps.meta.outputs.lkg_subject }}
+        LKG_AUTHOR: ${{ steps.meta.outputs.lkg_author }}
+        LKG_DATE: ${{ steps.meta.outputs.lkg_date }}
+        DS_SUBJECT: ${{ steps.meta.outputs.ds_subject }}
+        DS_AUTHOR: ${{ steps.meta.outputs.ds_author }}
+        DS_DATE: ${{ steps.meta.outputs.ds_date }}
+        RUN_URL: ${{ steps.run.outputs.run_url }}
+        JOB_URL: ${{ steps.run.outputs.job_url }}
+        DOWNSTREAM_COMMIT: ${{ steps.run.outputs.downstream_commit }}
+        REPORTED_AT: ${{ steps.run.outputs.reported_at }}
+        TARGET_COMMIT: ${{ steps.run.outputs.target_commit }}
+      run: |
+        set -euo pipefail
+
+        FKB_SHORT="${FKB_COMMIT:0:7}"
+        FKB_URL="https://github.com/${UPSTREAM}/commit/${FKB_COMMIT}"
+
+        # --- Title ---
+        if [ -n "$CUSTOM_TITLE" ]; then
+          TITLE="$CUSTOM_TITLE"
+        else
+          TITLE="Bumping ${DEP_NAME:-dependency} to ${FKB_SHORT} would break the build"
+        fi
+
+        # --- Body ---
+        commit_line() {
+          local sha="$1" url="$2" subject="$3" author="$4" date="$5"
+          local short="${sha:0:7}"
+          local line
+          line="[\`${short}\`](${url})"
+          if [ -n "$subject" ]; then
+            line="${line} — ${subject}"
+          fi
+          local meta=""
+          if [ -n "$author" ] && [ -n "$date" ]; then
+            meta=" _(${author}, ${date})_"
+          elif [ -n "$author" ]; then
+            meta=" _(${author})_"
+          elif [ -n "$date" ]; then
+            meta=" _(${date})_"
+          fi
+          printf '%s%s' "$line" "$meta"
+        }
+
+        FKB_LINE=$(commit_line "$FKB_COMMIT" "$FKB_URL" "$FKB_SUBJECT" "$FKB_AUTHOR" "$FKB_DATE")
+
+        if [ -n "$LKG_COMMIT" ]; then
+          LKG_SHORT="${LKG_COMMIT:0:7}"
+          LKG_URL="https://github.com/${UPSTREAM}/commit/${LKG_COMMIT}"
+          LKG_LINE=$(commit_line "$LKG_COMMIT" "$LKG_URL" "$LKG_SUBJECT" "$LKG_AUTHOR" "$LKG_DATE")
+        else
+          LKG_LINE="_(none)_"
+        fi
+
+        if [ -n "$DOWNSTREAM_COMMIT" ] && [ -n "$DS_REPO" ]; then
+          DS_URL="https://github.com/${DS_REPO}/commit/${DOWNSTREAM_COMMIT}"
+          DS_LINE=$(commit_line "$DOWNSTREAM_COMMIT" "$DS_URL" "$DS_SUBJECT" "$DS_AUTHOR" "$DS_DATE")
+        else
+          DS_LINE="_(not yet recorded in the runs snapshot)_"
+        fi
+
+        VALIDATION_LINE="[downstream-reports](https://leanprover-community.github.io/downstream-reports/) reported at ${REPORTED_AT}"
+        if [ -n "$RUN_URL" ]; then
+          VALIDATION_LINE="${VALIDATION_LINE}  · [Workflow run](${RUN_URL})"
+          if [ -n "$JOB_URL" ]; then
+            VALIDATION_LINE="${VALIDATION_LINE} · [Job log](${JOB_URL})"
+          fi
+        else
+          VALIDATION_LINE="_(not yet recorded in the runs snapshot)_"
+        fi
+
+        WORKFLOW_RUN_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+        TODAY=$(date -u +"%Y-%m-%d")
+
+        {
+          echo "title=${TITLE}"
+          echo "body<<BODY_EOF"
+          echo "## ${DEP_NAME:-Dependency} incompatibility detected"
+          echo
+          echo "An incompatibility has been detected between this project and recent changes in \`${DEP_NAME:-Dependency}\`."
+          echo "In other words, this project can't advance to the tip of \`${DEP_NAME:-Dependency}\` without breaking."
+          echo
+          echo "**First incompatible ${DEP_NAME:-dependency} commit:** ${FKB_LINE}".
+          echo
+          echo "**Last-known-good ${DEP_NAME:-dependency} commit:** ${LKG_LINE}"
+          echo
+          echo "**Verified when \`${DOWNSTREAM}\` was at:** ${DS_LINE}".
+          echo "You can reproduce this break by:"
+          echo "- updating the \`${DEP_NAME:-Dependency}\` \`rev\` field in your \`lakefile\` to \`${FKB_COMMIT}\`"
+          echo "- running \`lake update ${DEP_NAME:-Dependency}\`"
+          echo "- running \`lake build\`"
+          echo
+          echo
+          echo "${VALIDATION_LINE}"
+          echo
+          echo "---"
+          echo
+          echo "_This issue was last updated on ${TODAY} by [this workflow run](${WORKFLOW_RUN_URL}). It is maintained automatically by [downstream-reports/track-incompatibility](https://github.com/leanprover-community/downstream-reports). When the incompatibility is resolved, the issue is closed automatically with a comment._"
+          echo "BODY_EOF"
+        } >> "$GITHUB_OUTPUT"
+
+    # ------------------------------------------------------------------
+    # Step 9: Create or update the tracking issue.
+    # ------------------------------------------------------------------
+    - name: Create or update issue
+      id: upsert
+      if: steps.fkb.outputs.commit != ''
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        GH_REPO: ${{ github.repository }}
+        LABEL: ${{ inputs.label }}
+        ISSUE_TITLE: ${{ steps.compose.outputs.title }}
+        ISSUE_BODY: ${{ steps.compose.outputs.body }}
+      run: |
+        set -euo pipefail
+
+        EXISTING=$(gh issue list \
+          --label "$LABEL" \
+          --state open \
+          --json number,url \
+          --jq '.[0] // empty')
+
+        if [ -n "$EXISTING" ]; then
+          ISSUE_NUMBER=$(echo "$EXISTING" | jq -r '.number')
+          ISSUE_URL=$(echo "$EXISTING"    | jq -r '.url')
+          gh issue edit "$ISSUE_NUMBER" \
+            --title "$ISSUE_TITLE" \
+            --body  "$ISSUE_BODY"
+          echo "Updated issue #$ISSUE_NUMBER: $ISSUE_URL"
+          echo "action=updated"               >> "$GITHUB_OUTPUT"
+        else
+          ISSUE_URL=$(gh issue create \
+            --title "$ISSUE_TITLE" \
+            --body  "$ISSUE_BODY" \
+            --label "$LABEL")
+          ISSUE_NUMBER="${ISSUE_URL##*/}"
+          echo "Created issue #$ISSUE_NUMBER: $ISSUE_URL"
+          echo "action=created"               >> "$GITHUB_OUTPUT"
+        fi
+
+        echo "issue_number=$ISSUE_NUMBER"     >> "$GITHUB_OUTPUT"
+        echo "issue_url=$ISSUE_URL"           >> "$GITHUB_OUTPUT"
+
+    # ------------------------------------------------------------------
+    # Step 10: Close fix PRs when the incompatibility resolves.
+    # Runs only when FKB is empty, open-pr is true, and
+    # close-prs-on-resolve is true.
+    # ------------------------------------------------------------------
+    - name: Close fix PRs on resolve
+      id: close-prs-resolved
+      if: inputs.open-pr == 'true' && steps.fkb.outputs.commit == '' && inputs.close-prs-on-resolve == 'true'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        GH_REPO: ${{ github.repository }}
+        PR_LABEL: ${{ inputs.pr-label }}
+        LKG_COMMIT: ${{ steps.lkg.outputs.commit }}
+        UPSTREAM: ${{ inputs.upstream }}
+      run: |
+        set -euo pipefail
+
+        OPEN_PRS=$(gh pr list \
+          --label "$PR_LABEL" \
+          --state open \
+          --json number,headRefName,url)
+
+        PR_COUNT=$(echo "$OPEN_PRS" | jq 'length')
+        if [ "$PR_COUNT" -eq 0 ]; then
+          echo "No open fix PRs with label '$PR_LABEL' — nothing to close."
+          echo "closed_pr_numbers=[]" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+
+        WORKFLOW_RUN_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+        TODAY=$(date -u +"%Y-%m-%d")
+        CLOSED_NUMBERS="[]"
+
+        while IFS= read -r pr; do
+          PR_NUMBER=$(echo "$pr" | jq -r '.number')
+          PR_URL=$(echo "$pr"    | jq -r '.url')
+
+          LKG_PART=""
+          if [ -n "$LKG_COMMIT" ]; then
+            LKG_SHORT="${LKG_COMMIT:0:7}"
+            LKG_URL="https://github.com/${UPSTREAM}/commit/${LKG_COMMIT}"
+            LKG_PART=$(printf ' Current last-known-good: [`%s`](%s).' "$LKG_SHORT" "$LKG_URL")
+          fi
+
+          COMMENT=$(printf '✅ Incompatibility resolved as of %s.%s\n\n_Closed automatically by [this workflow run](%s)._' \
+            "$TODAY" "$LKG_PART" "$WORKFLOW_RUN_URL")
+
+          gh pr comment "$PR_NUMBER" --body "$COMMENT"
+          gh pr close "$PR_NUMBER"
+          echo "Closed fix PR #$PR_NUMBER: $PR_URL"
+
+          CLOSED_NUMBERS=$(echo "$CLOSED_NUMBERS" | jq --argjson n "$PR_NUMBER" '. + [$n]')
+        done < <(echo "$OPEN_PRS" | jq -c '.[]')
+
+        echo "closed_pr_numbers=${CLOSED_NUMBERS}" >> "$GITHUB_OUTPUT"
+
+    # ------------------------------------------------------------------
+    # Step 11: Close stale fix PRs (FKB advanced to a new commit).
+    # A PR is stale when its head branch does not match the branch for
+    # the current FKB.  Runs only when FKB is present and close-stale-prs
+    # is true.  The old branch is NOT deleted so WIP commits stay
+    # reachable.
+    # ------------------------------------------------------------------
+    - name: Close stale fix PRs
+      id: close-stale-prs
+      if: inputs.open-pr == 'true' && steps.fkb.outputs.commit != '' && inputs.close-stale-prs == 'true'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        GH_REPO: ${{ github.repository }}
+        PR_LABEL: ${{ inputs.pr-label }}
+        FKB_COMMIT: ${{ steps.fkb.outputs.commit }}
+        DEPENDENCY_NAME: ${{ inputs.dependency-name }}
+        BRANCH_PREFIX: ${{ inputs.branch-prefix }}
+        UPSTREAM: ${{ inputs.upstream }}
+      run: |
+        set -euo pipefail
+
+        BRANCH_PREFIX_EFFECTIVE="${BRANCH_PREFIX:-bump-${DEPENDENCY_NAME}/fix}"
+        FKB_SHORT="${FKB_COMMIT:0:7}"
+        CURRENT_BRANCH="${BRANCH_PREFIX_EFFECTIVE}-${FKB_SHORT}"
+
+        OPEN_PRS=$(gh pr list \
+          --label "$PR_LABEL" \
+          --state open \
+          --json number,headRefName,url)
+
+        CLOSED_NUMBERS="[]"
+
+        while IFS= read -r pr; do
+          PR_NUMBER=$(echo "$pr"  | jq -r '.number')
+          PR_URL=$(echo "$pr"     | jq -r '.url')
+          HEAD_REF=$(echo "$pr"   | jq -r '.headRefName')
+
+          if [ "$HEAD_REF" = "$CURRENT_BRANCH" ]; then
+            echo "PR #$PR_NUMBER is on current branch '$CURRENT_BRANCH' — keeping."
+            continue
+          fi
+
+          FKB_URL="https://github.com/${UPSTREAM}/commit/${FKB_COMMIT}"
+          WORKFLOW_RUN_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+
+          COMMENT=$(printf 'The first-known-bad commit has advanced to [`%s`](%s); this PR'\''s lakefile is now outdated.\n\nA new fix PR will be opened on branch `%s`.\n\n_Closed automatically by [this workflow run](%s)._' \
+            "$FKB_SHORT" "$FKB_URL" "$CURRENT_BRANCH" "$WORKFLOW_RUN_URL")
+
+          gh pr comment "$PR_NUMBER" --body "$COMMENT"
+          gh pr close "$PR_NUMBER"
+          echo "Closed stale fix PR #$PR_NUMBER (was on branch '$HEAD_REF'): $PR_URL"
+
+          CLOSED_NUMBERS=$(echo "$CLOSED_NUMBERS" | jq --argjson n "$PR_NUMBER" '. + [$n]')
+        done < <(echo "$OPEN_PRS" | jq -c '.[]')
+
+        echo "closed_pr_numbers=${CLOSED_NUMBERS}" >> "$GITHUB_OUTPUT"
+
+    # ------------------------------------------------------------------
+    # Step 12: Check whether an open fix PR already exists on the current
+    # FKB branch.  If it does, no bump or push is needed.
+    # If no open PR exists but the remote branch does (leftover from a
+    # previously-closed PR), append a short random hex suffix so the new
+    # PR gets a fresh branch and the push requires no --force.
+    # ------------------------------------------------------------------
+    - name: Check for existing fix PR
+      id: check-pr
+      if: inputs.open-pr == 'true' && steps.fkb.outputs.commit != ''
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        GH_REPO: ${{ github.repository }}
+        FKB_COMMIT: ${{ steps.fkb.outputs.commit }}
+        DEPENDENCY_NAME: ${{ inputs.dependency-name }}
+        BRANCH_PREFIX: ${{ inputs.branch-prefix }}
+      run: |
+        set -euo pipefail
+
+        BRANCH_PREFIX_EFFECTIVE="${BRANCH_PREFIX:-bump-${DEPENDENCY_NAME}/fix}"
+        FKB_SHORT="${FKB_COMMIT:0:7}"
+        BASE_BRANCH="${BRANCH_PREFIX_EFFECTIVE}-${FKB_SHORT}"
+
+        echo "Looking for existing fix PR on branch '$BASE_BRANCH'..."
+
+        EXISTING=$(gh pr list \
+          --head "$BASE_BRANCH" \
+          --state open \
+          --json number,url \
+          --jq '.[0] // empty')
+
+        if [ -n "$EXISTING" ]; then
+          PR_NUMBER=$(echo "$EXISTING" | jq -r '.number')
+          PR_URL=$(echo "$EXISTING"    | jq -r '.url')
+          echo "Found existing fix PR #$PR_NUMBER: $PR_URL — no bump needed."
+          echo "current_branch=${BASE_BRANCH}"   >> "$GITHUB_OUTPUT"
+          echo "existing_pr_number=${PR_NUMBER}" >> "$GITHUB_OUTPUT"
+          echo "existing_pr_url=${PR_URL}"       >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+
+        # No open PR. If the remote branch already exists (leftover from a
+        # closed PR), append a random suffix to avoid a push conflict.
+        FINAL_BRANCH="$BASE_BRANCH"
+        if gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/${BASE_BRANCH}" \
+             --silent > /dev/null 2>&1; then
+          SUFFIX=$(openssl rand -hex 2)
+          FINAL_BRANCH="${BASE_BRANCH}-${SUFFIX}"
+          echo "Remote branch '$BASE_BRANCH' exists (closed PR) — using '$FINAL_BRANCH'."
+        else
+          echo "No existing branch — using '$BASE_BRANCH'."
+        fi
+
+        echo "current_branch=${FINAL_BRANCH}" >> "$GITHUB_OUTPUT"
+        echo "existing_pr_number="            >> "$GITHUB_OUTPUT"
+        echo "existing_pr_url="               >> "$GITHUB_OUTPUT"
+
+    # ------------------------------------------------------------------
+    # Step 13: Bump the lakefile to the FKB commit.
+    # Hard-coded: query-type=first-known-bad and skip-build=true (the FKB
+    # fails to build by definition; skip-build avoids wasting CI minutes).
+    # Runs only when no existing PR was found for the current FKB branch.
+    # ------------------------------------------------------------------
+    - name: Bump lakefile to first-known-bad
+      id: bump
+      if: inputs.open-pr == 'true' && steps.fkb.outputs.commit != '' && steps.check-pr.outputs.existing_pr_number == ''
+      uses: leanprover-community/downstream-reports/.github/actions/bump-to-latest@main
+      with:
+        downstream:      ${{ inputs.downstream }}
+        dependency-name: ${{ inputs.dependency-name }}
+        project-dir:     ${{ inputs.project-dir }}
+        query-type:      first-known-bad
+        skip-build:      'true'
+
+    # ------------------------------------------------------------------
+    # Step 14: Commit the lakefile changes and push the fix branch.
+    # Plain push — step 12 guarantees a fresh branch name (appending a
+    # random suffix when a closed PR's branch already exists remotely).
+    # ------------------------------------------------------------------
+    - name: Commit and push fix branch
+      id: push
+      if: inputs.open-pr == 'true' && steps.fkb.outputs.commit != '' && steps.check-pr.outputs.existing_pr_number == '' && steps.bump.outputs.updated == 'true'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        BRANCH: ${{ steps.check-pr.outputs.current_branch }}
+        COMMIT_MESSAGE: ${{ steps.bump.outputs.commit-message }}
+        GIT_USER_NAME: ${{ inputs.git-user-name }}
+        GIT_USER_EMAIL: ${{ inputs.git-user-email }}
+      run: |
+        set -euo pipefail
+
+        git config user.name  "$GIT_USER_NAME"
+        git config user.email "$GIT_USER_EMAIL"
+
+        git checkout -B "$BRANCH"
+        git add -A
+        git commit -m "${COMMIT_MESSAGE:-chore: bump dependency to first-known-bad}"
+
+        git push \
+          "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
+          "$BRANCH"
+
+        echo "Pushed branch '$BRANCH'."
+
+    # ------------------------------------------------------------------
+    # Step 15: Open the fix PR.  Body includes the bump description from
+    # bump-to-latest, a brief purpose statement, and a link back to the
+    # tracking issue and the triggering workflow run.
+    # ------------------------------------------------------------------
+    - name: Create fix PR
+      id: create-pr
+      if: inputs.open-pr == 'true' && steps.fkb.outputs.commit != '' && steps.check-pr.outputs.existing_pr_number == '' && steps.bump.outputs.updated == 'true'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        GH_REPO: ${{ github.repository }}
+        PR_LABEL: ${{ inputs.pr-label }}
+        BRANCH: ${{ steps.check-pr.outputs.current_branch }}
+        BASE: ${{ inputs.base }}
+        BUMP_DESCRIPTION: ${{ steps.bump.outputs.bump-description }}
+        ISSUE_URL: ${{ steps.upsert.outputs.issue_url }}
+        DEP_NAME: ${{ inputs.dependency-name }}
+        FKB_COMMIT: ${{ steps.fkb.outputs.commit }}
+      run: |
+        set -euo pipefail
+
+        WORKFLOW_RUN_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+        FKB_SHORT="${FKB_COMMIT:0:7}"
+
+        BODY_FILE=$(mktemp)
+        {
+          if [ -n "$BUMP_DESCRIPTION" ]; then
+            printf '%s\n\n' "$BUMP_DESCRIPTION"
+          fi
+          if [ -n "$ISSUE_URL" ]; then
+            printf 'Tracking issue: %s\n\n' "$ISSUE_URL"
+          fi
+          printf -- '---\n\n'
+          printf 'This PR bumps `%s` to an identified incompatible (first-known-bad) commit (`%s`) so you can reproduce and fix the incompatibility locally by checking out this branch.\n\n' \
+            "$DEP_NAME" "$FKB_SHORT"
+          printf '_Opened automatically by [downstream-reports/track-incompatibility](https://github.com/leanprover-community/downstream-reports) via [this workflow run](%s)._\n' \
+            "$WORKFLOW_RUN_URL"
+        } > "$BODY_FILE"
+
+        CREATE_ARGS=(
+          --head  "$BRANCH"
+          --label "$PR_LABEL"
+          --title "chore: bump ${DEP_NAME} to ${FKB_SHORT}, fix breaking changes"
+          --body-file "$BODY_FILE"
+        )
+
+        if [ -n "$BASE" ]; then
+          CREATE_ARGS+=(--base "$BASE")
+        fi
+
+        PR_URL=$(gh pr create "${CREATE_ARGS[@]}")
+        PR_NUMBER="${PR_URL##*/}"
+
+        echo "Created fix PR #$PR_NUMBER: $PR_URL"
+        echo "pr_number=${PR_NUMBER}" >> "$GITHUB_OUTPUT"
+        echo "pr_url=${PR_URL}"       >> "$GITHUB_OUTPUT"
+
+    # ------------------------------------------------------------------
+    # Final step: consolidate outputs from whichever branches ran.
+    # ------------------------------------------------------------------
+    - name: Resolve outputs
+      id: resolve-outputs
+      if: always()
+      shell: bash
+      env:
+        OPEN_PR: ${{ inputs.open-pr }}
+        FKB_COMMIT: ${{ steps.fkb.outputs.commit }}
+        RESOLVE_ACTION: ${{ steps.resolve.outputs.action }}
+        RESOLVE_NUMBER: ${{ steps.resolve.outputs.issue_number }}
+        RESOLVE_URL: ${{ steps.resolve.outputs.issue_url }}
+        UPSERT_ACTION: ${{ steps.upsert.outputs.action }}
+        UPSERT_NUMBER: ${{ steps.upsert.outputs.issue_number }}
+        UPSERT_URL: ${{ steps.upsert.outputs.issue_url }}
+        EXISTING_PR_NUMBER: ${{ steps.check-pr.outputs.existing_pr_number }}
+        EXISTING_PR_URL: ${{ steps.check-pr.outputs.existing_pr_url }}
+        BUMP_UPDATED: ${{ steps.bump.outputs.updated }}
+        CREATE_PR_NUMBER: ${{ steps.create-pr.outputs.pr_number }}
+        CREATE_PR_URL: ${{ steps.create-pr.outputs.pr_url }}
+        CLOSED_RESOLVED: ${{ steps.close-prs-resolved.outputs.closed_pr_numbers }}
+        CLOSED_STALE: ${{ steps.close-stale-prs.outputs.closed_pr_numbers }}
+      run: |
+        set -euo pipefail
+
+        # --- Issue outputs ---
+        if [ -n "${UPSERT_ACTION:-}" ]; then
+          echo "action=${UPSERT_ACTION}"            >> "$GITHUB_OUTPUT"
+          echo "issue_number=${UPSERT_NUMBER:-}"    >> "$GITHUB_OUTPUT"
+          echo "issue_url=${UPSERT_URL:-}"          >> "$GITHUB_OUTPUT"
+        elif [ -n "${RESOLVE_ACTION:-}" ]; then
+          echo "action=${RESOLVE_ACTION}"           >> "$GITHUB_OUTPUT"
+          echo "issue_number=${RESOLVE_NUMBER:-}"   >> "$GITHUB_OUTPUT"
+          echo "issue_url=${RESOLVE_URL:-}"         >> "$GITHUB_OUTPUT"
+        else
+          echo "action=noop"                        >> "$GITHUB_OUTPUT"
+          echo "issue_number="                      >> "$GITHUB_OUTPUT"
+          echo "issue_url="                         >> "$GITHUB_OUTPUT"
+        fi
+
+        # --- PR outputs ---
+        if [ "$OPEN_PR" != "true" ]; then
+          echo "pr_action=disabled"          >> "$GITHUB_OUTPUT"
+          echo "pr_number="                  >> "$GITHUB_OUTPUT"
+          echo "pr_url="                     >> "$GITHUB_OUTPUT"
+        elif [ -z "$FKB_COMMIT" ]; then
+          echo "pr_action=noop-resolved"     >> "$GITHUB_OUTPUT"
+          echo "pr_number="                  >> "$GITHUB_OUTPUT"
+          echo "pr_url="                     >> "$GITHUB_OUTPUT"
+        elif [ -n "${EXISTING_PR_NUMBER:-}" ]; then
+          echo "pr_action=noop-existing"               >> "$GITHUB_OUTPUT"
+          echo "pr_number=${EXISTING_PR_NUMBER}"        >> "$GITHUB_OUTPUT"
+          echo "pr_url=${EXISTING_PR_URL:-}"            >> "$GITHUB_OUTPUT"
+        elif [ -n "${CREATE_PR_NUMBER:-}" ]; then
+          echo "pr_action=created"                      >> "$GITHUB_OUTPUT"
+          echo "pr_number=${CREATE_PR_NUMBER}"          >> "$GITHUB_OUTPUT"
+          echo "pr_url=${CREATE_PR_URL:-}"              >> "$GITHUB_OUTPUT"
+        else
+          echo "pr_action=noop-no-changes"   >> "$GITHUB_OUTPUT"
+          echo "pr_number="                  >> "$GITHUB_OUTPUT"
+          echo "pr_url="                     >> "$GITHUB_OUTPUT"
+        fi
+
+        # --- Closed PR numbers: merge resolved + stale arrays ---
+        RESOLVED_ARRAY="${CLOSED_RESOLVED:-[]}"
+        STALE_ARRAY="${CLOSED_STALE:-[]}"
+        MERGED=$(printf '%s\n%s' "$RESOLVED_ARRAY" "$STALE_ARRAY" | jq -cs 'add')
+        echo "closed_pr_numbers=${MERGED}" >> "$GITHUB_OUTPUT"

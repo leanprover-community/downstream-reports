@@ -1,0 +1,195 @@
+name: track-incompatibility
+
+# Reusable workflow: open or maintain a single persistent GitHub issue and
+# (by default) a fix PR describing the current regression (first-known-bad
+# commit) affecting a downstream project.  Closes both when the regression
+# clears.
+#
+# Thin wrapper around the track-incompatibility composite action.  For the
+# zero-boilerplate case — a scheduled job that tracks incompatibilities and
+# opens a ready-to-work fix PR — use this workflow directly.
+#
+# Minimal calling workflow (with PR side enabled — the default):
+#
+#   on:
+#     schedule:
+#       - cron: "0 19 * * *"
+#     workflow_dispatch:
+#
+#   jobs:
+#     track:
+#       uses: leanprover-community/downstream-reports/.github/workflows/track-incompatibility.yml@main
+#       permissions:
+#         contents: write
+#         issues: write
+#         pull-requests: write
+#
+# To get exact open-incompatibility-issue parity (issue-only, no PR):
+#
+#   jobs:
+#     track:
+#       uses: leanprover-community/downstream-reports/.github/workflows/track-incompatibility.yml@main
+#       permissions:
+#         issues: write
+#       with:
+#         open-pr: 'false'
+
+on:
+  workflow_call:
+    inputs:
+      downstream:
+        description: >
+          Downstream to look up.  Name key (e.g. "physlib") or repo slug
+          (e.g. "leanprover-community/physlib").  Defaults to the caller's
+          repository.
+        default: ''
+        required: false
+        type: string
+      upstream:
+        description: >
+          Upstream repository slug used to fetch commit metadata for the
+          FKB/LKG commits.  Must match the upstream field in the snapshot.
+        default: 'leanprover-community/mathlib4'
+        required: false
+        type: string
+      label:
+        description: >
+          Label used to identify the persistent tracking issue.  Created if
+          missing in the consuming repo.
+        default: 'dependency-incompatibility'
+        required: false
+        type: string
+      title:
+        description: >
+          Full issue title.  When empty, auto-generated as
+          "Bumping <dep-name> to <fkb-short> would break the build".
+        default: ''
+        required: false
+        type: string
+      close-on-resolve:
+        description: >
+          When the snapshot clears the first-known-bad, close the open
+          tracking issue (if any) with a resolution comment.
+        default: 'true'
+        required: false
+        type: string
+      open-pr:
+        description: >
+          Master switch for the fix-PR side.  Set to "false" for exact
+          open-incompatibility-issue parity (issue lifecycle only, no PR).
+        default: 'true'
+        required: false
+        type: string
+      pr-label:
+        description: >
+          Label applied to fix PRs and used as the primary key when listing
+          stale PRs.  Created automatically when open-pr is true.
+        default: 'dependency-incompatibility-fix'
+        required: false
+        type: string
+      branch-prefix:
+        description: >
+          Prefix for the fix-PR branch.  Final branch is
+          <prefix>-<fkb-short7>.  Defaults to bump-<dependency-name>/fix.
+        default: ''
+        required: false
+        type: string
+      project-dir:
+        description: 'Path to the downstream project root (default: repo root).'
+        default: '.'
+        required: false
+        type: string
+      dependency-name:
+        description: 'Name of the dependency in the lakefile.'
+        default: 'mathlib'
+        required: false
+        type: string
+      base:
+        description: 'Base branch for the fix PR.  Defaults to repo default branch.'
+        default: ''
+        required: false
+        type: string
+      git-user-name:
+        description: 'git user.name for the bump commit.'
+        default: 'github-actions[bot]'
+        required: false
+        type: string
+      git-user-email:
+        description: 'git user.email for the bump commit.'
+        default: '41898282+github-actions[bot]@users.noreply.github.com'
+        required: false
+        type: string
+      close-stale-prs:
+        description: >
+          Close open fix PRs whose head branch does not match the current
+          FKB branch (stale after FKB advances).
+        default: 'true'
+        required: false
+        type: string
+      close-prs-on-resolve:
+        description: >
+          Close open fix PRs when the FKB clears.  Independent of
+          close-on-resolve (which governs the tracking issue).
+        default: 'true'
+        required: false
+        type: string
+    outputs:
+      issue-number:
+        description: 'Issue number (empty when action=noop).'
+        value: ${{ jobs.track.outputs.issue-number }}
+      issue-url:
+        description: 'Issue URL (empty when action=noop).'
+        value: ${{ jobs.track.outputs.issue-url }}
+      action:
+        description: '"created", "updated", "closed", or "noop" — describes the issue lifecycle.'
+        value: ${{ jobs.track.outputs.action }}
+      pr-number:
+        description: 'Fix PR number (empty when pr-action is non-creating).'
+        value: ${{ jobs.track.outputs.pr-number }}
+      pr-url:
+        description: 'Fix PR URL.'
+        value: ${{ jobs.track.outputs.pr-url }}
+      pr-action:
+        description: '"created", "noop-existing", "noop-no-changes", "noop-resolved", or "disabled".'
+        value: ${{ jobs.track.outputs.pr-action }}
+      closed-pr-numbers:
+        description: 'JSON array of PR numbers closed as stale or resolved.'
+        value: ${{ jobs.track.outputs.closed-pr-numbers }}
+
+jobs:
+  track:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+    outputs:
+      issue-number:       ${{ steps.track.outputs.issue-number }}
+      issue-url:          ${{ steps.track.outputs.issue-url }}
+      action:             ${{ steps.track.outputs.action }}
+      pr-number:          ${{ steps.track.outputs.pr-number }}
+      pr-url:             ${{ steps.track.outputs.pr-url }}
+      pr-action:          ${{ steps.track.outputs.pr-action }}
+      closed-pr-numbers:  ${{ steps.track.outputs.closed-pr-numbers }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Track incompatibility
+        id: track
+        uses: leanprover-community/downstream-reports/.github/actions/track-incompatibility@main
+        with:
+          downstream:         ${{ inputs.downstream == '' && github.repository || inputs.downstream }}
+          upstream:           ${{ inputs.upstream }}
+          label:              ${{ inputs.label }}
+          title:              ${{ inputs.title }}
+          close-on-resolve:   ${{ inputs.close-on-resolve }}
+          open-pr:            ${{ inputs.open-pr }}
+          pr-label:           ${{ inputs.pr-label }}
+          branch-prefix:      ${{ inputs.branch-prefix }}
+          project-dir:        ${{ inputs.project-dir }}
+          dependency-name:    ${{ inputs.dependency-name }}
+          base:               ${{ inputs.base }}
+          git-user-name:      ${{ inputs.git-user-name }}
+          git-user-email:     ${{ inputs.git-user-email }}
+          close-stale-prs:    ${{ inputs.close-stale-prs }}
+          close-prs-on-resolve: ${{ inputs.close-prs-on-resolve }}
