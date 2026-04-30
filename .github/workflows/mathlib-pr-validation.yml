@@ -114,6 +114,13 @@ jobs:
           TOOL_BIN:        ${{ runner.temp }}/tool-bin
         run: bash scripts/pr_validation/validate.sh
 
+      - name: Summarize result
+        if: always()
+        env:
+          DOWNSTREAM:  ${{ matrix.name }}
+          OUTPUT_DIR:  ${{ runner.temp }}/artifacts/${{ matrix.name }}
+        run: python3 scripts/pr_validation/summarize.py
+
       - name: Upload result
         if: always()
         uses: actions/upload-artifact@v7.0.0

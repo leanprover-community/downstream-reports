@@ -29,6 +29,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from log_filter import read_log_tail
+
 REPO = "leanprover-community/mathlib4"
 MARKER_PREFIX = "<!-- pr-check-downstream:result:"
 LOG_TAIL_LINES = 30
@@ -96,18 +98,6 @@ def upsert_comment(pr_number: str, marker: str, body: str) -> None:
 
 def short_sha(sha: str) -> str:
     return sha[:7] if sha else "(unknown)"
-
-
-def render_log_tail(log_path: Path) -> str:
-    if not log_path.exists():
-        return ""
-    try:
-        text = log_path.read_text(errors="replace")
-    except OSError:
-        return ""
-    lines = text.splitlines()
-    tail = lines[-LOG_TAIL_LINES:]
-    return "\n".join(tail)
 
 
 def render_body(
@@ -242,7 +232,7 @@ def main() -> int:
             result=result,
             merge_sha=merge_sha,
             run_url=run_url,
-            log_tail=render_log_tail(entry / "build.log"),
+            log_tail=read_log_tail(entry / "build.log", LOG_TAIL_LINES),
         )
         marker = f"{MARKER_PREFIX}{name} -->"
         upsert_comment(pr_number, marker, body)
