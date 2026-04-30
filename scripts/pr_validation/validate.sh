@@ -35,10 +35,12 @@ RESULT="$OUTPUT_DIR/result.json"
 LOG="$OUTPUT_DIR/build.log"
 : > "$LOG"
 
+DOWNSTREAM_SHA=""
+
 emit() {  # status, stage, message
-  python3 - "$1" "$2" "$3" <<'PY'
+  python3 - "$1" "$2" "$3" "$DOWNSTREAM_SHA" <<'PY'
 import json, os, sys
-status, stage, message = sys.argv[1], sys.argv[2], sys.argv[3]
+status, stage, message, downstream_sha = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
 with open(os.environ["RESULT"], "w") as f:
     json.dump(
         {
@@ -47,6 +49,7 @@ with open(os.environ["RESULT"], "w") as f:
             "message": message,
             "downstream": os.environ["DOWNSTREAM"],
             "merge_sha": os.environ["MERGE_SHA"],
+            "downstream_sha": downstream_sha or None,
         },
         f,
     )
@@ -83,6 +86,7 @@ if ! git clone --depth=1 --branch "$DEFAULT_BRANCH" \
   emit infra_failure clone_downstream "could not clone $DOWNSTREAM_REPO"
   exit 0
 fi
+DOWNSTREAM_SHA=$(git -C "$DS" rev-parse HEAD 2>/dev/null || true)
 
 # ---- 4. lakedit set <dep> --path ---------------------------------------------
 if ! "$TOOL_BIN/lakedit" set "$DEPENDENCY_NAME" --path "$ML" \

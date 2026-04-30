@@ -6,7 +6,9 @@ an existing comment on the PR identified by the marker
 
     <!-- pr-check-downstream:result:<name> -->
 
-and edit it in place; otherwise, post a new comment.
+and edit it in place; otherwise, post a new comment.  Each update prepends the
+current run to a hidden history list so the comment accumulates a run log over
+the life of the PR.
 
 Inputs (env):
     GH_TOKEN  — token with issues:write on leanprover-community/mathlib4
@@ -33,6 +35,7 @@ from log_filter import read_log_tail
 
 REPO = "leanprover-community/mathlib4"
 MARKER_PREFIX = "<!-- pr-check-downstream:result:"
+HISTORY_KEY = "pr-check-downstream:history-data"
 LOG_MAX_CHARS = 60_000  # GitHub comment limit is 65,536; leave room for wrapper text
 
 
@@ -46,8 +49,8 @@ def gh_api(args: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
     )
 
 
-def find_existing_comment(pr_number: str, marker: str) -> str | None:
-    """Return the comment id matching ``marker``, or None."""
+def find_existing_comment(pr_number: str, marker: str) -> tuple[str, str] | None:
+    """Return ``(comment_id, body)`` for the comment matching ``marker``, or None."""
     page = 1
     while True:
         result = gh_api(
@@ -61,39 +64,27 @@ def find_existing_comment(pr_number: str, marker: str) -> str | None:
         if not comments:
             return None
         for comment in comments:
-            if marker in comment.get("body", ""):
-                return str(comment["id"])
+            body = comment.get("body", "")
+            if marker in body:
+                return str(comment["id"]), body
         if len(comments) < 100:
             return None
         page += 1
 
 
-def upsert_comment(pr_number: str, marker: str, body: str) -> None:
-    existing = find_existing_comment(pr_number, marker)
-    if existing is None:
-        gh_api(
-            [
-                "-X",
-                "POST",
-                "-H",
-                "Accept: application/vnd.github+json",
-                f"/repos/{REPO}/issues/{pr_number}/comments",
-                "-f",
-                f"body={body}",
-            ]
-        )
-    else:
-        gh_api(
-            [
-                "-X",
-                "PATCH",
-                "-H",
-                "Accept: application/vnd.github+json",
-                f"/repos/{REPO}/issues/comments/{existing}",
-                "-f",
-                f"body={body}",
-            ]
-        )
+def post_comment(pr_number: str, body: str) -> None:
+    gh_api(
+        [
+            "-X",
+            "POST",
+            "-H",
+            "Accept: application/vnd.github+json",
+            f"/repos/{REPO}/issues/{pr_number}/comments",
+            "-f",
+            f"body={body}",
+        ]
+    )
+
 
 
 def get_pr_head_sha(merge_sha: str) -> str | None:
@@ -118,6 +109,71 @@ def short_sha(sha: str) -> str:
     return sha[:7] if sha else "(unknown)"
 
 
+# ---------------------------------------------------------------------------
+# History helpers
+# ---------------------------------------------------------------------------
+
+def parse_history(name: str, body: str) -> list[dict[str, Any]]:
+    """Extract the history list embedded in a previous comment body."""
+    prefix = f"<!-- {HISTORY_KEY}:{name}\n"
+    start = body.find(prefix)
+    if start == -1:
+        return []
+    json_start = start + len(prefix)
+    end = body.find("\n-->", json_start)
+    if end == -1:
+        return []
+    try:
+        data = json.loads(body[json_start:end])
+        return data if isinstance(data, list) else []
+    except (json.JSONDecodeError, ValueError):
+        return []
+
+
+def encode_history(name: str, entries: list[dict[str, Any]]) -> str:
+    return f"<!-- {HISTORY_KEY}:{name}\n{json.dumps(entries)}\n-->"
+
+
+def make_history_entry(
+    head_sha: str | None,
+    merge_sha: str,
+    status: str,
+    run_url: str,
+    downstream_sha: str | None,
+) -> dict[str, Any]:
+    return {
+        "head_sha": head_sha or merge_sha,
+        "status": status,
+        "run_url": run_url,
+        "downstream_sha": downstream_sha or None,
+    }
+
+
+def render_history_line(entry: dict[str, Any], repo_slug: str, branch: str) -> str:
+    head_sha = entry.get("head_sha", "")
+    status = entry.get("status", "")
+    run_url = entry.get("run_url", "")
+    ds_sha = entry.get("downstream_sha") or ""
+
+    icon = "✅" if status == "pass" else "❌" if status == "fail" else "⚠️"
+    verb = "passed" if status == "pass" else "failed" if status == "fail" else "infra failure"
+
+    sha_link = (
+        f"[`{short_sha(head_sha)}`](https://github.com/{REPO}/commit/{head_sha})"
+        if head_sha
+        else "`(unknown)`"
+    )
+    ds_part = f" [`{short_sha(ds_sha)}`]" if ds_sha else ""
+    return (
+        f"- {sha_link} {icon} {verb} against"
+        f" `{repo_slug}@{branch}`{ds_part} — [run]({run_url})"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Rendering
+# ---------------------------------------------------------------------------
+
 def render_body(
     name: str,
     repo: str,
@@ -127,6 +183,7 @@ def render_body(
     merge_sha: str,
     run_url: str,
     log_tail: str,
+    history: list[dict[str, Any]],
 ) -> str:
     status = result.get("status", "infra_failure")
     marker = f"{MARKER_PREFIX}{name} -->"
@@ -147,22 +204,19 @@ def render_body(
         header = f"### ❌ {name} — fails against this PR"
     else:  # infra_failure
         stage = result.get("stage", "unknown")
-        header = (
-            f"### ⚠️ {name} — could not validate (infra: {stage})"
-        )
+        header = f"### ⚠️ {name} — could not validate (infra: {stage})"
 
     parts = [
         header,
         "",
-        f"Tested {tested_ref} against `{repo_slug}@{branch}`.",
-        f"[run]({run_url})",
+        f"Tested {tested_ref} against `{repo_slug}@{branch}`. [run]({run_url})",
         "",
     ]
 
     if status == "fail" and log_tail:
         parts.extend(
             [
-                "<details><summary>failure log:</summary>",
+                "<details><summary>failure log</summary>",
                 "",
                 "```",
                 log_tail,
@@ -195,7 +249,22 @@ def render_body(
             ]
         )
 
+    # Previous runs (history[0] is the current run; history[1:] are older ones)
+    previous = history[1:]
+    if previous:
+        parts.extend(
+            [
+                "---",
+                "",
+                "**Previous runs**",
+                "",
+                *[render_history_line(e, repo_slug, branch) for e in previous],
+                "",
+            ]
+        )
+
     parts.append(marker)
+    parts.append(encode_history(name, history))
     return "\n".join(parts)
 
 
@@ -252,6 +321,21 @@ def main() -> int:
 
         name = result.get("downstream") or entry.name[len("result-"):]
         meta = inventory.get(name, {})
+        marker = f"{MARKER_PREFIX}{name} -->"
+
+        existing = find_existing_comment(pr_number, marker)
+        history = parse_history(name, existing[1] if existing else "")
+        history = [
+            make_history_entry(
+                head_sha=head_sha,
+                merge_sha=merge_sha,
+                status=result.get("status", "infra_failure"),
+                run_url=run_url,
+                downstream_sha=result.get("downstream_sha"),
+            ),
+            *history,
+        ]
+
         body = render_body(
             name=name,
             repo=meta.get("repo", ""),
@@ -261,9 +345,10 @@ def main() -> int:
             merge_sha=merge_sha,
             run_url=run_url,
             log_tail=read_log_tail(entry / "build.log", LOG_MAX_CHARS),
+            history=history,
         )
-        marker = f"{MARKER_PREFIX}{name} -->"
-        upsert_comment(pr_number, marker, body)
+
+        post_comment(pr_number, body)
         posted += 1
 
     if posted == 0:
