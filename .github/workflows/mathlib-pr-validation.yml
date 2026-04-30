@@ -32,6 +32,7 @@ on:
 permissions:
   contents: read
   actions: read
+  id-token: write   # required for the Azure Key Vault token mint in `report`
 
 concurrency:
   # If a fresh dispatch arrives for the same PR (e.g. a new push), drop the
@@ -128,6 +129,13 @@ jobs:
     # artifacts uploaded by `validate` are still available for manual review.
     if: ${{ !cancelled() && needs.plan.outputs.has_downstreams == 'true' && inputs.post_results }}
     runs-on: ubuntu-latest
+    # Bind to an environment so the OIDC subject is
+    #   repo:leanprover-community/downstream-reports:environment:pr-validation-token
+    # rather than a per-branch ref.  The federated credential on the
+    # `downstream-reports-automation` Entra app pins to this subject, which
+    # means manual dispatches from a feature branch authenticate the same
+    # way as production runs from main.
+    environment: pr-validation-token
     steps:
       - uses: actions/checkout@v6
 
@@ -143,10 +151,13 @@ jobs:
 
       - name: Mint App token (for mathlib4)
         id: app_token
-        uses: actions/create-github-app-token@v2
+        uses: leanprover-community/mathlib-ci/.github/actions/azure-create-github-app-token@3bb576208589a435eeaeac9b144a1b7c3e948760
         with:
-          app-id: ${{ vars.DOWNSTREAM_VALIDATOR_APP_ID }}
-          private-key: ${{ secrets.DOWNSTREAM_VALIDATOR_PRIVATE_KEY }}
+          app-id: ${{ secrets.DOWNSTREAM_REPORTS_AUTOMATION_APP_ID }}
+          key-vault-name: ${{ vars.MATHLIB_AZ_KEY_VAULT_NAME }}
+          key-name: downstream-reports-automation-app-pk
+          azure-client-id: ${{ vars.GH_APP_AZURE_CLIENT_ID_DOWNSTREAM_REPORTS_AUTOMATION }}
+          azure-tenant-id: ${{ secrets.LPC_AZ_TENANT_ID }}
           owner: leanprover-community
           repositories: mathlib4
 
