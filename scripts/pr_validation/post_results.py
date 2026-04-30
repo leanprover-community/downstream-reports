@@ -162,7 +162,7 @@ def render_body(
     if status == "fail" and log_tail:
         parts.extend(
             [
-                "<details><summary>last build log lines</summary>",
+                "<details><summary>failure log:</summary>",
                 "",
                 "```",
                 log_tail,
