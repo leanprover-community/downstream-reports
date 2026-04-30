@@ -11,7 +11,7 @@ and edit it in place; otherwise, post a new comment.
 Inputs (env):
     GH_TOKEN  — token with issues:write on leanprover-community/mathlib4
     PR_NUMBER — PR number on mathlib4
-    MERGE_SHA — merge SHA we tested against
+    MERGE_SHA — merge SHA we tested against (used to derive the PR head SHA)
     RUN_URL   — link to the validation run (for the result body)
 
 Inputs (CLI):
@@ -33,7 +33,7 @@ from log_filter import read_log_tail
 
 REPO = "leanprover-community/mathlib4"
 MARKER_PREFIX = "<!-- pr-check-downstream:result:"
-LOG_TAIL_LINES = 30
+LOG_MAX_CHARS = 60_000  # GitHub comment limit is 65,536; leave room for wrapper text
 
 
 def gh_api(args: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
@@ -96,6 +96,24 @@ def upsert_comment(pr_number: str, marker: str, body: str) -> None:
         )
 
 
+def get_pr_head_sha(merge_sha: str) -> str | None:
+    """Return the PR head SHA from the merge commit's second parent, or None on failure."""
+    try:
+        result = gh_api(
+            [
+                "-H",
+                "Accept: application/vnd.github+json",
+                f"/repos/{REPO}/commits/{merge_sha}",
+            ]
+        )
+        parents = json.loads(result.stdout).get("parents", [])
+        if len(parents) >= 2:
+            return parents[1]["sha"]
+    except Exception as exc:
+        print(f"warning: could not fetch PR head SHA: {exc}", file=sys.stderr)
+    return None
+
+
 def short_sha(sha: str) -> str:
     return sha[:7] if sha else "(unknown)"
 
@@ -105,15 +123,23 @@ def render_body(
     repo: str,
     default_branch: str,
     result: dict[str, Any],
+    head_sha: str | None,
     merge_sha: str,
     run_url: str,
     log_tail: str,
 ) -> str:
     status = result.get("status", "infra_failure")
     marker = f"{MARKER_PREFIX}{name} -->"
-    sha_short = short_sha(merge_sha)
     repo_slug = repo or "(unknown)"
     branch = default_branch or "(unknown)"
+
+    if head_sha:
+        tested_ref = (
+            f"[`{short_sha(head_sha)}`]"
+            f"(https://github.com/{REPO}/commit/{head_sha})"
+        )
+    else:
+        tested_ref = f"`{short_sha(merge_sha)}`"
 
     if status == "pass":
         header = f"### ✅ {name} — builds against this PR"
@@ -128,7 +154,7 @@ def render_body(
     parts = [
         header,
         "",
-        f"Tested merge ref `{sha_short}` against `{repo_slug}@{branch}`.",
+        f"Tested {tested_ref} against `{repo_slug}@{branch}`.",
         f"[run]({run_url})",
         "",
     ]
@@ -165,7 +191,6 @@ def render_body(
                 " currently broken for this downstream, the failure may not be"
                 " attributable to this PR. See the latest downstream report"
                 " for downstream health.",
-                "> *(TODO: auto-include master baseline.)*",
                 "",
             ]
         )
@@ -201,6 +226,8 @@ def main() -> int:
     merge_sha = os.environ["MERGE_SHA"]
     run_url = os.environ["RUN_URL"]
 
+    head_sha = get_pr_head_sha(merge_sha)
+
     inventory = load_inventory_lookup()
 
     if not args.results_dir.exists():
@@ -230,9 +257,10 @@ def main() -> int:
             repo=meta.get("repo", ""),
             default_branch=meta.get("default_branch", ""),
             result=result,
+            head_sha=head_sha,
             merge_sha=merge_sha,
             run_url=run_url,
-            log_tail=read_log_tail(entry / "build.log", LOG_TAIL_LINES),
+            log_tail=read_log_tail(entry / "build.log", LOG_MAX_CHARS),
         )
         marker = f"{MARKER_PREFIX}{name} -->"
         upsert_comment(pr_number, marker, body)

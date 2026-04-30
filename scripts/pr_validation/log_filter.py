@@ -26,13 +26,13 @@ def filter_log_text(text: str) -> str:
     return "\n".join(line for line in text.splitlines() if not is_noise_line(line))
 
 
-def read_log_tail(log_path: Path, lines: int) -> str:
-    """Return the last ``lines`` non-noise lines of ``log_path``, or '' on miss."""
+def read_log_tail(log_path: Path, max_chars: int) -> str:
+    """Return up to ``max_chars`` from the end of the filtered ``log_path``, or '' on miss."""
     if not log_path.exists():
         return ""
     try:
         text = log_path.read_text(errors="replace")
     except OSError:
         return ""
-    kept = [line for line in text.splitlines() if not is_noise_line(line)]
-    return "\n".join(kept[-lines:])
+    filtered = filter_log_text(text)
+    return filtered[-max_chars:] if len(filtered) > max_chars else filtered

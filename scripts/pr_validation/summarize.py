@@ -19,7 +19,7 @@ from pathlib import Path
 
 from log_filter import read_log_tail
 
-LOG_TAIL_LINES = 50
+LOG_MAX_CHARS = 500_000  # GitHub step-summary limit is 1 MB per step
 
 ICONS = {
     "pass": "✅",
@@ -64,17 +64,16 @@ def main() -> int:
     ]
 
     if status != "pass":
-        tail = read_log_tail(log_path, LOG_TAIL_LINES)
+        tail = read_log_tail(log_path, LOG_MAX_CHARS)
         if tail:
             print()
-            print(f"----- last {LOG_TAIL_LINES} lines of build.log (filtered) -----")
+            print("----- build.log (filtered) -----")
             print(tail)
             print("----------------------------------------------------")
 
             summary_lines.extend(
                 [
-                    f"<details><summary>last {LOG_TAIL_LINES} lines of"
-                    " <code>build.log</code> (filtered)</summary>",
+                    "<details><summary><code>build.log</code> (filtered)</summary>",
                     "",
                     "```",
                     tail,
