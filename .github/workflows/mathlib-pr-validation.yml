@@ -155,6 +155,7 @@ jobs:
         with:
           path: results
           pattern: result-*
+          merge-multiple: false
 
       - name: Mint App token (for mathlib4)
         id: app_token
