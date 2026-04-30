@@ -71,19 +71,6 @@ def main() -> int:
             print(tail)
             print("----------------------------------------------------")
 
-            summary_lines.extend(
-                [
-                    "<details><summary><code>build.log</code> (filtered)</summary>",
-                    "",
-                    "```",
-                    tail,
-                    "```",
-                    "",
-                    "</details>",
-                    "",
-                ]
-            )
-
     if summary_path:
         with open(summary_path, "a") as handle:
             handle.write("\n".join(summary_lines))
