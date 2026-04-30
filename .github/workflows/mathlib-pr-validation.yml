@@ -110,7 +110,7 @@ jobs:
           DEFAULT_BRANCH:  ${{ matrix.default_branch }}
           DEPENDENCY_NAME: ${{ matrix.dependency_name }}
           WORKDIR:         ${{ runner.temp }}/pr-validation
-          OUTPUT_DIR:      ${{ runner.temp }}/artifacts/${{ matrix.name }}
+          OUTPUT_DIR:      ${{ runner.temp }}/artifacts/result-${{ matrix.name }}
           TOOL_BIN:        ${{ runner.temp }}/tool-bin
         run: bash scripts/pr_validation/validate.sh
 
@@ -118,7 +118,7 @@ jobs:
         if: always()
         env:
           DOWNSTREAM:  ${{ matrix.name }}
-          OUTPUT_DIR:  ${{ runner.temp }}/artifacts/${{ matrix.name }}
+          OUTPUT_DIR:  ${{ runner.temp }}/artifacts/result-${{ matrix.name }}
         run: python3 scripts/pr_validation/summarize.py
 
       - name: Upload result
@@ -126,7 +126,7 @@ jobs:
         uses: actions/upload-artifact@v7.0.0
         with:
           name: result-${{ matrix.name }}
-          path: ${{ runner.temp }}/artifacts/${{ matrix.name }}
+          path: ${{ runner.temp }}/artifacts
           if-no-files-found: error
 
   report:
