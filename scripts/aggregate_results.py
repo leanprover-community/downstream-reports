@@ -501,6 +501,52 @@ def apply_result(
     ), EpisodeState.NEW_FAILURE
 
 
+def find_non_adjacent_endpoints(
+    statuses: dict[str, DownstreamStatusRecord],
+    distances: dict[tuple[str, str], int | None],
+) -> set[str]:
+    """Identify downstreams whose persisted (LKG, FKB) pair violates adjacency.
+
+    Defence-in-depth tripwire: ``apply_result`` is designed to preserve the
+    invariant (LKG and FKB differ by exactly one upstream commit when both
+    are set), but several feeder paths and historical records can introduce
+    drift.  This check uses commit distances already fetched via the GitHub
+    compare API to flag any pair that violates the invariant; the caller
+    should exclude the returned downstreams from persistence.
+
+    Returns the set of offending downstream names.  Silent (empty return) for
+    statuses that are invariant-vacuous (LKG or FKB unset), confirmed
+    adjacent, or cannot be checked because the compare lookup failed
+    (``distances[pair]`` is ``None`` or absent).  Prints a loud warning for
+    each offender as a side effect so the violation is visible in CI logs.
+    """
+    offending: set[str] = set()
+    for name, status in sorted(statuses.items()):
+        lkg = status.last_known_good_commit
+        fkb = status.first_known_bad_commit
+        if lkg is None or fkb is None:
+            continue
+        if lkg == fkb:
+            print(
+                f"[adjacency] {name}: LKG and FKB are the same commit "
+                f"({lkg[:12]}) — expected LKG to be the parent of FKB"
+            )
+            offending.add(name)
+            continue
+        ahead_by = distances.get((lkg, fkb))
+        if ahead_by is None:
+            # Distance not in the cache (lookup failed or wasn't requested);
+            # no signal either way.
+            continue
+        if ahead_by != 1:
+            print(
+                f"[adjacency] {name}: LKG→FKB distance is {ahead_by}, "
+                f"expected 1 (LKG={lkg[:12]}, FKB={fkb[:12]})"
+            )
+            offending.add(name)
+    return offending
+
+
 def render_report(
     *,
     recorded_at: str,
@@ -805,6 +851,10 @@ def main() -> int:
             compare_pairs.add((r.pinned_commit, r.target_commit))
         if r.pinned_commit and r.last_known_good and r.pinned_commit != r.last_known_good:
             compare_pairs.add((r.pinned_commit, r.last_known_good))
+        # LKG→FKB pair feeds the adjacency tripwire below.
+        if r.last_known_good and r.first_known_bad and r.last_known_good != r.first_known_bad:
+            compare_pairs.add((r.last_known_good, r.first_known_bad))
+    distances: dict[tuple[str, str], int | None] = {}
     if compare_pairs:
         print(f"Fetching commit distances for {len(compare_pairs)} unique pair(s)…")
         distances = fetch_commit_distances(compare_pairs, args.upstream, args.github_token)
@@ -812,6 +862,13 @@ def main() -> int:
             pin = r.pinned_commit
             r.age_commits = distances.get((pin, r.target_commit)) if pin and r.target_commit else None
             r.bump_commits = distances.get((pin, r.last_known_good)) if pin and r.last_known_good else None
+
+    # Tripwire: verify the adjacency invariant on every record about to be
+    # persisted.  Any non-adjacent pair indicates a bug in apply_result or its
+    # feeder paths; we exclude those downstreams from persistence.  Transient
+    # compare-API failures return None and are silently skipped here, so a
+    # flaky GitHub API alone won't trigger the exclusion.
+    offending = find_non_adjacent_endpoints(updated_statuses, distances)
 
     for r in result_records:
         status = updated_statuses.get(r.downstream)
@@ -869,6 +926,14 @@ def main() -> int:
                 updated_statuses[name], last_good_release=tag, last_good_release_commit=sha
             )
 
+    if offending:
+        print(
+            f"[aggregate] Excluding {len(offending)} downstream(s) from persistence "
+            f"due to LKG/FKB adjacency invariant violation: {sorted(offending)}"
+        )
+        updated_statuses = {k: v for k, v in updated_statuses.items() if k not in offending}
+        result_records = [r for r in result_records if r.downstream not in offending]
+        validate_jobs = [j for j in validate_jobs if j.downstream not in offending]
     if result_records:
         backend.save_run(
             run_id=args.run_id,
@@ -885,10 +950,14 @@ def main() -> int:
     else:
         print("[aggregate] No result records to persist — skipping save_run.")
 
+    # Always write the report — useful as a debug artifact even when
+    # persistence was blocked by the adjacency tripwire.
     if args.report_output is not None:
         args.report_output.parent.mkdir(parents=True, exist_ok=True)
         args.report_output.write_text(markdown)
 
+    # Alert payload excludes offending downstreams: an unpersisted NEW_FAILURE /
+    # RECOVERED transition would re-fire on every subsequent run, spamming Zulip.
     if args.alert_output is not None:
         args.alert_output.parent.mkdir(parents=True, exist_ok=True)
         alert_payload: dict[str, Any] = {
@@ -901,7 +970,8 @@ def main() -> int:
             alert_payload["skipped"] = skipped_rows
         args.alert_output.write_text(json.dumps(alert_payload, sort_keys=True))
 
-    return 0
+    # Nonzero exit so CI fails loudly when the tripwire fired.
+    return 1 if offending else 0
 
 
 if __name__ == "__main__":

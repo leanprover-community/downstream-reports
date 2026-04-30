@@ -16,6 +16,7 @@ from scripts.aggregate_results import (
     ValidationResult,
     _pin_crossed_fkb,
     apply_result,
+    find_non_adjacent_endpoints,
     load_culprit_log_text,
     render_report,
     truncate_log_text,
@@ -357,6 +358,109 @@ class ApplyResultTests(unittest.TestCase):
         )
         updated, _ = apply_result(current, result)
         self.assertEqual(updated.downstream_commit, "old_ds_head")
+
+
+class FindNonAdjacentEndpointsTests(unittest.TestCase):
+    """Tripwire that verifies LKG is the immediate parent of FKB on persisted records."""
+
+    def test_no_warning_when_pair_is_adjacent(self) -> None:
+        """Scenario: distance from LKG to FKB is exactly 1 — invariant holds."""
+        statuses = {
+            "Foo": DownstreamStatusRecord(
+                last_known_good_commit="lkg_sha",
+                first_known_bad_commit="fkb_sha",
+            ),
+        }
+        distances = {("lkg_sha", "fkb_sha"): 1}
+        self.assertEqual(find_non_adjacent_endpoints(statuses, distances), set())
+
+    def test_warns_when_pair_is_not_adjacent(self) -> None:
+        """Scenario: LKG and FKB are several commits apart — invariant violated."""
+        statuses = {
+            "Foo": DownstreamStatusRecord(
+                last_known_good_commit="lkg_sha",
+                first_known_bad_commit="fkb_sha",
+            ),
+        }
+        distances = {("lkg_sha", "fkb_sha"): 5}
+        offending = find_non_adjacent_endpoints(statuses, distances)
+        self.assertEqual(offending, {"Foo"})
+
+    def test_warns_when_lkg_equals_fkb(self) -> None:
+        """Scenario: degenerate state where LKG and FKB are the same commit."""
+        statuses = {
+            "Foo": DownstreamStatusRecord(
+                last_known_good_commit="same_sha",
+                first_known_bad_commit="same_sha",
+            ),
+        }
+        offending = find_non_adjacent_endpoints(statuses, {})
+        self.assertEqual(offending, {"Foo"})
+
+    def test_silent_when_lkg_is_none(self) -> None:
+        """Scenario: head-only NEW_FAILURE leaves LKG unset — invariant vacuous."""
+        statuses = {
+            "Foo": DownstreamStatusRecord(
+                last_known_good_commit=None,
+                first_known_bad_commit="fkb_sha",
+            ),
+        }
+        self.assertEqual(find_non_adjacent_endpoints(statuses, {}), set())
+
+    def test_silent_when_fkb_is_none(self) -> None:
+        """Scenario: PASSING/RECOVERED state has no active episode — invariant vacuous."""
+        statuses = {
+            "Foo": DownstreamStatusRecord(
+                last_known_good_commit="lkg_sha",
+                first_known_bad_commit=None,
+            ),
+        }
+        self.assertEqual(find_non_adjacent_endpoints(statuses, {}), set())
+
+    def test_silent_when_distance_lookup_failed(self) -> None:
+        """Scenario: GitHub compare API returned None — no signal, no warning."""
+        statuses = {
+            "Foo": DownstreamStatusRecord(
+                last_known_good_commit="lkg_sha",
+                first_known_bad_commit="fkb_sha",
+            ),
+        }
+        distances: dict[tuple[str, str], int | None] = {("lkg_sha", "fkb_sha"): None}
+        self.assertEqual(find_non_adjacent_endpoints(statuses, distances), set())
+
+    def test_silent_when_distance_not_in_cache(self) -> None:
+        """Scenario: pair was never requested (e.g. main built compare_pairs differently)."""
+        statuses = {
+            "Foo": DownstreamStatusRecord(
+                last_known_good_commit="lkg_sha",
+                first_known_bad_commit="fkb_sha",
+            ),
+        }
+        self.assertEqual(find_non_adjacent_endpoints(statuses, {}), set())
+
+    def test_warns_for_each_offending_downstream(self) -> None:
+        """Scenario: multiple downstreams checked independently."""
+        statuses = {
+            "Foo": DownstreamStatusRecord(
+                last_known_good_commit="lkg_a",
+                first_known_bad_commit="fkb_a",
+            ),
+            "Bar": DownstreamStatusRecord(
+                last_known_good_commit="lkg_b",
+                first_known_bad_commit="fkb_b",
+            ),
+            "Baz": DownstreamStatusRecord(
+                last_known_good_commit="lkg_c",
+                first_known_bad_commit="fkb_c",
+            ),
+        }
+        distances = {
+            ("lkg_a", "fkb_a"): 1,   # adjacent → no warn
+            ("lkg_b", "fkb_b"): 7,   # not adjacent → warn
+            ("lkg_c", "fkb_c"): 1,   # adjacent → no warn
+        }
+        offending = find_non_adjacent_endpoints(statuses, distances)
+        self.assertEqual(offending, {"Bar"})
 
 
 class PinCrossedFkbTests(unittest.TestCase):
