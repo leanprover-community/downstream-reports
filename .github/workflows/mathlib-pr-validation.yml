@@ -1,0 +1,26 @@
+name: Mathlib PR validation (shim)
+
+on:
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        required: true
+        type: string
+      head_repo:
+        required: true
+        type: string
+      merge_sha:
+        required: true
+        type: string
+      downstreams:
+        required: true
+        type: string
+      post_results:
+        required: true
+        type: string
+
+jobs:
+  noop:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "Shim workflow on default branch triggered."
