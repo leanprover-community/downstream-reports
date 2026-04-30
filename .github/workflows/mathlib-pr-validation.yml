@@ -1,0 +1,159 @@
+name: mathlib-pr-validation
+
+# Runs the per-PR downstream validation triggered by `/check-downstream` on a
+# mathlib4 PR. Dispatched from `mathlib4/.github/workflows/pr_check_downstream.yml`
+# via a GitHub App token. See `docs/internal/pr-validation-workflow.md`.
+
+on:
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: "mathlib4 PR number."
+        required: true
+        type: string
+      head_repo:
+        description: "owner/repo that the PR head lives in (supports forks)."
+        required: true
+        type: string
+      merge_sha:
+        description: "Resolved SHA of refs/pull/N/merge."
+        required: true
+        type: string
+      downstreams:
+        description: "Comma-separated downstream names."
+        required: true
+        type: string
+      post_results:
+        description: "Post result comments back on the mathlib4 PR. Set to false to skip the App-token + comment step (useful for testing before the App is wired up)."
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  # If a fresh dispatch arrives for the same PR (e.g. a new push), drop the
+  # older run.
+  group: mathlib-pr-validation-${{ inputs.pr_number }}-${{ inputs.merge_sha }}
+  cancel-in-progress: true
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+      has_downstreams: ${{ steps.plan.outputs.has_downstreams }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6.2.0
+        with:
+          python-version: '3.x'
+
+      - id: plan
+        name: Build job matrix
+        env:
+          INPUT_DOWNSTREAMS: ${{ inputs.downstreams }}
+        run: |
+          python3 scripts/pr_validation/build_matrix.py \
+            --inventory ci/inventory/downstreams.json \
+            --names "$INPUT_DOWNSTREAMS" \
+            --output matrix.json
+          cat matrix.json
+          MATRIX_JSON=$(tr -d '\n' < matrix.json)
+          echo "matrix=$MATRIX_JSON" >> "$GITHUB_OUTPUT"
+          if echo "$MATRIX_JSON" | jq -e '.include | length > 0' >/dev/null; then
+            echo "has_downstreams=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_downstreams=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  validate:
+    if: ${{ needs.plan.outputs.has_downstreams == 'true' }}
+    needs: plan
+    name: "validate: ${{ matrix.name }}"
+    # Self-hosted runner without CI secrets in scope: the validate job clones
+    # arbitrary fork code (the PR head) and runs `lake build`, so it must not
+    # see POSTGRES_DSN or other regression-side secrets.
+    runs-on: ubuntu-latest # [self-hosted, pr]
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix: ${{ fromJson(needs.plan.outputs.matrix) }}
+    timeout-minutes: ${{ fromJSON(vars.PR_VALIDATION_TIMEOUT_MINUTES || '90') }}
+    steps:
+      - uses: actions/checkout@v6   # hopscotch-reports itself, for scripts
+
+      - name: Install Lean (elan)
+        run: |
+          curl https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh -sSf \
+            | sh -s -- -y --default-toolchain none
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+
+      - name: Build / fetch lakedit
+        env:
+          HOPSCOTCH_REF: lakedit # ${{ vars.HOPSCOTCH_REF || 'v1.4.1' }}
+          TOOL_BIN: ${{ runner.temp }}/tool-bin
+        run: bash scripts/pr_validation/install_lakedit.sh
+
+      - name: Run validation
+        env:
+          PR_NUMBER:       ${{ inputs.pr_number }}
+          HEAD_REPO:       ${{ inputs.head_repo }}
+          MERGE_SHA:       ${{ inputs.merge_sha }}
+          DOWNSTREAM:      ${{ matrix.name }}
+          DOWNSTREAM_REPO: ${{ matrix.repo }}
+          DEFAULT_BRANCH:  ${{ matrix.default_branch }}
+          DEPENDENCY_NAME: ${{ matrix.dependency_name }}
+          WORKDIR:         ${{ runner.temp }}/pr-validation
+          OUTPUT_DIR:      ${{ runner.temp }}/artifacts/${{ matrix.name }}
+          TOOL_BIN:        ${{ runner.temp }}/tool-bin
+        run: bash scripts/pr_validation/validate.sh
+
+      - name: Upload result
+        if: always()
+        uses: actions/upload-artifact@v7.0.0
+        with:
+          name: result-${{ matrix.name }}
+          path: ${{ runner.temp }}/artifacts/${{ matrix.name }}
+          if-no-files-found: error
+
+  report:
+    needs: [plan, validate]
+    # Skipped when `post_results=false` so the workflow can be exercised
+    # without the GitHub App / token plumbing in place. The `result-<name>`
+    # artifacts uploaded by `validate` are still available for manual review.
+    if: ${{ !cancelled() && needs.plan.outputs.has_downstreams == 'true' && inputs.post_results }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6.2.0
+        with:
+          python-version: '3.x'
+
+      - uses: actions/download-artifact@v8.0.1
+        with:
+          path: results
+          pattern: result-*
+
+      - name: Mint App token (for mathlib4)
+        id: app_token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.DOWNSTREAM_VALIDATOR_APP_ID }}
+          private-key: ${{ secrets.DOWNSTREAM_VALIDATOR_PRIVATE_KEY }}
+          owner: leanprover-community
+          repositories: mathlib4
+
+      - name: Post / update result comments
+        env:
+          GH_TOKEN:  ${{ steps.app_token.outputs.token }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+          MERGE_SHA: ${{ inputs.merge_sha }}
+          RUN_URL:   ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: python3 scripts/pr_validation/post_results.py --results-dir results
