@@ -514,6 +514,9 @@ runs:
             --body  "$ISSUE_BODY" \
             --label "$LABEL")
           ISSUE_NUMBER="${ISSUE_URL##*/}"
+          # gh issue create --label is silently dropped in some environments;
+          # apply it explicitly as a second call to guarantee it is present.
+          gh issue edit "$ISSUE_NUMBER" --add-label "$LABEL"
           echo "Created issue #$ISSUE_NUMBER: $ISSUE_URL"
           echo "action=created"               >> "$GITHUB_OUTPUT"
         fi
