@@ -727,6 +727,12 @@ runs:
         git config user.name  "$GIT_USER_NAME"
         git config user.email "$GIT_USER_EMAIL"
 
+        # actions/checkout sets http.extraHeader with GITHUB_TOKEN; unset it so
+        # the App token in the push URL isn't overridden by that credential.
+        # Restore it afterwards so callers that rely on persisted credentials still work.
+        OLD_HEADER=$(git config --local http.https://github.com/.extraheader || true)
+        git config --unset http.https://github.com/.extraheader || true
+
         git checkout -B "$BRANCH"
         git add -A
         git commit -m "${COMMIT_MESSAGE:-chore: bump dependency to first-known-bad}"
@@ -734,6 +740,10 @@ runs:
         git push \
           "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
           "$BRANCH"
+
+        if [ -n "$OLD_HEADER" ]; then
+          git config --local http.https://github.com/.extraheader "$OLD_HEADER"
+        fi
 
         echo "Pushed branch '$BRANCH'."
 

@@ -104,10 +104,17 @@ runs:
         git config user.name  "$GIT_USER_NAME"
         git config user.email "$GIT_USER_EMAIL"
 
+        OLD_HEADER=$(git config --local http.https://github.com/.extraheader || true)
+        git config --unset http.https://github.com/.extraheader || true
+
         git checkout -B "$BRANCH"
         git add -A
         git commit -m "$MSG"
         git push --force "https://x-access-token:${TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "$BRANCH"
+
+        if [ -n "$OLD_HEADER" ]; then
+          git config --local http.https://github.com/.extraheader "$OLD_HEADER"
+        fi
 
     # ------------------------------------------------------------------
     # Step 3: Create or update the PR.
