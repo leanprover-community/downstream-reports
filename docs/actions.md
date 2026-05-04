@@ -54,12 +54,12 @@ inventory.
 
 | Input | Default | Description |
 |-------|---------|-------------|
-| `branch` | `hopscotch/lkg-bump` | Branch name for the bump PR. Force-pushed on every run. |
+| `branch` | `hopscotch/lkg-bump` | Branch name for the bump PR. For static query-types this is the PR branch (force-pushed every run). For `query-type: latest-known` this is the LKG branch; FKB resolutions instead use a fresh per-SHA branch under `hopscotch/fix-incompatibility/<short-sha>` (not configurable). |
 | `base` | repo default branch | Base branch for the PR |
 | `labels` | — | Comma-separated labels to apply to the PR |
 | `dependency-name` | `mathlib` | Dependency name in the lakefile |
 | `hopscotch-version` | `v1.4.1` | Hopscotch release tag to download |
-| `query-type` | `last-known-good` | Which commit to bump to: `last-known-good` or `first-known-bad` |
+| `query-type` | `last-known-good` | Which commit to bump to: `last-known-good`, `first-known-bad`, `last-good-release`, or `latest-known` (FKB if one exists, else LKG — keeps a single PR open at a time, swapping between LKG-tracking and FKB-fix automatically). |
 
 ### Outputs
 
@@ -148,7 +148,7 @@ suggested PR title, body snippet, and git commit message — pass
 | `dependency-name` | no | `mathlib` | Name of the dependency in the lakefile |
 | `hopscotch-version` | no | `v1.4.1` | Hopscotch release tag to download |
 | `generate-description` | no | `true` | Set to `false` to skip GitHub API calls; `pr-title`, `bump-description`, and `commit-message` will be empty |
-| `query-type` | no | `last-known-good` | Which commit to bump to: `last-known-good`, `first-known-bad`, or `last-good-release` (semver tag, e.g. `v4.13.0`) |
+| `query-type` | no | `last-known-good` | Which commit to bump to: `last-known-good`, `first-known-bad`, `last-good-release` (semver tag, e.g. `v4.13.0`), or `latest-known` (FKB if one exists, else LKG). |
 
 ### Outputs
 
@@ -160,9 +160,10 @@ suggested PR title, body snippet, and git commit message — pass
 | `updated` | `"true"` if hopscotch successfully bumped the project |
 | `skipped` | `"true"` if the project was already at the target commit (or target is empty) |
 | `build-failed` | `"true"` if hopscotch ran but the build failed |
-| `pr-title` | Suggested PR title (empty when skipped or `generate-description: false`) |
-| `bump-description` | Markdown paragraph describing the bump — new commit + previous pin, with subjects and dates. Pass to `open-bump-pr`'s `message` input. Empty when skipped or `generate-description: false`. |
-| `commit-message` | Suggested git commit message (empty when skipped or `generate-description: false`) |
+| `pr-title` | Suggested PR title (empty when skipped or `generate-description: false`). For FKB resolutions includes a `[breaks build]` qualifier. |
+| `bump-description` | Markdown paragraph describing the bump — new commit + previous pin, with subjects and dates. Pass to `open-bump-pr`'s `message` input. For FKB resolutions, prefixed with a "this commit is known to break the build" warning. Empty when skipped or `generate-description: false`. |
+| `commit-message` | Suggested git commit message (empty when skipped or `generate-description: false`). For FKB resolutions includes a `(known broken)` qualifier. |
+| `resolved-query-type` | Which target the action actually picked. Mirrors the input for static query types; for `latest-known` this is `first-known-bad` (FKB present) or `last-known-good` (otherwise). |
 
 ---
 
@@ -173,19 +174,30 @@ suggested PR title, body snippet, and git commit message — pass
 Generic commit-and-PR action. Independent of `bump-to-latest` — works with any
 working-tree changes.
 
-Commits all working-tree changes onto a dedicated branch (force-pushed on every
-run to keep the PR to a single commit), then creates or updates an open PR. The
-PR body is an optional `message` followed by an automated footer that links back
-to the triggering run and records today's date.
+Default behavior commits all working-tree changes onto a dedicated branch
+(force-pushed on every run to keep the PR to a single commit), then creates or
+updates an open PR. The PR body is an optional `message` followed by an
+automated footer that links back to the triggering run and records today's date.
 
-If there are no working-tree changes (`git diff` is clean) the action exits with
-`action=noop` and no PR is touched.
+When `force-push: 'false'`, the action switches to **create-only** semantics:
+if the branch already exists on the remote, commit/push and PR-edit are all
+skipped (preserving any reviewer commits and any maintainer-edited body); the
+existing PR's number/url is returned with `action=noop`. Use this for FKB
+"fix-the-breakage" PRs.
+
+If there are no working-tree changes (`git diff` is clean) the action exits
+with `action=noop` and no PR is touched. If `superseded-branch-globs` is set,
+the supersession scan still runs in this case using any existing PR on our
+branch as the "new" reference.
 
 ### Inputs
 
 | Input | Required | Default | Description |
 |-------|----------|---------|-------------|
-| `branch` | no | `hopscotch/lkg-bump` | Branch for the PR. Force-pushed on every run — this keeps the PR to one commit and avoids accumulating bump history. |
+| `branch` | no | `hopscotch/lkg-bump` | Branch for the PR. Default behavior force-pushes on every run; with `force-push: 'false'` the action skips commit/push when the branch already exists. |
+| `force-push` | no | `'true'` | `'true'` (default) — force-push every run, keeping the PR to a single bump commit. `'false'` — only push when the branch doesn't yet exist remotely; otherwise skip commit/push/PR-edit and return the existing PR. Pipe `suggested-force-push` from `bump-to-latest` here for `latest-known` mode. |
+| `superseded-branch-globs` | no | `''` | Comma-separated branch globs (e.g. `hopscotch/lkg-bump,hopscotch/fix-incompatibility/*`) whose open PRs should be considered superseded once a new PR is opened on the action's own branch. Open PRs matching any glob (other than this action's own branch) are commented "Superseded by #N" and closed. Pipe `superseded-branch-globs` from `bump-to-latest` here. |
+| `close-superseded` | no | `'true'` | Set to `'false'` to disable the supersession scan even when `superseded-branch-globs` is set. |
 | `base` | no | repo default branch | Base branch for the PR |
 | `title` | no | `chore: dependency update` | PR title |
 | `body` | no | `''` | Full PR body. When set, overrides the auto-generated message + footer entirely. |
@@ -200,9 +212,9 @@ If there are no working-tree changes (`git diff` is clean) the action exits with
 
 | Output | Description |
 |--------|-------------|
-| `pr-number` | PR number (empty when `action=noop`) |
-| `pr-url` | PR URL (empty when `action=noop`) |
-| `action` | `"created"`, `"updated"`, or `"noop"` |
+| `pr-number` | PR number. Set when a PR was created/updated, or when `force-push=false` skipped the push and an existing open PR was found. Empty when `action=noop` and no PR exists on the branch. |
+| `pr-url` | PR URL. Same population rules as `pr-number`. |
+| `action` | `"created"`, `"updated"`, or `"noop"`. `"noop"` covers both "no working-tree changes" and "branch already existed (force-push=false)". |
 
 ---
 
@@ -312,7 +324,7 @@ downstream repo can use it with no inputs at all.
 | Input | Required | Default | Description |
 |-------|----------|---------|-------------|
 | `downstream` | no | `${{ github.repository }}` | Downstream name key or repo slug (`owner/repo`). Auto-detected by presence of `/`. |
-| `query-type` | no | `last-known-good` | Which commit to return: `last-known-good`, `first-known-bad`, or `last-good-release` (empty when no active entry) |
+| `query-type` | no | `last-known-good` | Which commit to return: `last-known-good`, `first-known-bad`, `last-good-release` (empty when no active entry), or `latest-known` (FKB if one exists, else LKG). |
 
 ### Outputs
 
@@ -323,6 +335,7 @@ downstream repo can use it with no inputs at all.
 | `downstream-name` | The downstream name key as registered in the snapshot |
 | `repo` | GitHub repo slug (`owner/repo`) |
 | `dependency-name` | The dependency name field from the snapshot entry |
+| `resolved-query-type` | Which type was actually used to pick the target. Mirrors the input for static query types; for `latest-known` this is `first-known-bad` (FKB present) or `last-known-good` (otherwise). |
 
 ---
 
@@ -438,3 +451,31 @@ When `query-type: last-good-release`:
 - `rev` is a **tag name** (e.g. `v4.13.0`) that `hopscotch dep` and Lake's `inputRev` both accept directly.
 - `commit` is the resolved SHA, for consumers that need byte-equality comparison against the `rev` field in `lake-manifest.json`.
 - Both fields are empty when no semver release precedes the downstream's current LKG.
+
+**Single-PR auto mode (`query-type: latest-known`):**
+
+Keeps a single PR open at a time that automatically tracks the most useful target — the LKG bump while everything builds, switching to a per-FKB-SHA "fix the breakage" PR when a regression appears, and closing superseded PRs when the situation changes.
+
+```yaml
+jobs:
+  bump:
+    uses: leanprover-community/downstream-reports/.github/workflows/bump-dependency-to-latest.yml@main
+    permissions:
+      contents: write
+      pull-requests: write
+    with:
+      query-type: latest-known
+```
+
+How the reusable workflow behaves in this mode:
+
+| Snapshot state | PR branch | Force-push? | Title qualifier |
+|---|---|---|---|
+| FKB null, LKG set | the workflow's `branch` input (default `hopscotch/lkg-bump`) | yes | none — green build expected |
+| FKB set | `hopscotch/fix-incompatibility/<short-fkb-sha>` | **no** — reviewers' fix commits are preserved | `[breaks build]` |
+
+When a regression resolves, the next run swaps to the LKG branch and posts "Superseded by #N" on the old FKB PR before closing it. When a regression appears, the LKG PR is similarly superseded.
+
+The branch convention and supersession scope are baked into the reusable workflow, not configurable. Direct callers of `bump-to-latest` can replicate the behavior by branching on the `resolved-query-type` output and passing the appropriate `branch` / `force-push` / `superseded-branch-globs` to `open-bump-pr` — see the workflow's `Compose PR branch + push policy` step for the canonical wiring.
+
+> **Comparison with `track-incompatibility`.** `track-incompatibility` opens a separate tracking *issue* and a fix PR alongside any LKG bump PR — two PRs and an issue can coexist. `query-type: latest-known` instead collapses to a single PR that swaps roles. Pick `track-incompatibility` if you want the issue + side-by-side fix PR; pick `latest-known` if you want a single PR that's always the most useful target.

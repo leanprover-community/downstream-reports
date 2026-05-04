@@ -1,9 +1,9 @@
 name: 'Bump to Latest'
 description: >
-  Look up the target commit (last-known-good or first-known-bad) for a
-  downstream and bump the mathlib dependency to it via hopscotch. On success
-  the working tree contains modified lakefile and lake-manifest.json ready
-  to commit.
+  Look up a target commit (last-known-good, first-known-bad, last-good-release,
+  or latest-known) for a downstream and bump the mathlib dependency to it via
+  hopscotch. On success the working tree contains modified lakefile and
+  lake-manifest.json ready to commit.
 
 inputs:
   downstream:
@@ -50,6 +50,13 @@ inputs:
                                      (null when no active regression)
         last-good-release          — the latest semver release tag (e.g. v4.13.0)
                                      reachable from the last-known-good commit
+        latest-known               — first-known-bad if one exists, else
+                                     last-known-good. Use to keep a single
+                                     PR open at a time that automatically
+                                     follows the most useful target. Callers
+                                     can branch on the resolved-query-type
+                                     output to pick the appropriate PR
+                                     branch / force-push policy.
 
 outputs:
   rev:
@@ -82,6 +89,13 @@ outputs:
   commit-message:
     description: 'Suggested git commit message for the bump (empty when skipped)'
     value: ${{ steps.fetch-descriptions.outputs.commit_message }}
+  resolved-query-type:
+    description: >
+      Which target the action actually resolved to. For static query types
+      (last-known-good, first-known-bad, last-good-release) this mirrors
+      the input. For "latest-known" it is "first-known-bad" when an FKB
+      exists, otherwise "last-known-good".
+    value: ${{ steps.resolve-outputs.outputs.resolved_query_type }}
 
 runs:
   using: 'composite'
@@ -170,6 +184,7 @@ runs:
         CURRENT_PIN: ${{ steps.read-manifest.outputs.current_pin }}
         DEPENDENCY_NAME: ${{ inputs.dependency-name }}
         DEPENDENCY_REPO: leanprover-community/mathlib4
+        RESOLVED_QUERY_TYPE: ${{ steps.fetch-snapshot.outputs.resolved_query_type }}
       run: |
         set -euo pipefail
 
@@ -204,13 +219,21 @@ runs:
         TARGET_SUFFIX=$(suffix "$TARGET_SUBJECT" "$TARGET_DATE")
         PREV_SUFFIX=$(suffix "$PREV_SUBJECT" "$PREV_DATE")
 
-        PR_TITLE="Bump \`${DEPENDENCY_NAME}\` dependency to ${TARGET_SHORT}"
-        COMMIT_MSG="chore: bump ${DEPENDENCY_NAME} to ${TARGET_SHORT}${TARGET_SUFFIX}"
+        if [ "$RESOLVED_QUERY_TYPE" = "first-known-bad" ]; then
+          PR_TITLE="Bump \`${DEPENDENCY_NAME}\` to ${TARGET_SHORT} [breaks build]"
+          COMMIT_MSG="chore: bump ${DEPENDENCY_NAME} to ${TARGET_SHORT} (known broken)${TARGET_SUFFIX}"
+        else
+          PR_TITLE="Bump \`${DEPENDENCY_NAME}\` dependency to ${TARGET_SHORT}"
+          COMMIT_MSG="chore: bump ${DEPENDENCY_NAME} to ${TARGET_SHORT}${TARGET_SUFFIX}"
+        fi
 
         {
           echo "pr_title=${PR_TITLE}"
           echo "commit_message=${COMMIT_MSG}"
           echo "bump_description<<BUMP_EOF"
+          if [ "$RESOLVED_QUERY_TYPE" = "first-known-bad" ]; then
+            printf '**This commit is known to break the build.** This PR exists so the breakage is visible and can be fixed on this branch — push fix commits here rather than to a separate branch.\n\n'
+          fi
           printf 'Bump `%s` dependency to [%s](%s)%s\n' \
             "$DEPENDENCY_NAME" "$TARGET_SHORT" "$TARGET_URL" "$TARGET_SUFFIX"
           printf 'Previously at: [%s](%s)%s\n' \
@@ -273,7 +296,7 @@ runs:
         PROJECT_DIR: ${{ inputs.project-dir }}
         GITHUB_TOKEN: ${{ github.token }}
         HOPSCOTCH_SKIP_BUILD: ${{ inputs.skip-build }}
-        KEEP_LAST_GOOD: ${{ inputs.query-type != 'first-known-bad' }}
+        KEEP_LAST_GOOD: ${{ steps.fetch-snapshot.outputs.resolved_query_type != 'first-known-bad' }}
       run: |
         set +e
 
@@ -328,14 +351,16 @@ runs:
       env:
         TARGET_REV: ${{ steps.fetch-snapshot.outputs.rev }}
         TARGET_COMMIT: ${{ steps.fetch-snapshot.outputs.commit }}
+        RESOLVED_QUERY_TYPE: ${{ steps.fetch-snapshot.outputs.resolved_query_type }}
         CURRENT_PIN: ${{ steps.read-manifest.outputs.current_pin }}
         SKIPPED: ${{ steps.compare.outputs.skipped }}
         UPDATED: ${{ steps.run-hopscotch.outputs.updated }}
         BUILD_FAILED: ${{ steps.run-hopscotch.outputs.build_failed }}
       run: |
-        echo "rev=${TARGET_REV:-}"                 >> "$GITHUB_OUTPUT"
-        echo "commit=${TARGET_COMMIT:-}"           >> "$GITHUB_OUTPUT"
-        echo "current_pin=${CURRENT_PIN:-}"        >> "$GITHUB_OUTPUT"
-        echo "skipped=${SKIPPED:-false}"           >> "$GITHUB_OUTPUT"
-        echo "updated=${UPDATED:-false}"           >> "$GITHUB_OUTPUT"
-        echo "build_failed=${BUILD_FAILED:-false}" >> "$GITHUB_OUTPUT"
+        echo "rev=${TARGET_REV:-}"                          >> "$GITHUB_OUTPUT"
+        echo "commit=${TARGET_COMMIT:-}"                    >> "$GITHUB_OUTPUT"
+        echo "current_pin=${CURRENT_PIN:-}"                 >> "$GITHUB_OUTPUT"
+        echo "skipped=${SKIPPED:-false}"                    >> "$GITHUB_OUTPUT"
+        echo "updated=${UPDATED:-false}"                    >> "$GITHUB_OUTPUT"
+        echo "build_failed=${BUILD_FAILED:-false}"          >> "$GITHUB_OUTPUT"
+        echo "resolved_query_type=${RESOLVED_QUERY_TYPE:-}" >> "$GITHUB_OUTPUT"

@@ -28,8 +28,10 @@ on:
     inputs:
       branch:
         description: >
-          Branch name for the bump PR. Force-pushed on every run so the PR
-          stays at a single commit.
+          Branch name for the bump PR. For static query-types this is the
+          PR branch directly (force-pushed every run). For
+          query-type=latest-known this is the LKG branch; FKB resolutions
+          use a fresh per-SHA branch under "hopscotch/fix-incompatibility/".
         default: 'hopscotch/lkg-bump'
         required: false
         type: string
@@ -59,6 +61,15 @@ on:
           Which commit to bump to. One of:
             last-known-good  (default) — the last commit known to build successfully
             first-known-bad            — the first commit known to break the build
+            last-good-release          — the latest semver release tag
+            latest-known               — first-known-bad if one exists, else
+                                         last-known-good. With this mode, the
+                                         workflow keeps a single PR open at a
+                                         time: an LKG bump on `branch` while
+                                         everything builds, switching to a
+                                         per-SHA FKB branch when a regression
+                                         appears, and closing superseded PRs
+                                         automatically.
         default: 'last-known-good'
         required: false
         type: string
@@ -130,12 +141,45 @@ jobs:
           query-type:        ${{ inputs.query-type }}
           skip-build:        ${{ inputs.skip-build }}
 
+      # For latest-known, the PR branch + force-push policy depend on
+      # which target the bump action resolved to:
+      #   FKB → per-SHA branch under "hopscotch/fix-incompatibility/",
+      #         not force-pushed (reviewers may push fix commits).
+      #   LKG → the workflow's `branch` input, force-pushed.
+      # Static query-types use the workflow's `branch` input directly.
+      - name: Compose PR branch + push policy
+        id: pr-config
+        if: steps.bump.outputs.updated == 'true' && inputs.open-pr
+        shell: bash
+        env:
+          QUERY_TYPE: ${{ inputs.query-type }}
+          RESOLVED:   ${{ steps.bump.outputs.resolved-query-type }}
+          COMMIT:     ${{ steps.bump.outputs.commit }}
+          LKG_BRANCH: ${{ inputs.branch }}
+        run: |
+          set -euo pipefail
+          if [ "$QUERY_TYPE" = "latest-known" ] && [ "$RESOLVED" = "first-known-bad" ]; then
+            echo "branch=hopscotch/fix-incompatibility/${COMMIT:0:7}" >> "$GITHUB_OUTPUT"
+            echo "force-push=false"                                  >> "$GITHUB_OUTPUT"
+            echo "globs=${LKG_BRANCH},hopscotch/fix-incompatibility/*" >> "$GITHUB_OUTPUT"
+          elif [ "$QUERY_TYPE" = "latest-known" ]; then
+            echo "branch=${LKG_BRANCH}"                              >> "$GITHUB_OUTPUT"
+            echo "force-push=true"                                   >> "$GITHUB_OUTPUT"
+            echo "globs=${LKG_BRANCH},hopscotch/fix-incompatibility/*" >> "$GITHUB_OUTPUT"
+          else
+            echo "branch=${LKG_BRANCH}"                              >> "$GITHUB_OUTPUT"
+            echo "force-push=true"                                   >> "$GITHUB_OUTPUT"
+            echo "globs="                                            >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Open or update PR
         id: open-pr
         if: steps.bump.outputs.updated == 'true' && inputs.open-pr
         uses: leanprover-community/downstream-reports/.github/actions/open-bump-pr@main
         with:
-          branch:         ${{ inputs.branch }}
+          branch:                  ${{ steps.pr-config.outputs.branch }}
+          force-push:              ${{ steps.pr-config.outputs.force-push }}
+          superseded-branch-globs: ${{ steps.pr-config.outputs.globs }}
           base:           ${{ inputs.base }}
           labels:         ${{ inputs.labels }}
           title:          ${{ steps.bump.outputs.pr-title }}

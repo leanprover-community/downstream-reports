@@ -1,9 +1,9 @@
 name: 'Query Latest'
 description: >
-  Look up a downstream's target commit (last-known-good or first-known-bad)
-  from the snapshot. Accepts either a downstream name (e.g. "physlib") or a
-  full repo slug (e.g. "leanprover-community/physlib"). Defaults to the
-  current repository.
+  Look up a downstream's target commit (last-known-good, first-known-bad,
+  last-good-release, or latest-known) from the snapshot. Accepts either a
+  downstream name (e.g. "physlib") or a full repo slug (e.g.
+  "leanprover-community/physlib"). Defaults to the current repository.
 
 inputs:
   downstream:
@@ -24,6 +24,8 @@ inputs:
                                      (null when no active regression)
         last-good-release          — the latest semver release tag (e.g. v4.13.0)
                                      reachable from the last-known-good commit
+        latest-known               — first-known-bad if one exists, else
+                                     last-known-good
 
 outputs:
   rev:
@@ -41,6 +43,12 @@ outputs:
   dependency-name:
     description: 'The dependency name field from the snapshot entry'
     value: ${{ steps.lookup.outputs.dependency_name }}
+  resolved-query-type:
+    description: >
+      Which type was actually used to pick the target. Mirrors the input
+      for static query types; for "latest-known" it is "first-known-bad"
+      (FKB present) or "last-known-good" (otherwise).
+    value: ${{ steps.lookup.outputs.resolved_query_type }}
 
 runs:
   using: 'composite'

@@ -9,9 +9,23 @@ inputs:
     required: false
     default: 'hopscotch/lkg-bump'
     description: >
-      Branch name for the PR. Each run creates a single fresh commit on top
-      of the base branch, so the remote is replaced (force-pushed) every time.
-      This keeps the PR to one commit and avoids accumulating bump history.
+      Branch name for the PR. Default behavior force-pushes the branch on
+      every run, replacing it with a single fresh commit (good for
+      "track-latest" PRs). Set force-push=false to switch to create-only
+      semantics for branches that may receive reviewer commits — see the
+      force-push input.
+  force-push:
+    required: false
+    default: 'true'
+    description: >
+      "true" (default) — force-push the branch every run, keeping the PR
+      to a single bump commit. Use for LKG/release "track-latest" PRs.
+
+      "false" — only push when the branch does not yet exist on the
+      remote. If the branch already exists, the action skips commit, push,
+      and PR-edit entirely (action=noop) and returns the existing PR's
+      number/url. Use for FKB "fix-the-breakage" PRs where reviewers push
+      fix commits onto the branch and we must not clobber them.
   base:
     required: false
     default: ''
@@ -54,6 +68,24 @@ inputs:
     required: false
     default: '41898282+github-actions[bot]@users.noreply.github.com'
     description: 'git user.email for the bump commit.'
+  superseded-branch-globs:
+    required: false
+    default: ''
+    description: >
+      Comma-separated branch globs (e.g.
+      "hopscotch/lkg-bump,hopscotch/fix-incompatibility/*") whose open
+      PRs should be considered superseded once a new PR is opened on the
+      action's own branch. Open PRs matching any glob (other than this
+      action's own branch) are commented "Superseded by #N" and closed.
+      Empty (default) disables the supersession scan. Pipe the
+      superseded-branch-globs output from bump-to-latest here.
+  close-superseded:
+    required: false
+    default: 'true'
+    description: >
+      Set to "false" to disable closing superseded PRs even when
+      superseded-branch-globs is set. Useful for testing or when a
+      maintainer wants every bump PR kept open for inspection.
 
 outputs:
   pr-number:
@@ -84,7 +116,14 @@ runs:
         fi
 
     # ------------------------------------------------------------------
-    # Step 2: Create the branch, commit, and force-push.
+    # Step 2: Create the branch, commit, and push.
+    #
+    # When force-push=true (default), the branch is replaced with a single
+    # fresh commit on every run. When force-push=false, we first check
+    # whether the branch exists on the remote; if so we skip commit/push
+    # entirely (so reviewer commits on the existing branch are preserved)
+    # and emit branch_exists=true. If the branch does not exist we push
+    # without --force.
     # ------------------------------------------------------------------
     - name: Commit and push branch
       id: commit-and-push
@@ -94,12 +133,14 @@ runs:
         BRANCH: ${{ inputs.branch }}
         COMMIT_MESSAGE: ${{ inputs.commit-message }}
         TOKEN: ${{ inputs.token }}
+        FORCE_PUSH: ${{ inputs.force-push }}
         GIT_USER_NAME: ${{ inputs.git-user-name }}
         GIT_USER_EMAIL: ${{ inputs.git-user-email }}
       run: |
         set -euo pipefail
 
         MSG="${COMMIT_MESSAGE:-chore: dependency update}"
+        REMOTE_URL="https://x-access-token:${TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
 
         git config user.name  "$GIT_USER_NAME"
         git config user.email "$GIT_USER_EMAIL"
@@ -107,21 +148,41 @@ runs:
         OLD_HEADER=$(git config --local http.https://github.com/.extraheader || true)
         git config --unset http.https://github.com/.extraheader || true
 
-        git checkout -B "$BRANCH"
-        git add -A
-        git commit -m "$MSG"
-        git push --force "https://x-access-token:${TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "$BRANCH"
+        BRANCH_EXISTS="false"
+        if [ "$FORCE_PUSH" != "true" ]; then
+          if git ls-remote --exit-code --heads "$REMOTE_URL" "$BRANCH" >/dev/null 2>&1; then
+            echo "Branch '$BRANCH' already exists on remote and force-push=false — skipping commit/push to preserve reviewer commits."
+            BRANCH_EXISTS="true"
+          fi
+        fi
+
+        if [ "$BRANCH_EXISTS" != "true" ]; then
+          git checkout -B "$BRANCH"
+          git add -A
+          git commit -m "$MSG"
+          if [ "$FORCE_PUSH" = "true" ]; then
+            git push --force "$REMOTE_URL" "$BRANCH"
+          else
+            git push "$REMOTE_URL" "$BRANCH"
+          fi
+        fi
 
         if [ -n "$OLD_HEADER" ]; then
           git config --local http.https://github.com/.extraheader "$OLD_HEADER"
         fi
 
+        echo "branch_exists=$BRANCH_EXISTS" >> "$GITHUB_OUTPUT"
+
     # ------------------------------------------------------------------
     # Step 3: Create or update the PR.
+    #
+    # Skipped when branch_exists=true: the PR (if any) is left exactly as
+    # the maintainer last edited it. The PR's number/url is looked up in
+    # step 4 instead.
     # ------------------------------------------------------------------
     - name: Create or update PR
       id: create-or-update-pr
-      if: steps.check-changes.outputs.no_changes != 'true'
+      if: steps.check-changes.outputs.no_changes != 'true' && steps.commit-and-push.outputs.branch_exists != 'true'
       shell: bash
       env:
         GH_TOKEN: ${{ inputs.token }}
@@ -197,6 +258,105 @@ runs:
         echo "pr_url=$PR_URL"       >> "$GITHUB_OUTPUT"
 
     # ------------------------------------------------------------------
+    # Step 4: Look up the existing PR when we skipped create-or-update.
+    #
+    # This runs when commit/push was skipped because the branch already
+    # existed remotely (force-push=false branch-exists path) or there were
+    # no working-tree changes — in either case we want to know whether
+    # there is an open PR on our branch so the supersede step can use its
+    # number, and so callers see the existing pr-number/pr-url outputs.
+    # ------------------------------------------------------------------
+    - name: Look up existing PR for our branch
+      id: lookup-existing-pr
+      if: steps.create-or-update-pr.conclusion == 'skipped'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        BRANCH: ${{ inputs.branch }}
+      run: |
+        set -euo pipefail
+        EXISTING=$(gh pr list \
+          --head "$BRANCH" \
+          --state open \
+          --json number,url \
+          --jq '.[0] // empty')
+        if [ -n "$EXISTING" ]; then
+          PR_NUMBER=$(echo "$EXISTING" | jq -r '.number')
+          PR_URL=$(echo "$EXISTING" | jq -r '.url')
+          echo "Existing PR on branch '$BRANCH': #${PR_NUMBER} ($PR_URL)"
+          echo "pr_number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
+          echo "pr_url=$PR_URL"       >> "$GITHUB_OUTPUT"
+        else
+          echo "No open PR on branch '$BRANCH'."
+        fi
+
+    # ------------------------------------------------------------------
+    # Step 5: Close superseded PRs.
+    #
+    # After the action's PR is created/updated/known, scan the bump-PR
+    # namespace declared by superseded-branch-globs and close any open PRs
+    # that are not on this action's own branch. Safe to skip when no
+    # globs are configured or close-superseded=false. Failures closing
+    # an individual PR don't fail the action.
+    # ------------------------------------------------------------------
+    - name: Close superseded PRs
+      id: close-superseded
+      if: inputs.close-superseded == 'true' && inputs.superseded-branch-globs != ''
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        BRANCH: ${{ inputs.branch }}
+        GLOBS: ${{ inputs.superseded-branch-globs }}
+        OUR_PR_NUMBER: ${{ steps.create-or-update-pr.outputs.pr_number || steps.lookup-existing-pr.outputs.pr_number }}
+      run: |
+        set -euo pipefail
+
+        if [ -z "${OUR_PR_NUMBER:-}" ]; then
+          echo "No PR on our branch '$BRANCH' to reference — skipping supersede scan."
+          exit 0
+        fi
+
+        # Trim and collect non-empty globs.
+        IFS=',' read -ra RAW_GLOBS <<< "$GLOBS"
+        GLOBS_TRIMMED=()
+        for raw in "${RAW_GLOBS[@]}"; do
+          g="${raw#"${raw%%[![:space:]]*}"}"
+          g="${g%"${g##*[![:space:]]}"}"
+          [ -n "$g" ] && GLOBS_TRIMMED+=("$g")
+        done
+        if [ "${#GLOBS_TRIMMED[@]}" -eq 0 ]; then
+          echo "No branch globs configured (empty after trim)."
+          exit 0
+        fi
+
+        # Fetch all open PRs and filter client-side: GitHub's search "head:"
+        # qualifier is exact-match only and doesn't support globs.
+        ALL_PRS=$(gh pr list --state open --limit 200 \
+          --json number,headRefName,url \
+          --jq '.[] | [(.number|tostring), .headRefName, .url] | @tsv')
+
+        while IFS=$'\t' read -r num head url; do
+          [ -z "${num:-}" ] && continue
+          [ "$head" = "$BRANCH" ] && continue
+          matched="false"
+          for g in "${GLOBS_TRIMMED[@]}"; do
+            case "$head" in
+              $g) matched="true"; break ;;
+            esac
+          done
+          [ "$matched" != "true" ] && continue
+
+          echo "Closing superseded PR #${num} on '${head}' (${url})..."
+          if gh pr comment "$num" \
+               --body "Superseded by #${OUR_PR_NUMBER}." \
+             && gh pr close "$num"; then
+            echo "  closed."
+          else
+            echo "  failed to close PR #${num} — continuing."
+          fi
+        done <<< "$ALL_PRS"
+
+    # ------------------------------------------------------------------
     # Final step: consolidate outputs.
     # ------------------------------------------------------------------
     - name: Resolve outputs
@@ -205,16 +365,22 @@ runs:
       shell: bash
       env:
         NO_CHANGES: ${{ steps.check-changes.outputs.no_changes }}
-        PR_NUMBER: ${{ steps.create-or-update-pr.outputs.pr_number }}
-        PR_URL: ${{ steps.create-or-update-pr.outputs.pr_url }}
-        PR_ACTION: ${{ steps.create-or-update-pr.outputs.pr_action }}
+        BRANCH_EXISTS: ${{ steps.commit-and-push.outputs.branch_exists }}
+        CREATED_PR_NUMBER: ${{ steps.create-or-update-pr.outputs.pr_number }}
+        CREATED_PR_URL: ${{ steps.create-or-update-pr.outputs.pr_url }}
+        CREATED_PR_ACTION: ${{ steps.create-or-update-pr.outputs.pr_action }}
+        EXISTING_PR_NUMBER: ${{ steps.lookup-existing-pr.outputs.pr_number }}
+        EXISTING_PR_URL: ${{ steps.lookup-existing-pr.outputs.pr_url }}
       run: |
-        if [ "${NO_CHANGES:-}" = "true" ]; then
-          echo "action=noop"   >> "$GITHUB_OUTPUT"
-          echo "pr_number="    >> "$GITHUB_OUTPUT"
-          echo "pr_url="       >> "$GITHUB_OUTPUT"
+        if [ -n "${CREATED_PR_NUMBER:-}" ]; then
+          echo "action=${CREATED_PR_ACTION:-created}" >> "$GITHUB_OUTPUT"
+          echo "pr_number=${CREATED_PR_NUMBER}"       >> "$GITHUB_OUTPUT"
+          echo "pr_url=${CREATED_PR_URL}"             >> "$GITHUB_OUTPUT"
         else
-          echo "action=${PR_ACTION:-created}"  >> "$GITHUB_OUTPUT"
-          echo "pr_number=${PR_NUMBER:-}"      >> "$GITHUB_OUTPUT"
-          echo "pr_url=${PR_URL:-}"            >> "$GITHUB_OUTPUT"
+          # Either no_changes=true or branch_exists=true. Surface any
+          # existing PR found in the lookup step so callers can still
+          # reference it; emit action=noop in both cases.
+          echo "action=noop"                           >> "$GITHUB_OUTPUT"
+          echo "pr_number=${EXISTING_PR_NUMBER:-}"     >> "$GITHUB_OUTPUT"
+          echo "pr_url=${EXISTING_PR_URL:-}"           >> "$GITHUB_OUTPUT"
         fi
