@@ -636,34 +636,29 @@ def render_report(
                 "- **Warning:** pinned commit is not an ancestor of the target — "
                 "no bisect window was available; head-only probe only"
             )
-        if row["tested_commit_details"]:
-            if row["search_mode"] == "bisect":
-                lines.append("- Bisect window boundary:")
-                lines.append(f"  - oldest: {render_commit_detail(details[0])}")
-                lines.append(f"  - newest: {render_commit_detail(details[-1])}")
-                lines.append("")
-                lines.append("**Results**")
-                lines.append("")
-                lines.append("- Current run frontier:")
+        if row["tested_commit_details"] and row["search_mode"] == "bisect":
+            lines.append("- Bisect window boundary:")
+            lines.append(f"  - oldest: {render_commit_detail(details[0])}")
+            lines.append(f"  - newest: {render_commit_detail(details[-1])}")
+            lines.append("")
+            lines.append("**Results**")
+            lines.append("")
+            lines.append("- Current run frontier:")
+            lines.append(
+                "  - last known good: "
+                + render_named_commit(details, row.get("current_last_successful"), upstream)
+            )
+            lines.append(
+                "  - first incompatible commit found this run: "
+                + render_named_commit(details, row.get("current_first_failing"), upstream)
+            )
+            position = first_bad_position(details, row.get("current_first_failing"))
+            if position is not None:
+                index, total = position
                 lines.append(
-                    "  - last known good: "
-                    + render_named_commit(details, row.get("current_last_successful"), upstream)
+                    f"- First incompatible commit position: `{index}/{total}` in the bisect window "
+                    f"(advanced {index - 1} of {total - 1} commits from the lower bound)"
                 )
-                lines.append(
-                    "  - first incompatible commit found this run: "
-                    + render_named_commit(details, row.get("current_first_failing"), upstream)
-                )
-                position = first_bad_position(details, row.get("current_first_failing"))
-                if position is not None:
-                    index, total = position
-                    lines.append(
-                        f"- First incompatible commit position: `{index}/{total}` in the bisect window "
-                        f"(advanced {index - 1} of {total - 1} commits from the lower bound)"
-                    )
-            else:
-                lines.append("- Commit list:")
-                for detail in row["tested_commit_details"]:
-                    lines.append(f"  - {render_commit_detail(detail)}")
         lines.append("- State after this run:")
         lines.append(
             "  - last known good: "
