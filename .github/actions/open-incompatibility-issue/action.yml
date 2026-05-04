@@ -304,6 +304,7 @@ runs:
         DOWNSTREAM_COMMIT: ${{ steps.run.outputs.downstream_commit }}
         REPORTED_AT: ${{ steps.run.outputs.reported_at }}
         TARGET_COMMIT: ${{ steps.run.outputs.target_commit }}
+        CULPRIT_LOG_ARTIFACT_URL: ${{ steps.run.outputs.culprit_log_artifact_url }}
       run: |
         set -euo pipefail
 
@@ -363,6 +364,9 @@ runs:
           VALIDATION_LINE="${VALIDATION_LINE}  · [Workflow run](${RUN_URL})"
           if [ -n "$JOB_URL" ]; then
             VALIDATION_LINE="${VALIDATION_LINE} · [Job log](${JOB_URL})"
+          fi
+          if [ -n "${CULPRIT_LOG_ARTIFACT_URL:-}" ]; then
+            VALIDATION_LINE="${VALIDATION_LINE} · [Failure log](${CULPRIT_LOG_ARTIFACT_URL})"
           fi
         else
           VALIDATION_LINE="_(not yet recorded in the runs snapshot)_"

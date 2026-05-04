@@ -676,8 +676,14 @@ def render_report(
         if row.get("culprit_log_text"):
             log_text = row["culprit_log_text"]
             lines.extend(["", "First incompatible commit logs:", "```text", log_text, "```"])
+            artifact_url = row.get("culprit_log_artifact_url")
+            log_links: list[str] = []
+            if artifact_url:
+                log_links.append(f"[full log artifact]({artifact_url})")
             if log_text.rstrip().endswith("[log truncated]") and job_url:
-                lines.append(f"\n_Full log available in the [probe job]({job_url})._")
+                log_links.append(f"[probe job]({job_url})")
+            if log_links:
+                lines.append("\n_Full log: " + " · ".join(log_links) + "._")
         lines.extend(["", "</details>", ""])
 
     if skipped_rows:
@@ -761,6 +767,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--skipped", type=Path, default=None,
         help="Path to skipped.json from the plan job (on-demand skipped downstreams).",
     )
+    parser.add_argument(
+        "--culprit-log-artifact-urls", type=Path, default=None,
+        help=(
+            "Path to a JSON file mapping downstream name to the direct download "
+            "URL of the culprit-log-<name> artifact uploaded by the probe job. "
+            "Optional; missing or empty entries leave culprit_log_artifact_url unset."
+        ),
+    )
     return parser
 
 
@@ -771,6 +785,17 @@ def main() -> int:
     recorded_at = utc_now()
 
     backend = create_backend(args.backend, dsn=args.dsn, state_root=args.state_root)
+
+    culprit_artifact_urls: dict[str, str] = {}
+    if args.culprit_log_artifact_urls and args.culprit_log_artifact_urls.exists():
+        try:
+            culprit_artifact_urls = {
+                k: v
+                for k, v in json.loads(args.culprit_log_artifact_urls.read_text()).items()
+                if isinstance(v, str) and v
+            }
+        except Exception as exc:
+            print(f"[aggregate] warning: could not parse culprit-log artifact URLs: {exc}")
 
     prior_statuses = backend.load_all_statuses(args.workflow, args.upstream)
     if args.results_dir.exists():
@@ -834,6 +859,7 @@ def main() -> int:
             head_probe_outcome=result.head_probe_outcome,
             head_probe_failure_stage=result.head_probe_failure_stage,
             culprit_log_text=loaded.culprit_log_text,
+            culprit_log_artifact_url=culprit_artifact_urls.get(result.downstream),
             pinned_commit=result.pinned_commit,
             search_base_not_ancestor=result.search_base_not_ancestor,
         )

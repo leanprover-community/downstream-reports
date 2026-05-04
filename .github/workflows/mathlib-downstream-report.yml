@@ -227,6 +227,24 @@ jobs:
           path: ${{ runner.temp }}/artifacts/${{ matrix.name }}
           if-no-files-found: error
 
+      - name: Stage culprit log
+        if: always()
+        env:
+          OUTPUT_DIR: ${{ runner.temp }}/artifacts/${{ matrix.name }}
+        run: bash .github/scripts/stage-culprit-log.sh
+
+      # Separate artifact so consumers (issues, PRs, the website) can deep-link
+      # to just the failing-commit build log instead of the full result-* zip.
+      # Skipped automatically (if-no-files-found: ignore) on passing runs.
+      - name: Upload culprit log artifact
+        if: always()
+        uses: actions/upload-artifact@v7.0.0
+        with:
+          name: culprit-log-${{ matrix.name }}
+          path: ${{ runner.temp }}/artifacts/${{ matrix.name }}/culprit.log
+          if-no-files-found: ignore
+          retention-days: 365
+
       - name: Print validation summary
         if: always()
         env:
@@ -291,6 +309,40 @@ jobs:
           with open("job_urls.json", "w") as f:
               json.dump(urls, f)
           PY
+
+      # Resolve culprit-log-<name> artifacts to deep-link download URLs.
+      # The generated `<repo>/actions/runs/<run-id>/artifacts/<artifact-id>`
+      # URL initiates a zip download for any logged-in user.  Passing runs
+      # produce no culprit log; missing artifacts simply omit that key.
+      - name: Collect culprit-log artifact URLs
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          GH_SERVER: ${{ github.server_url }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          python3 - <<'PY'
+          import json, os, subprocess
+          repo = os.environ["GH_REPO"]
+          server = os.environ["GH_SERVER"]
+          run_id = os.environ["RUN_ID"]
+          data = json.loads(subprocess.check_output([
+              "gh", "api", "--paginate",
+              f"repos/{repo}/actions/runs/{run_id}/artifacts?per_page=100",
+          ]))
+          urls: dict[str, str] = {}
+          for art in data.get("artifacts", []):
+              name = art.get("name") or ""
+              prefix = "culprit-log-"
+              if name.startswith(prefix):
+                  downstream = name[len(prefix):]
+                  urls[downstream] = (
+                      f"{server}/{repo}/actions/runs/{run_id}/artifacts/{art['id']}"
+                  )
+          with open("culprit_log_urls.json", "w") as f:
+              json.dump(urls, f)
+          print(f"Resolved {len(urls)} culprit-log artifact URL(s)")
+          PY
       - name: Aggregate results
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -311,6 +363,7 @@ jobs:
             --run-url "$RUN_URL" \
             --upstream-ref "$UPSTREAM_REF" \
             --job-urls job_urls.json \
+            --culprit-log-artifact-urls culprit_log_urls.json \
             --report-output /tmp/report.md \
             --alert-output /tmp/alert-payload.json
           cat /tmp/report.md >> "$GITHUB_STEP_SUMMARY"

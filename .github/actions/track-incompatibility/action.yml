@@ -388,6 +388,7 @@ runs:
         DOWNSTREAM_COMMIT: ${{ steps.run.outputs.downstream_commit }}
         REPORTED_AT: ${{ steps.run.outputs.reported_at }}
         TARGET_COMMIT: ${{ steps.run.outputs.target_commit }}
+        CULPRIT_LOG_ARTIFACT_URL: ${{ steps.run.outputs.culprit_log_artifact_url }}
       run: |
         set -euo pipefail
 
@@ -443,6 +444,9 @@ runs:
           VALIDATION_LINE="${VALIDATION_LINE}  · [Workflow run](${RUN_URL})"
           if [ -n "$JOB_URL" ]; then
             VALIDATION_LINE="${VALIDATION_LINE} · [Job log](${JOB_URL})"
+          fi
+          if [ -n "${CULPRIT_LOG_ARTIFACT_URL:-}" ]; then
+            VALIDATION_LINE="${VALIDATION_LINE} · [Failure log](${CULPRIT_LOG_ARTIFACT_URL})"
           fi
         else
           VALIDATION_LINE="_(not yet recorded in the runs snapshot)_"
@@ -769,6 +773,7 @@ runs:
         ISSUE_URL: ${{ steps.upsert.outputs.issue_url }}
         DEP_NAME: ${{ inputs.dependency-name }}
         FKB_COMMIT: ${{ steps.fkb.outputs.commit }}
+        CULPRIT_LOG_ARTIFACT_URL: ${{ steps.run.outputs.culprit_log_artifact_url }}
       run: |
         set -euo pipefail
 
@@ -782,6 +787,10 @@ runs:
           fi
           if [ -n "$ISSUE_URL" ]; then
             printf 'Tracking issue: %s\n\n' "$ISSUE_URL"
+          fi
+          if [ -n "${CULPRIT_LOG_ARTIFACT_URL:-}" ]; then
+            printf 'Failure log from the validation run: [download](%s) _(link expires after 1 year)_\n\n' \
+              "$CULPRIT_LOG_ARTIFACT_URL"
           fi
           printf -- '---\n\n'
           printf 'This PR bumps `%s` to an identified incompatible (first-known-bad) commit (`%s`) so you can reproduce and fix the incompatibility locally by checking out this branch.\n\n' \

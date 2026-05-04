@@ -106,6 +106,10 @@ class LatestRunRecord:
     last_known_good: str | None
     job_id: str | None = None
     job_url: str | None = None
+    # Download URL for the `culprit-log-<name>` artifact uploaded by the probe job.
+    # The log text itself is not persisted — consumers fetch the artifact when they
+    # need the contents, so the database stays free of arbitrary build output.
+    culprit_log_artifact_url: str | None = None
 
 
 @dataclass
@@ -142,6 +146,12 @@ class RunResultRecord:
     bump_commits: int | None = None  # commits between pinned_commit and last_known_good
     last_good_release: str | None = None  # latest semver release tag reachable from LKG
     search_base_not_ancestor: bool = False
+    # Direct download URL for the `culprit-log-<name>` artifact, when one was uploaded.
+    # Falls back to None when no culprit log was produced (passing run, error before
+    # build) or when artifact-id resolution failed in the report job.  The log text
+    # itself (`culprit_log_text` above) is held only in memory for the in-process
+    # markdown report and Zulip alert payload — never written to SQL.
+    culprit_log_artifact_url: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -514,6 +524,7 @@ try:
         Column("age_commits", Integer),
         Column("bump_commits", Integer),
         Column("search_base_not_ancestor", Boolean, nullable=False, server_default="false"),
+        Column("culprit_log_artifact_url", String),
     )
 
     _sa_validate_job = Table(
@@ -694,6 +705,7 @@ class SqlBackend:
                     "age_commits": r.age_commits,
                     "bump_commits": r.bump_commits,
                     "search_base_not_ancestor": r.search_base_not_ancestor,
+                    "culprit_log_artifact_url": r.culprit_log_artifact_url,
                 })
 
             for downstream, s in updated_statuses.items():
@@ -892,6 +904,7 @@ def load_latest_run_per_downstream(
             rr.c.last_known_good,
             vj.c.job_id,
             vj.c.job_url,
+            rr.c.culprit_log_artifact_url,
         )
         .join(latest_per_ds, rr.c.downstream == latest_per_ds.c.downstream)
         .join(
@@ -933,6 +946,7 @@ def load_latest_run_per_downstream(
             last_known_good=row[9],
             job_id=row[10],
             job_url=row[11],
+            culprit_log_artifact_url=row[12],
         )
     return result
 
@@ -993,6 +1007,7 @@ def load_run_for_site(engine: Any, run_id: str) -> tuple[dict, list[dict]]:
                 _sa_run_result.c.age_commits,
                 _sa_run_result.c.bump_commits,
                 _sa_run_result.c.search_base_not_ancestor,
+                _sa_run_result.c.culprit_log_artifact_url,
                 _sa_run.c.run_url,
                 _sa_validate_job.c.job_url,
                 _sa_validate_job.c.started_at.label("job_started_at"),
@@ -1083,6 +1098,7 @@ class DryRunBackend:
             lines.append(f"    bump_commits:            {r.bump_commits}")
             lines.append(f"    commit_window_truncated: {r.commit_window_truncated}")
             lines.append(f"    error:                   {r.error}")
+            lines.append(f"    culprit_log_artifact_url:{r.culprit_log_artifact_url}")
         for ds, status in updated_statuses.items():
             lines.append(f"  updated_status [{ds}]:")
             lines.append(f"    last_known_good_commit:  {status.last_known_good_commit}")

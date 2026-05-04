@@ -84,6 +84,7 @@ def _make_run(
     last_known_good: str | None = "good_uvw",
     job_id: str | None = "job_42",
     job_url: str | None = "https://example.com/jobs/42",
+    culprit_log_artifact_url: str | None = None,
 ) -> LatestRunRecord:
     return LatestRunRecord(
         run_id=run_id,
@@ -97,6 +98,7 @@ def _make_run(
         last_known_good=last_known_good,
         job_id=job_id,
         job_url=job_url,
+        culprit_log_artifact_url=culprit_log_artifact_url,
     )
 
 
@@ -216,6 +218,32 @@ class BuildRunsSnapshotEntryTests(unittest.TestCase):
         run = _make_run(reported_at="")
         snap = build_runs_snapshot({"physlib": run}, _INVENTORY, _UPSTREAM)
         self.assertIsNone(snap["downstreams"]["physlib"]["reported_at"])
+
+    def test_culprit_log_fields_default_to_null_without_run(self) -> None:
+        """Scenario: an entry without a run still exposes a culprit_log_artifact_name.
+
+        The artifact name is derived deterministically from the downstream name so
+        consumers can construct it even when no run has been recorded yet; the URL
+        is null until a run with a culprit log is recorded.  The log text itself is
+        intentionally not part of the snapshot — fetch the artifact for contents.
+        """
+        snap = build_runs_snapshot({}, _INVENTORY, _UPSTREAM)
+        entry = snap["downstreams"]["physlib"]
+        self.assertEqual(entry["culprit_log_artifact_name"], "culprit-log-physlib")
+        self.assertIsNone(entry["culprit_log_artifact_url"])
+        self.assertNotIn("culprit_log_text", entry)
+
+    def test_culprit_log_artifact_url_propagates_from_run(self) -> None:
+        """Scenario: culprit_log_artifact_url from LatestRunRecord lands in the entry."""
+        run = _make_run(
+            culprit_log_artifact_url="https://example.com/artifacts/9",
+        )
+        snap = build_runs_snapshot({"physlib": run}, _INVENTORY, _UPSTREAM)
+        entry = snap["downstreams"]["physlib"]
+        self.assertEqual(
+            entry["culprit_log_artifact_url"], "https://example.com/artifacts/9"
+        )
+        self.assertNotIn("culprit_log_text", entry)
 
     def test_extra_latest_runs_entry_is_ignored_when_not_in_inventory(self) -> None:
         """Scenario: latest_runs may contain names absent from the inventory; they're dropped."""
@@ -400,6 +428,7 @@ class LoadLatestRunPerDownstreamTests(unittest.TestCase):
         job_url: str | None = None,
         workflow: str = "regression",
         upstream: str = _UPSTREAM,
+        culprit_log_artifact_url: str | None = None,
     ) -> None:
         from scripts.storage import (
             RunResultRecord,
@@ -432,6 +461,7 @@ class LoadLatestRunPerDownstreamTests(unittest.TestCase):
             head_probe_outcome=outcome,
             head_probe_failure_stage=None,
             culprit_log_text=None,
+            culprit_log_artifact_url=culprit_log_artifact_url,
         )
         validate_jobs: list[ValidateJobRecord] | None = None
         if job_id or job_url:
@@ -548,6 +578,35 @@ class LoadLatestRunPerDownstreamTests(unittest.TestCase):
         rec = result["physlib"]
         self.assertIsNone(rec.job_id)
         self.assertIsNone(rec.job_url)
+
+    def test_culprit_log_artifact_url_round_trips_but_text_is_not_persisted(self) -> None:
+        """Scenario: only the URL survives save/load — log text is never written to SQL.
+
+        The probe job aggregates failure logs for in-memory consumers (markdown
+        report, Zulip alert payload) but the database row only stores a pointer
+        to the uploaded artifact.  This keeps arbitrary build output out of the
+        relational schema; consumers fetch the artifact when they need contents.
+        """
+        from scripts.storage import load_latest_run_per_downstream
+
+        engine, _ = self._engine()
+        when = datetime(2026, 4, 20, 6, 0, 0, tzinfo=timezone.utc)
+        self._seed_run(
+            engine,
+            "with-log",
+            when,
+            culprit_log_artifact_url="https://github.com/owner/repo/actions/runs/9/artifacts/42",
+        )
+
+        result = load_latest_run_per_downstream(engine, "regression", _UPSTREAM)
+        rec = result["physlib"]
+        self.assertEqual(
+            rec.culprit_log_artifact_url,
+            "https://github.com/owner/repo/actions/runs/9/artifacts/42",
+        )
+        # LatestRunRecord has no culprit_log_text field — the log lives only in
+        # the artifact, never in the database or the snapshot.
+        self.assertFalse(hasattr(rec, "culprit_log_text"))
 
     def test_multiple_downstreams_each_get_latest(self) -> None:
         """Scenario: per-downstream latest is computed independently."""
