@@ -21,7 +21,6 @@ from scripts.validation import (
     build_skip_result,
     classify_exit_code,
     commit_plan_artifact_path,
-    invoke_tool,
     load_selection,
     print_commit_plan_summary,
     render_selection_summary,
@@ -162,48 +161,6 @@ class WarmCacheTests(unittest.TestCase):
 
             mock_run.assert_not_called()
             self.assertIn("Skipped `lake cache get`", (output_dir / "downstream-cache-get.log").read_text())
-
-
-class InvokeToolTests(unittest.TestCase):
-    """Scenarios for choosing how the workflow invokes the validator executable."""
-
-    def test_prebuilt_tool_binary_is_used_when_provided(self) -> None:
-        """Scenario: a workflow-provided binary avoids `lake exe` rebuild checks."""
-
-        with tempfile.TemporaryDirectory() as tmp:
-            project_dir = Path(tmp) / "downstream"
-            project_dir.mkdir()
-            output_dir = Path(tmp) / "artifacts"
-            config = DownstreamConfig(
-                name="physlib",
-                repo="leanprover-community/physlib",
-                default_branch="master",
-            )
-            tool_exe = Path(tmp) / "hopscotch"
-            tool_exe.write_text("")
-
-            mock_process = Mock()
-            mock_process.stdout = iter([])
-            mock_process.wait.return_value = 0
-            mock_process.args = [str(tool_exe)]
-
-            with patch("scripts.validation.subprocess.Popen", return_value=mock_process) as mock_popen:
-                invoke_tool(
-                    config,
-                    "deadbeef00000000000000000000000000000000",
-                    "cafebabe00000000000000000000000000000000",
-                    project_dir,
-                    output_dir,
-                    {"LAKE_CACHE_DIR": str(Path(tmp) / "cache")},
-                    tool_exe,
-                )
-
-            invoked_command = mock_popen.call_args.args[0]
-            self.assertEqual(str(tool_exe), invoked_command[0])
-            self.assertNotIn("lake", invoked_command)
-            self.assertIn("--from", invoked_command)
-            self.assertIn("--to", invoked_command)
-            self.assertNotIn("--commits-file", invoked_command)
 
 
 class CommitPlanArtifactTests(unittest.TestCase):

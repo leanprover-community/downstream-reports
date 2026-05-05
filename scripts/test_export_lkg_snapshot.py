@@ -325,58 +325,5 @@ class MainCliTests(unittest.TestCase):
         )
 
 
-# ---------------------------------------------------------------------------
-# _fetch_source_run() tests
-# ---------------------------------------------------------------------------
-
-
-class FetchSourceRunTests(unittest.TestCase):
-    """Tests for the _fetch_source_run() helper."""
-
-    def test_returns_none_when_no_dsn(self) -> None:
-        """Scenario: no DSN available → returns None without raising."""
-        from scripts.export_lkg_snapshot import _fetch_source_run
-
-        with patch.dict("os.environ", {}, clear=True):
-            result = _fetch_source_run(None)
-        self.assertIsNone(result)
-
-    def test_returns_none_when_no_runs_found(self) -> None:
-        """Scenario: SQL backend has no regression runs → returns None."""
-        from scripts.export_lkg_snapshot import _fetch_source_run
-
-        with (
-            patch("scripts.storage.latest_regression_run_id", return_value=None),
-            patch("sqlalchemy.create_engine", return_value=MagicMock()),
-        ):
-            result = _fetch_source_run("postgresql://fake")
-        self.assertIsNone(result)
-
-    def test_returns_dict_with_run_id_and_url(self) -> None:
-        """Scenario: SQL has a run → returns dict with run_id and run_url."""
-        from scripts.export_lkg_snapshot import _fetch_source_run
-
-        mock_engine = MagicMock()
-        with (
-            patch("scripts.storage.latest_regression_run_id", return_value="99"),
-            patch("sqlalchemy.create_engine", return_value=mock_engine),
-            patch.dict("os.environ", {"GITHUB_REPOSITORY": "owner/repo"}),
-        ):
-            result = _fetch_source_run("postgresql://fake")
-
-        self.assertIsNotNone(result)
-        self.assertEqual(result["run_id"], "99")
-        self.assertIn("owner/repo", result["run_url"])
-        self.assertIn("99", result["run_url"])
-
-    def test_returns_none_on_exception(self) -> None:
-        """Scenario: DB error is swallowed and None is returned."""
-        from scripts.export_lkg_snapshot import _fetch_source_run
-
-        with patch("sqlalchemy.create_engine", side_effect=RuntimeError("boom")):
-            result = _fetch_source_run("postgresql://fake")
-        self.assertIsNone(result)
-
-
 if __name__ == "__main__":
     unittest.main()

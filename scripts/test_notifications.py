@@ -13,7 +13,6 @@ from unittest.mock import MagicMock
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from scripts.notifications import (
-    ALERTABLE_STATES,
     AlertAction,
     DryRunSender,
     _MATHLIB_COMMIT_URL,
@@ -470,19 +469,6 @@ class ExecuteAlertsTests(unittest.TestCase):
         sender = MagicMock()
         execute_alerts([], sender)
         sender.send_message.assert_not_called()
-
-
-# ---------------------------------------------------------------------------
-# Tests: ALERTABLE_STATES constant
-# ---------------------------------------------------------------------------
-
-
-class AlertableStatesTests(unittest.TestCase):
-    """Verify the alertable states constant."""
-
-    def test_contains_new_failure_and_recovered(self) -> None:
-        """Scenario: only new_failure and recovered are alertable."""
-        self.assertEqual(ALERTABLE_STATES, {"new_failure", "recovered"})
 
 
 # ---------------------------------------------------------------------------

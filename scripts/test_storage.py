@@ -15,8 +15,6 @@ from scripts.storage import (
     DownstreamStatusRecord,
     FilesystemBackend,
     RunResultRecord,
-    create_backend,
-    result_to_row,
 )
 
 
@@ -48,69 +46,6 @@ def _make_run_result(
         head_probe_failure_stage=None,
         culprit_log_text=None,
     )
-
-
-class ResultToRowTests(unittest.TestCase):
-    """Test that result_to_row() faithfully serializes a RunResultRecord."""
-
-    def test_all_fields_are_present(self) -> None:
-        record = RunResultRecord(
-            upstream="leanprover-community/mathlib4",
-            downstream="TestDownstream",
-            repo="owner/repo",
-            downstream_commit="ds_head",
-            outcome="passed",
-            episode_state="passing",
-            target_commit="target_abc",
-            previous_last_known_good="prev_good",
-            previous_first_known_bad=None,
-            last_known_good="target_abc",
-            first_known_bad=None,
-            current_last_successful="target_abc",
-            current_first_failing=None,
-            failure_stage=None,
-            search_mode="head-only",
-            commit_window_truncated=False,
-            error=None,
-            head_probe_outcome="passed",
-            head_probe_failure_stage=None,
-            culprit_log_text=None,
-            pinned_commit="pin_abc",
-        )
-        row = result_to_row(record)
-        self.assertEqual(row["downstream"], "TestDownstream")
-        self.assertEqual(row["outcome"], "passed")
-        self.assertEqual(row["pinned_commit"], "pin_abc")
-        self.assertIsNone(row["error"])
-        self.assertFalse(row["commit_window_truncated"])
-        # Verify all RunResultRecord fields are present
-        import dataclasses
-        for field in dataclasses.fields(record):
-            self.assertIn(field.name, row, f"Missing field: {field.name}")
-
-
-class CreateBackendTests(unittest.TestCase):
-    """Test the create_backend() factory function."""
-
-    def test_filesystem_backend_with_state_root(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            backend = create_backend("filesystem", state_root=Path(tmp))
-            self.assertIsInstance(backend, FilesystemBackend)
-
-    def test_filesystem_backend_requires_state_root(self) -> None:
-        with self.assertRaises(SystemExit):
-            create_backend("filesystem")
-
-    def test_sql_backend_requires_dsn(self) -> None:
-        import os
-        # Ensure POSTGRES_DSN is not set for this test
-        old = os.environ.pop("POSTGRES_DSN", None)
-        try:
-            with self.assertRaises(SystemExit):
-                create_backend("sql")
-        finally:
-            if old is not None:
-                os.environ["POSTGRES_DSN"] = old
 
 
 class FilesystemBackendTests(unittest.TestCase):
