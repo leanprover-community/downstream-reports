@@ -42,6 +42,17 @@ jobs:
   build_and_stage:
     runs-on: [self-hosted, pr]
     steps:
+      # The self-hosted `pr` runner doesn't ship jq; the ubuntu-latest
+      # runners used by upload_cache and verify do. linux/amd64-only,
+      # which is fine for the `pr` label.
+      - name: Install jq
+        run: |
+          mkdir -p "$HOME/.local/bin"
+          curl -fsSL https://github.com/jqlang/jq/releases/download/jq-1.7.1/jq-linux-amd64 \
+            -o "$HOME/.local/bin/jq"
+          chmod +x "$HOME/.local/bin/jq"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
       - name: Install elan
         run: |
           curl https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh -sSf \
