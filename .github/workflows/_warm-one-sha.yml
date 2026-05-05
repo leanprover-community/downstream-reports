@@ -363,15 +363,16 @@ jobs:
           else
             STATUS=verify_failed
           fi
-          jq --arg status "$STATUS" '.status=$status' prev/result.json > final.json
-          cat final.json
+          mkdir -p out
+          jq --arg status "$STATUS" '.status=$status' prev/result.json > out/result.json
+          cat out/result.json
 
       - name: Upload final result
         if: always()
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: warm-result-${{ inputs.sha }}
-          path: final.json
+          path: out/result.json
           if-no-files-found: error
 
       - name: Surface verify failure as a job failure

@@ -74,12 +74,12 @@ class BuildMatrixManualTests(unittest.TestCase):
     """Tests for build_matrix_manual — manual-mode passthrough."""
 
     def test_emits_one_entry_per_sha_with_manual_tag(self) -> None:
-        """Scenario: each manual SHA gets tag=manual and empty downstreams."""
+        """Scenario: each manual SHA gets tag=manual, short_sha, and empty downstreams."""
         self.assertEqual(
             build_matrix_manual([_SHA_A, _SHA_B]),
             [
-                {"sha": _SHA_A, "tag": "manual", "downstreams": []},
-                {"sha": _SHA_B, "tag": "manual", "downstreams": []},
+                {"sha": _SHA_A, "short_sha": _SHA_A[:7], "tag": "manual", "downstreams": []},
+                {"sha": _SHA_B, "short_sha": _SHA_B[:7], "tag": "manual", "downstreams": []},
             ],
         )
 
@@ -110,7 +110,7 @@ class BuildMatrixFromDbTests(unittest.TestCase):
         }
         self.assertEqual(
             build_matrix_from_db(inventory, statuses),
-            [{"sha": _SHA_A, "tag": "lkg", "downstreams": ["physlib"]}],
+            [{"sha": _SHA_A, "short_sha": _SHA_A[:7], "tag": "lkg", "downstreams": ["physlib"]}],
         )
 
     def test_fkb_only_yields_fkb_tag(self) -> None:
@@ -121,7 +121,7 @@ class BuildMatrixFromDbTests(unittest.TestCase):
         }
         self.assertEqual(
             build_matrix_from_db(inventory, statuses),
-            [{"sha": _SHA_A, "tag": "fkb", "downstreams": ["physlib"]}],
+            [{"sha": _SHA_A, "short_sha": _SHA_A[:7], "tag": "fkb", "downstreams": ["physlib"]}],
         )
 
     def test_same_sha_lkg_for_one_fkb_for_another_yields_both(self) -> None:

@@ -113,6 +113,7 @@ def build_matrix_from_db(
             tag = "both"
         include.append({
             "sha": sha,
+            "short_sha": sha[:7],
             "tag": tag,
             "downstreams": entry["downstreams"],
         })
@@ -121,7 +122,10 @@ def build_matrix_from_db(
 
 def build_matrix_manual(shas: list[str]) -> list[dict[str, Any]]:
     """Build the matrix from an operator-supplied SHA list."""
-    return [{"sha": sha, "tag": "manual", "downstreams": []} for sha in shas]
+    return [
+        {"sha": sha, "short_sha": sha[:7], "tag": "manual", "downstreams": []}
+        for sha in shas
+    ]
 
 
 def build_parser() -> argparse.ArgumentParser:

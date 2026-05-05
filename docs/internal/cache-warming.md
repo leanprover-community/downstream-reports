@@ -216,17 +216,35 @@ Steps:
 | `pushed` | upload_cache (push succeeded) | no — hands off to verify | green job |
 | `warmed` | verify (post-push check passed) | yes | green job |
 | `verify_failed` | verify (post-push check failed) | yes | red job (final step exits 1) |
+| `no_result` | summary (synthesised) | n/a | red summary job |
 
 `build_failed` is recorded but not loud, because mathlib was
 occasionally non-buildable on master in the past — the FKB of a
 downstream is a mathlib commit that broke that downstream, not
 necessarily mathlib itself, but rare exceptions exist.
 
+`no_result` is synthesised by the summary job for any SHA that was
+in the plan but didn't upload a `warm-result-<sha>` artifact —
+typically a runner crash or a job timeout that killed the worker
+before its terminal upload step ran. It surfaces as a red summary
+job so we don't silently drop those.
+
 ## Orchestrator summary
 
-The `summary` job downloads all `warm-result-<sha>` artifacts,
-renders a Markdown table to the run's job summary, and exits 1 if any
-SHA reports `push_failed` or `verify_failed`.
+The `summary` job downloads all `warm-result-<sha>` artifacts (each
+into its own subdirectory under `results/` — *not* `merge-multiple`,
+because every terminal stage uploads under the same in-artifact
+filename and merging would silently overwrite earlier rows),
+combines them with synthetic `no_result` entries for any planned
+SHA that didn't report back, and renders to the run's job summary:
+
+- A total count of SHAs processed.
+- A status-breakdown table with one row per non-zero status.
+- A per-SHA table with short SHA, tag, status, and the list of
+  downstreams that benefit.
+
+The summary job exits 1 if any SHA reports `push_failed`,
+`verify_failed`, or `no_result`.
 
 ## Throttling
 
