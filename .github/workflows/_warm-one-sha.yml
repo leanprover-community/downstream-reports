@@ -17,6 +17,15 @@ name: warm-mathlib-cache (one SHA)
 # The token never flows to a runner that runs `lake build Mathlib`,
 # matching mathlib4/build_template.yml's split between the build and
 # upload_cache jobs.
+#
+# Job chaining: each job exposes its terminal/non-terminal status as a
+# job output, and the next job's `if:` skips it when the chain is
+# already done. The job that produces a terminal status uploads the
+# `warm-result-<sha>` artifact directly. So:
+#
+#   already_warm | build_failed     → uploaded by build_and_stage
+#   push_failed                     → uploaded by upload_cache
+#   warmed | verify_failed          → uploaded by verify
 
 on:
   workflow_call:
@@ -41,6 +50,8 @@ permissions:
 jobs:
   build_and_stage:
     runs-on: [self-hosted, pr]
+    outputs:
+      status: ${{ steps.write_result.outputs.status }}
     steps:
       # The self-hosted `pr` runner doesn't ship jq; the ubuntu-latest
       # runners used by upload_cache and verify do. linux/amd64-only,
@@ -103,7 +114,8 @@ jobs:
           path: cache-staging/
           if-no-files-found: error
 
-      - name: Write intermediate result
+      - name: Write result
+        id: write_result
         if: always()
         env:
           SHA: ${{ inputs.sha }}
@@ -125,9 +137,21 @@ jobs:
             '{sha:$sha, tag:$tag, status:$status, downstreams:$downstreams}' \
             > "out/result.json"
           cat out/result.json
+          echo "status=$STATUS" >> "$GITHUB_OUTPUT"
 
-      - name: Upload intermediate result
-        if: always()
+      # Terminal: upload directly as the final result so the orchestrator's
+      # summary can read it without further chain stages running.
+      - name: Upload final result (terminal)
+        if: always() && steps.write_result.outputs.status != 'staged'
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: warm-result-${{ inputs.sha }}
+          path: out/result.json
+          if-no-files-found: error
+
+      # Non-terminal: hand off to upload_cache.
+      - name: Upload intermediate result (staged)
+        if: steps.write_result.outputs.status == 'staged'
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: intermediate-${{ inputs.sha }}
@@ -136,6 +160,7 @@ jobs:
 
   upload_cache:
     needs: build_and_stage
+    if: needs.build_and_stage.outputs.status == 'staged'
     runs-on: ubuntu-latest
     # Bind the OIDC subject claim to a GitHub Environment, NOT a branch.
     # The federated credential on the mathlib cache-writer Azure app
@@ -145,27 +170,22 @@ jobs:
     # bearer token. Production runs are still gated to main by the
     # workflow_run filter on the orchestrator workflow.
     environment: cache-warming-token
+    outputs:
+      status: ${{ steps.write_result.outputs.status }}
     steps:
+      - name: Download intermediate result
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: intermediate-${{ inputs.sha }}
+          path: prev
+
       - name: Download staging artifact
-        id: download
-        continue-on-error: true   # absent is the already_warm / build_failed case
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: stage-${{ inputs.sha }}
           path: cache-staging
 
-      - name: Decide whether to push
-        id: gate
-        run: |
-          if [ -d cache-staging ] && ls cache-staging/*.ltar >/dev/null 2>&1; then
-            echo "do_push=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "do_push=false" >> "$GITHUB_OUTPUT"
-            echo "No staging artifact found for ${{ inputs.sha }} — nothing to push."
-          fi
-
       - name: Mint Azure cache bearer token
-        if: steps.gate.outputs.do_push == 'true'
         id: cache_token
         uses: leanprover-community/mathlib-ci/.github/actions/azure-create-cache-token@17db5ff55a65df98d55cbddcc67938f70d10dab2
         with:
@@ -173,8 +193,8 @@ jobs:
           azure-tenant-id: ${{ secrets.LPC_AZ_TENANT_ID }}
 
       - name: Push staged cache to Azure
-        if: steps.gate.outputs.do_push == 'true'
         id: push
+        continue-on-error: true   # capture push_failed before failing the job
         env:
           MATHLIB_CACHE_USE_CLOUDFLARE: "0"
         run: |
@@ -183,37 +203,49 @@ jobs:
             --staging-dir=cache-staging \
             --repo=leanprover-community/mathlib4
 
-      - name: Download intermediate result
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: intermediate-${{ inputs.sha }}
-          path: prev
-
-      - name: Roll status forward
+      - name: Write result
+        id: write_result
+        if: always()
         env:
-          DO_PUSH: ${{ steps.gate.outputs.do_push }}
           PUSH_OUTCOME: ${{ steps.push.outcome }}
         run: |
           mkdir -p out
-          if [ "$DO_PUSH" = "false" ]; then
-            cp prev/result.json out/result.json
-          elif [ "$PUSH_OUTCOME" = "success" ]; then
-            jq '.status="pushed"' prev/result.json > out/result.json
+          if [ "$PUSH_OUTCOME" = "success" ]; then
+            STATUS=pushed
           else
-            jq '.status="push_failed"' prev/result.json > out/result.json
+            STATUS=push_failed
           fi
+          jq --arg status "$STATUS" '.status=$status' prev/result.json > out/result.json
           cat out/result.json
+          echo "status=$STATUS" >> "$GITHUB_OUTPUT"
 
+      # Terminal: push_failed becomes the final result.
+      - name: Upload final result (push_failed)
+        if: always() && steps.write_result.outputs.status == 'push_failed'
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: warm-result-${{ inputs.sha }}
+          path: out/result.json
+          if-no-files-found: error
+
+      # Non-terminal: hand off to verify.
       - name: Upload pushed result
-        if: always()
+        if: steps.write_result.outputs.status == 'pushed'
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: pushed-${{ inputs.sha }}
           path: out/result.json
           if-no-files-found: error
 
+      - name: Surface push failure as a job failure
+        if: steps.push.outcome == 'failure'
+        run: |
+          echo "::error::Cache push failed for ${{ inputs.sha }}."
+          exit 1
+
   verify:
     needs: upload_cache
+    if: needs.upload_cache.outputs.status == 'pushed'
     runs-on: ubuntu-latest
     steps:
       - name: Download pushed result
@@ -222,28 +254,15 @@ jobs:
           name: pushed-${{ inputs.sha }}
           path: prev
 
-      - name: Decide whether to verify
-        id: gate
-        run: |
-          STATUS=$(jq -r .status prev/result.json)
-          echo "Previous status: $STATUS"
-          if [ "$STATUS" = "pushed" ]; then
-            echo "do_verify=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "do_verify=false" >> "$GITHUB_OUTPUT"
-          fi
-
       - name: Install elan
-        if: steps.gate.outputs.do_verify == 'true'
         run: |
           curl https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh -sSf \
             | sh -s -- -y --default-toolchain none
           echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
 
       - name: Verify cache for SHA
-        if: steps.gate.outputs.do_verify == 'true'
         id: verify
-        continue-on-error: true   # we want to record verify_failed before failing the job
+        continue-on-error: true   # capture verify_failed before failing the job
         env:
           SHA: ${{ inputs.sha }}
         run: |
@@ -254,18 +273,17 @@ jobs:
           lake exe cache get
           lake build --no-build --rehash -v Mathlib
 
-      - name: Roll final status
+      - name: Write final result
+        if: always()
         env:
-          DO_VERIFY: ${{ steps.gate.outputs.do_verify }}
           VERIFY_OUTCOME: ${{ steps.verify.outcome }}
         run: |
-          if [ "$DO_VERIFY" = "false" ]; then
-            cp prev/result.json final.json
-          elif [ "$VERIFY_OUTCOME" = "success" ]; then
-            jq '.status="warmed"' prev/result.json > final.json
+          if [ "$VERIFY_OUTCOME" = "success" ]; then
+            STATUS=warmed
           else
-            jq '.status="verify_failed"' prev/result.json > final.json
+            STATUS=verify_failed
           fi
+          jq --arg status "$STATUS" '.status=$status' prev/result.json > final.json
           cat final.json
 
       - name: Upload final result
