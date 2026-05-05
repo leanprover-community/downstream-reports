@@ -98,6 +98,22 @@ Zulip topic.
 Manually dispatchable workflow that loads the latest per-downstream state from
 the database and sends a compact Markdown table to Zulip.
 
+## `warm-mathlib-cache.yml`
+
+See [`docs/internal/cache-warming.md`](cache-warming.md) for a full description.
+
+After each successful regression report on main, this workflow builds mathlib
+at the LKG / FKB SHAs reported for opted-in downstreams and pushes the oleans
+to mathlib's shared Azure cache. External consumers of `lkg/latest.json`
+(e.g. the `bump-to-latest` action) hit a warm cache instead of having to
+rebuild mathlib from scratch when our reported SHAs land between bors merges.
+
+Per-downstream opt-in via `DownstreamConfig.warm_cache` in the inventory.
+`workflow_dispatch` accepts an optional comma-separated `shas` input that
+bypasses the inventory + DB lookup, useful for one-off backfills and for
+testing on a feature branch. The build_stage_push job refuses SHAs that
+aren't reachable from `origin/master`.
+
 ## Zulip configuration
 
 Both workflows send messages to `mathlib-initiative.zulipchat.com` via the

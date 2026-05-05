@@ -31,6 +31,7 @@ class DownstreamConfig:
     bumping_branch: str | None = None
     skip_already_good: bool = True
     skip_known_bad_bisect: bool = True
+    warm_cache: bool = False
 
 
 @dataclass(frozen=True)

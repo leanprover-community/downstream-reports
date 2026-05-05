@@ -1,25 +1,213 @@
 name: warm-mathlib-cache
 
-# Shim on main. The real implementation lives on the WarmCacheWorkflow
-# feature branch and will be promoted to main once it's been validated.
-# This shim exists so that workflow_dispatch is registered against this
-# repository's default branch — without it, GitHub will not let
-# `gh workflow run --ref WarmCacheWorkflow ...` find the workflow.
+# Builds mathlib at the LKG / FKB SHAs reported for opted-in downstreams
+# and pushes the resulting oleans to the shared mathlib cache, so future
+# consumers of `lkg/latest.json` hit a warm cache.
+#
+# Triggered after each successful regression report on main, plus
+# workflow_dispatch for manual backfills (with optional `shas` input that
+# bypasses the inventory + DB lookup).
+#
+# See docs/internal/cache-warming.md (TODO) for the threat model and
+# Azure infra prerequisites; the gist:
+#
+#   - The OIDC subject for the cache bearer mint is bound to the
+#     `cache-warming-token` GitHub Environment (per-SHA reusable
+#     workflow's upload_cache job), so feature-branch dispatch works.
+#   - Production runs are gated to main by the workflow_run filter
+#     below.
 
 on:
+  workflow_run:
+    workflows: ["mathlib-downstream-report"]
+    types: [completed]
+    branches: [main]
   workflow_dispatch:
     inputs:
       shas:
         description: >-
-          Optional comma-separated mathlib SHAs to warm. Forwarded to
-          the real implementation when dispatching against a feature
-          branch.
+          Optional comma-separated mathlib SHAs to warm. When non-empty,
+          the inventory + DB are ignored and only these SHAs are
+          processed. Useful for testing on a feature branch or for
+          one-off backfills.
         required: false
         type: string
         default: ""
 
+permissions:
+  contents: read
+  id-token: write   # required so the reusable workflow can mint the cache bearer
+
+# Only one warming run at a time across the whole repo. If a manual
+# dispatch lands while a workflow_run-triggered one is in progress, the
+# new one queues; any *previously* queued run is dropped (which is
+# exactly what we want — the latest plan is always the one to honour).
+concurrency:
+  group: warm-mathlib-cache
+  cancel-in-progress: false
+
 jobs:
-  noop:
+  plan:
+    if: >-
+      github.event_name != 'workflow_run' ||
+      (github.event.workflow_run.head_branch == 'main' &&
+       github.event.workflow_run.conclusion == 'success')
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+      has_jobs: ${{ steps.plan.outputs.has_jobs }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: '3.x'
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r scripts/requirements.txt
+
+      - name: Build matrix
+        id: plan
+        env:
+          POSTGRES_DSN: ${{ secrets.POSTGRES_DSN }}
+          MANUAL_SHAS: ${{ inputs.shas }}
+        run: |
+          ARGS=(--backend sql
+                --inventory ci/inventory/downstreams.json
+                --upstream leanprover-community/mathlib4
+                --output plan.json)
+          if [ -n "$MANUAL_SHAS" ]; then
+            ARGS+=(--manual-shas "$MANUAL_SHAS")
+          fi
+          python3 scripts/plan_cache_warm_jobs.py "${ARGS[@]}"
+          cat plan.json
+          {
+            echo "matrix=$(jq -c '{include: .include}' plan.json)"
+            echo "has_jobs=$(jq -r '(.include | length) > 0' plan.json)"
+          } >> "$GITHUB_OUTPUT"
+
+  # Each matrix element fans out into its own reusable-workflow run
+  # (build → push → verify). max-parallel caps how many chains are in
+  # flight at a time. The self-hosted `pr` runner is shared with the
+  # regression probe job; raise/lower this with that contention in
+  # mind.
+  warm-sha:
+    name: "warm ${{ matrix.short_sha }} (${{ matrix.tag }}) ${{ join(matrix.downstreams, ', ') }}"
+    needs: plan
+    if: needs.plan.outputs.has_jobs == 'true'
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix: ${{ fromJson(needs.plan.outputs.matrix) }}
+    uses: ./.github/workflows/_warm-one-sha.yml
+    with:
+      sha: ${{ matrix.sha }}
+      tag: ${{ matrix.tag }}
+      downstreams_json: ${{ toJson(matrix.downstreams) }}
+    secrets: inherit
+
+  summary:
+    needs: [plan, warm-sha]
+    if: always() && needs.plan.outputs.has_jobs == 'true'
     runs-on: ubuntu-latest
     steps:
-      - run: echo "Shim on main. Dispatch against WarmCacheWorkflow (or merge it) for the real implementation."
+      # Each warm-result-<sha> artifact gets its own subdirectory under
+      # results/. Without merge-multiple, files from different artifacts
+      # never collide — earlier we hit a bug where two SHAs reaching the
+      # same terminal stage both wrote `result.json` and the second
+      # overwrote the first, silently dropping rows from the summary.
+      - name: Download per-SHA results
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: warm-result-*
+          path: results
+
+      - name: Render summary
+        env:
+          MATRIX_JSON: ${{ needs.plan.outputs.matrix }}
+        run: |
+          set -euo pipefail
+
+          # Collect every per-SHA result.
+          shopt -s nullglob
+          files=(results/*/result.json)
+          if [ "${#files[@]}" -gt 0 ]; then
+            jq -s '.' "${files[@]}" > received.json
+          else
+            echo '[]' > received.json
+          fi
+
+          # Compute received SHAs and planned SHAs so we can surface any
+          # matrix entries that didn't produce a result (job timeout, runner
+          # crash, etc.) — these show up as "missing" rows.
+          jq -r '.[].sha' received.json | sort -u > received-shas.txt
+          jq -r '.include[].sha' <<<"$MATRIX_JSON" | sort -u > planned-shas.txt
+          comm -23 planned-shas.txt received-shas.txt > missing-shas.txt
+
+          # Compose final summary objects: received entries verbatim, plus
+          # synthetic entries for missing SHAs so the table is complete.
+          if [ -s missing-shas.txt ]; then
+            jq -R --slurpfile matrix <(echo "$MATRIX_JSON") '
+              . as $sha
+              | $matrix[0].include[]
+              | select(.sha == $sha)
+              | {sha, tag, status: "no_result", downstreams}
+            ' missing-shas.txt | jq -s '.' > missing.json
+          else
+            echo '[]' > missing.json
+          fi
+
+          jq -s 'add' received.json missing.json > summary.json
+
+          # Counts by status, in a stable order.
+          declare -A counts=()
+          for status in already_warm warmed build_failed push_failed verify_failed no_result; do
+            n=$(jq --arg s "$status" '[.[] | select(.status == $s)] | length' summary.json)
+            counts[$status]=$n
+          done
+          total=$(jq 'length' summary.json)
+
+          # Render the GitHub job summary.
+          {
+            echo "## Cache-warming summary"
+            echo ""
+            echo "**Total SHAs:** $total"
+            echo ""
+            echo "| Status | Count |"
+            echo "|---|---|"
+            for status in already_warm warmed build_failed push_failed verify_failed no_result; do
+              if [ "${counts[$status]}" -gt 0 ]; then
+                echo "| \`$status\` | ${counts[$status]} |"
+              fi
+            done
+            echo ""
+            echo "| SHA | Tag | Status | Downstreams |"
+            echo "|---|---|---|---|"
+            jq -r '
+              sort_by(.sha)[] |
+              "| \(.sha[0:7]) | \(.tag) | \(.status) | \((.downstreams // []) | join(", ")) |"
+            ' summary.json
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          # Print to job log too, for inline visibility.
+          cat summary.json
+
+          # Hard failures surface as a red summary job. `no_result` is
+          # also failure-worthy: it means a matrix entry didn't reach a
+          # terminal upload, which usually points to runner / timeout
+          # trouble worth investigating.
+          if jq -e 'any(.[]; .status == "verify_failed" or .status == "push_failed" or .status == "no_result")' \
+               summary.json >/dev/null; then
+            echo "::error::At least one SHA failed cache push, post-push verification, or didn't report a result."
+            exit 1
+          fi
+
+      - name: Upload combined summary
+        if: always()
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: cache-warming-summary
+          path: summary.json
+          if-no-files-found: ignore
