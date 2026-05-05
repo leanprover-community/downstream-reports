@@ -1,11 +1,19 @@
 name: generate-pages
 
+# Triggered on completion of warm-mathlib-cache on main — i.e. after the
+# LKG/FKB SHAs reported by mathlib-downstream-report have been confirmed
+# warm in mathlib's Azure cache. This keeps the rendered status page
+# consistent with lkg/latest.json (both refresh together, both gated on
+# the same warming pass), so the page never advertises a SHA whose
+# cache is cold.
+
 on:
   workflow_run:
     workflows:
-      - mathlib-downstream-report
+      - warm-mathlib-cache
     types:
       - completed
+    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -19,6 +27,9 @@ concurrency:
 
 jobs:
   generate-and-deploy:
+    # On workflow_run: only deploy when the upstream warm-mathlib-cache
+    # run ran on main and succeeded. workflow_dispatch always runs.
+    if: github.event_name != 'workflow_run' || (github.event.workflow_run.head_branch == 'main' && github.event.workflow_run.conclusion == 'success')
     runs-on: ubuntu-latest
     environment:
       name: github-pages

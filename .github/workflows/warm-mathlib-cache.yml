@@ -18,6 +18,14 @@ name: warm-mathlib-cache
 #     below.
 
 on:
+  # Eventual-consistency catch-up: every 6h, offset from the regression
+  # cron (03/15 UTC). With the cache_warmth filter most ticks find an
+  # empty matrix and finish in ~30s; the workflow's success still chains
+  # into publish-lkg + generate-pages, which is what republishes the
+  # snapshot/page if a previous chain was skipped (cancelled report,
+  # missed workflow_run event, etc.).
+  schedule:
+    - cron: "0 0,6,12,18 * * *"
   workflow_run:
     workflows: ["mathlib-downstream-report"]
     types: [completed]
@@ -203,6 +211,32 @@ jobs:
             echo "::error::At least one SHA failed cache push, post-push verification, or didn't report a result."
             exit 1
           fi
+
+      - name: Set up Python (for cache_warmth recording)
+        if: always() && hashFiles('summary.json') != ''
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: '3.x'
+
+      - name: Install Python dependencies
+        if: always() && hashFiles('summary.json') != ''
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r scripts/requirements.txt
+
+      # Persist already_warm / warmed SHAs to cache_warmth so future plan
+      # runs filter them out. Runs even when the summary step exited red,
+      # so that the warm SHAs from a partially-failed run still get
+      # recorded (each row is per-SHA and independent).
+      - name: Record warm SHAs
+        if: always() && hashFiles('summary.json') != ''
+        env:
+          POSTGRES_DSN: ${{ secrets.POSTGRES_DSN }}
+        run: |
+          python3 scripts/record_warm_shas.py \
+            --backend sql \
+            --upstream leanprover-community/mathlib4 \
+            --summary summary.json
 
       - name: Upload combined summary
         if: always()

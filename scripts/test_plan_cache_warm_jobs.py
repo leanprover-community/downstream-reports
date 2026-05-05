@@ -194,6 +194,51 @@ class BuildMatrixFromDbTests(unittest.TestCase):
         shas = [entry["sha"] for entry in build_matrix_from_db(inventory, statuses)]
         self.assertEqual(shas, sorted(shas))
 
+    def test_known_warm_shas_are_dropped(self) -> None:
+        """Scenario: SHAs in the known-warm set are excluded from the matrix."""
+        inventory = {
+            "physlib": _config("physlib"),
+            "FLT": _config("FLT"),
+        }
+        statuses = {
+            "physlib": DownstreamStatusRecord(last_known_good_commit=_SHA_A),
+            "FLT": DownstreamStatusRecord(last_known_good_commit=_SHA_B),
+        }
+        result = build_matrix_from_db(inventory, statuses, known_warm_shas={_SHA_A})
+        self.assertEqual([entry["sha"] for entry in result], [_SHA_B])
+
+    def test_all_known_warm_yields_empty_matrix(self) -> None:
+        """Scenario: when every planned SHA is known warm the matrix is empty."""
+        inventory = {"physlib": _config("physlib")}
+        statuses = {
+            "physlib": DownstreamStatusRecord(
+                last_known_good_commit=_SHA_A,
+                first_known_bad_commit=_SHA_B,
+            ),
+        }
+        result = build_matrix_from_db(
+            inventory, statuses, known_warm_shas={_SHA_A, _SHA_B}
+        )
+        self.assertEqual(result, [])
+
+    def test_known_warm_does_not_affect_other_shas(self) -> None:
+        """Scenario: the warm filter is per-SHA, not per-downstream."""
+        inventory = {"physlib": _config("physlib")}
+        statuses = {
+            "physlib": DownstreamStatusRecord(
+                last_known_good_commit=_SHA_A,
+                first_known_bad_commit=_SHA_B,
+            ),
+        }
+        # Only the LKG is warm; the FKB should still be planned.
+        result = build_matrix_from_db(
+            inventory, statuses, known_warm_shas={_SHA_A}
+        )
+        self.assertEqual(
+            [(entry["sha"], entry["tag"]) for entry in result],
+            [(_SHA_B, "fkb")],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -74,6 +74,7 @@ def _parse_manual_shas(raw: str) -> list[str]:
 def build_matrix_from_db(
     inventory: dict[str, DownstreamConfig],
     statuses: dict[str, DownstreamStatusRecord],
+    known_warm_shas: set[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Build the matrix include list from inventory + DB statuses.
 
@@ -81,7 +82,14 @@ def build_matrix_from_db(
     SHA's ``tag`` reflects the union of roles across downstreams: a
     SHA that's LKG for one project and FKB for another is tagged
     ``both``.
+
+    SHAs in *known_warm_shas* are dropped after dedup so the matrix only
+    carries cold work. Mathlib's olean cache is content-hashed and
+    immutable per SHA, so a SHA confirmed warm by a previous run never
+    needs to be re-probed.
     """
+    warm = known_warm_shas or set()
+
     # sha -> {"downstreams": ordered list, "roles": set of "lkg"/"fkb"}
     by_sha: dict[str, dict[str, Any]] = {}
 
@@ -103,6 +111,8 @@ def build_matrix_from_db(
 
     include: list[dict[str, Any]] = []
     for sha in sorted(by_sha):
+        if sha in warm:
+            continue
         entry = by_sha[sha]
         roles = entry["roles"]
         if roles == {"lkg"}:
@@ -169,7 +179,8 @@ def main() -> int:
         inventory = load_inventory(Path(args.inventory), include_disabled=False)
         backend = create_backend(args.backend, dsn=args.dsn, state_root=args.state_root)
         statuses = backend.load_all_statuses("regression", args.upstream)
-        include = build_matrix_from_db(inventory, statuses)
+        known_warm = backend.load_known_warm_shas(args.upstream)
+        include = build_matrix_from_db(inventory, statuses, known_warm)
 
     payload = {"include": include}
     Path(args.output).write_text(json.dumps(payload, indent=2))

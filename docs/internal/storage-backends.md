@@ -85,6 +85,7 @@ provisioned.
 | `run_result` | downstream × run | `outcome`, `episode_state`, mathlib target / LKG / FKB commits, `failure_stage`, `search_mode`, head-probe fields, tool `summary` |
 | `downstream_status` | downstream × workflow | `last_known_good`, `first_known_bad` — current episode state, upserted after every run |
 | `validate_job` | downstream × run | CI job timing and conclusion for the validate step |
+| `cache_warmth` | upstream × SHA | `warmed_at` — set when a SHA's olean cache has been confirmed warm; consulted by `plan_cache_warm_jobs.py` to skip already-warm SHAs |
 
 ```sql
 -- Current episode state per downstream.
@@ -145,6 +146,20 @@ CREATE TABLE validate_job (
     conclusion  TEXT,
     PRIMARY KEY (run_id, downstream)
 );
+
+-- Set of upstream SHAs whose olean cache has been confirmed warm by the
+-- cache-warming workflow.  Mathlib's cache is content-hashed and immutable
+-- per SHA, so once a row lands here it is never invalidated automatically;
+-- truncate by hand if the upstream Azure container is ever cleared.
+-- Populated by record_warm_shas.py at the end of warm-mathlib-cache.yml's
+-- summary job; consulted by plan_cache_warm_jobs.build_matrix_from_db so
+-- scheduled warm ticks find an empty matrix in steady state.
+CREATE TABLE cache_warmth (
+    upstream  TEXT        NOT NULL,
+    sha       TEXT        NOT NULL,
+    warmed_at TIMESTAMPTZ NOT NULL,
+    PRIMARY KEY (upstream, sha)
+);
 ```
 
 ### Table relationships
@@ -154,6 +169,7 @@ run (1) ──< run_result (N)
          └< validate_job (N)
 
 downstream_status  (upserted per save_run, keyed by downstream × workflow)
+cache_warmth       (upserted per warm run, keyed by upstream × sha)
 ```
 
 

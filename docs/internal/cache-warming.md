@@ -29,21 +29,46 @@ ourselves for a curated set of downstreams.
 mathlib-downstream-report (on main, success)
     │
     ▼  workflow_run trigger
-warm-mathlib-cache.yml         (orchestrator)
+warm-mathlib-cache.yml         (orchestrator; also: cron every 6h, dispatch)
     │
-    ├─ plan job        → reads inventory + DB, emits matrix of unique SHAs
+    ├─ plan job        → reads inventory + DB, filters cache_warmth,
+    │                    emits matrix of unique cold SHAs
     │
-    └─ warm-sha matrix → calls _warm-one-sha.yml once per SHA (max-parallel: 4)
-                          │
-                          ├─ build_and_stage    self-hosted, NO token
-                          │   clone target SHA → probe → build → stage
-                          │
-                          ├─ upload_cache       ubuntu-latest, has cache token
-                          │   shallow master → build cache → mint → put-staged
-                          │
-                          └─ verify             ubuntu-latest, NO token
-                              fresh clone → cache get → assert all oleans present
+    ├─ warm-sha matrix → calls _warm-one-sha.yml once per SHA (max-parallel: 1)
+    │                     │
+    │                     ├─ build_and_stage    self-hosted, NO token
+    │                     │   clone target SHA → probe → build → stage
+    │                     │
+    │                     ├─ upload_cache       ubuntu-latest, has cache token
+    │                     │   shallow master → build cache → mint → put-staged
+    │                     │
+    │                     └─ verify             ubuntu-latest, NO token
+    │                         fresh clone → cache get → assert all oleans present
+    │
+    └─ summary job     → renders breakdown, upserts already_warm/warmed
+                         SHAs into the cache_warmth table
+                  │
+                  ▼  workflow_run trigger (success on main)
+        publish-lkg.yml + generate-pages.yml
+        (refresh lkg/latest.json, runs/latest.json, and the Pages site)
 ```
+
+**Why publish-lkg / generate-pages chain off warming, not off the
+report directly.** The warming pass is the gate that turns the DB's
+LKG/FKB rows into a contract that "the SHAs we advertise are warm in
+mathlib's Azure cache." If warming is skipped or fails, the snapshot
+and the rendered status page do not refresh — consumers continue to
+see the previous, still-warm cycle. Without this gate the snapshot
+could point at SHAs whose oleans aren't on Azure yet, forcing
+external consumers to rebuild mathlib from scratch.
+
+**Eventual consistency.** The cron schedule (`0,6,12,18 UTC`) gives
+the chain a recurring entry point so a missed `workflow_run` event,
+a cancelled report run, or a transient warm failure can self-heal.
+Once `cache_warmth` filters every planned SHA, scheduled ticks
+finish in ~30s on `ubuntu-latest`, and their success still chains
+into `publish-lkg` + `generate-pages`, which re-read the current
+DB state and republish.
 
 ## Files
 
@@ -51,18 +76,28 @@ warm-mathlib-cache.yml         (orchestrator)
 |---|---|
 | `.github/workflows/warm-mathlib-cache.yml` | Orchestrator: plan, matrix dispatch, summary. |
 | `.github/workflows/_warm-one-sha.yml` | Reusable per-SHA worker (`workflow_call`). |
-| `scripts/plan_cache_warm_jobs.py` | Builds the matrix from inventory + DB or from a manual SHA list. |
+| `scripts/plan_cache_warm_jobs.py` | Builds the matrix from inventory + DB or from a manual SHA list. Filters out SHAs already recorded in `cache_warmth`. |
 | `scripts/test_plan_cache_warm_jobs.py` | Unit tests for the planner. |
+| `scripts/record_warm_shas.py` | CLI used by the summary job: reads `summary.json`, upserts `(upstream, sha)` rows into `cache_warmth` for terminal-warm statuses. |
+| `scripts/test_record_warm_shas.py` | Unit tests for the warmth-recording filter. |
 | `scripts/models.py` | `DownstreamConfig.warm_cache: bool = False` opt-in flag. |
+| `scripts/storage.py` | `cache_warmth` table + `load_known_warm_shas` / `record_warm_shas` on the storage backends. |
 
 ## Trigger
 
 - **`workflow_run`** on completion of `mathlib-downstream-report` —
   filtered to `branches: [main]` and `conclusion == 'success'`.
   Production runs only fire from main.
+- **`schedule`** at `0,6,12,18 UTC` — eventual-consistency catch-up.
+  Most ticks find every planned SHA already recorded in
+  `cache_warmth`, emit an empty matrix, and finish in ~30s; they
+  still chain into `publish-lkg` and `generate-pages` so a snapshot
+  / page refresh that was missed by a previous broken chain
+  self-heals within ~6h.
 - **`workflow_dispatch`** with optional `shas` input
   (comma-separated 40-char hex SHAs). When `shas` is non-empty the
-  inventory + DB are bypassed and only those SHAs are processed.
+  inventory + DB *and* the `cache_warmth` filter are bypassed —
+  operators forcing a re-warm should not be silently no-op'd.
 
 ## Opt-in
 
@@ -93,8 +128,10 @@ are unaffected.
 - **DB + inventory** (default): loads enabled inventory entries with
   `warm_cache=True`, reads `downstream_status` (workflow=`regression`)
   via `SqlBackend.load_all_statuses`, collects every non-null LKG /
-  FKB, deduplicates by SHA, and tags each entry `lkg`, `fkb`, or
-  `both` based on the union of roles across downstreams.
+  FKB, deduplicates by SHA, drops any SHA already recorded in
+  `cache_warmth` (via `SqlBackend.load_known_warm_shas`), and tags
+  each remaining entry `lkg`, `fkb`, or `both` based on the union of
+  roles across downstreams.
 
 Output JSON:
 
@@ -245,6 +282,15 @@ SHA that didn't report back, and renders to the run's job summary:
 
 The summary job exits 1 if any SHA reports `push_failed`,
 `verify_failed`, or `no_result`.
+
+After rendering the summary, the job runs
+`scripts/record_warm_shas.py --backend sql ... --summary summary.json`
+which upserts `(upstream, sha)` rows into `cache_warmth` for every
+entry whose status is `already_warm` or `warmed`. Mathlib's olean
+cache is content-hashed and immutable per SHA, so once a SHA is
+recorded as warm it is dropped from future plans indefinitely. The
+recording step has `if: always()` so partial failures still persist
+the SHAs that did succeed.
 
 ## Throttling
 
