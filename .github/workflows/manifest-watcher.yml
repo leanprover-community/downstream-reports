@@ -1,0 +1,77 @@
+name: manifest-watcher
+
+# Cheap-to-run watcher that fires every 15 minutes, looking for downstreams
+# whose lake-manifest.json has been bumped past their first-known-bad commit
+# since the last validation.  When it finds any, it dispatches a targeted
+# `mathlib-downstream-report` run for those downstreams only.  See
+# scripts/check_downstream_manifests.py and the design notes in CLAUDE.md.
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Detect changes and log, but do not dispatch."
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  actions: write   # workflow_dispatch of mathlib-downstream-report
+
+# `cancel-in-progress: false` so a slow tick (e.g. waiting on a slow
+# in-flight job listing) blocks the next scheduled tick rather than
+# being yanked out from under itself.
+concurrency:
+  group: manifest-watcher
+  cancel-in-progress: false
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6.2.0
+        with:
+          python-version: '3.x'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r scripts/requirements.txt
+
+      # Dry-run mode is forced on non-main branches so feature-branch tests
+      # never write to the production ledger or dispatch real runs.  The
+      # explicit `dry_run` input still works on top of this for `main` runs.
+      - id: backend
+        run: |
+          if [ "${{ github.ref_name }}" = "main" ]; then
+            echo "value=sql" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=dry-run" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Run watcher
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          POSTGRES_DSN: ${{ steps.backend.outputs.value == 'sql' && secrets.POSTGRES_DSN || '' }}
+          PYTHONUNBUFFERED: "1"
+          DRY_RUN: ${{ inputs.dry_run }}
+          BACKEND: ${{ steps.backend.outputs.value }}
+        run: |
+          DRY_FLAG=""
+          if [ "$DRY_RUN" = "true" ]; then
+            DRY_FLAG="--dry-run-dispatch"
+          fi
+          python3 scripts/check_downstream_manifests.py \
+            --backend "$BACKEND" \
+            --inventory ci/inventory/downstreams.json \
+            --upstream leanprover-community/mathlib4 \
+            --workflow-file mathlib-downstream-report.yml \
+            --ref main \
+            $DRY_FLAG

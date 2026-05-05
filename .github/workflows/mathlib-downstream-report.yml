@@ -28,9 +28,15 @@ permissions:
   contents: read
   actions: read
 
+# Runs queue rather than cancel each other.  This lets the manifest-watcher
+# (.github/workflows/manifest-watcher.yml) safely workflow_dispatch a targeted
+# run while a long scheduled run is still in flight without yanking the
+# scheduled run out from under itself.  Scheduled runs are 12h apart so
+# real overlap is rare; the watcher's ledger and in-flight check prevent
+# per-downstream dispatch pile-ups.
 concurrency:
   group: mathlib-downstream-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   plan:

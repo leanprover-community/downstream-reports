@@ -8,6 +8,7 @@ import subprocess
 import tomllib
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 from scripts.models import CommitDetail, DownstreamConfig
 
@@ -218,6 +219,23 @@ def should_run_boundary_search(head_probe_exit_code: int, commit_window: list[st
 # ---------------------------------------------------------------------------
 
 
+def pinned_from_manifest_payload(payload: Any, dependency_name: str) -> str | None:
+    """Return the resolved SHA for `dependency_name` from a parsed manifest payload.
+
+    Shared core of `pinned_commit_from_manifest` (which reads from disk) and the
+    manifest watcher (which fetches the file over HTTP without ever writing it
+    out).  Returns None when the payload is unparseable, missing the dependency,
+    or carrying a non-git entry.
+    """
+    if not isinstance(payload, dict):
+        return None
+    for pkg in payload.get("packages", []):
+        if pkg.get("name") == dependency_name and pkg.get("type") == "git":
+            rev = pkg.get("rev")
+            return rev if isinstance(rev, str) and rev else None
+    return None
+
+
 def pinned_commit_from_manifest(project_dir: Path, dependency_name: str) -> str | None:
     """Return the resolved SHA for `dependency_name` from `lake-manifest.json`.
 
@@ -233,11 +251,7 @@ def pinned_commit_from_manifest(project_dir: Path, dependency_name: str) -> str 
         payload = json.loads(manifest_path.read_text())
     except Exception:
         return None
-    for pkg in payload.get("packages", []):
-        if pkg.get("name") == dependency_name and pkg.get("type") == "git":
-            rev = pkg.get("rev")
-            return rev if isinstance(rev, str) and rev else None
-    return None
+    return pinned_from_manifest_payload(payload, dependency_name)
 
 def git_url_from_manifest(project_dir: Path, dependency_name: str) -> str | None:
     """Return the git URL for `dependency_name` from `lake-manifest.json`.
