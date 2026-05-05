@@ -99,43 +99,12 @@ jobs:
           SHA: ${{ inputs.sha }}
         run: git -C mathlib4 checkout "$SHA"
 
-      - name: Build cache tool
-        working-directory: mathlib4
-        run: lake build cache
-
-      - name: Probe cache completeness
-        id: probe
-        working-directory: mathlib4
-        continue-on-error: true
-        run: |
-          lake exe cache get
-          lake build --no-build -v Mathlib
-
-      - name: Build Mathlib
-        id: build
-        if: steps.probe.outcome != 'success'
-        working-directory: mathlib4
-        continue-on-error: true
-        run: lake build Mathlib
-
-      - name: Stage cache
-        id: stage
-        if: steps.build.outcome == 'success'
-        working-directory: mathlib4
-        run: lake exe cache stage --staging-dir=../cache-staging
-
-      # Manual OIDC ↔ Azure AD exchange. We do this inline rather than
-      # via mathlib's azure-create-cache-token action because that
-      # action shells out to `az`, which isn't installed on the
-      # self-hosted `pr` runner. The flow is the standard one:
-      #   1. Read GitHub Actions' OIDC ID token, audience-scoped for
-      #      Entra workload identity federation.
-      #   2. Exchange it at login.microsoftonline.com for an Azure AD
-      #      bearer scoped to the storage data plane.
-      #   3. Publish to $GITHUB_ENV under the variable name the cache
-      #      binary expects.
+      # Mint moved before build for fail-fast during testing — Azure auth
+      # misconfiguration surfaces in seconds instead of after a 30+ min
+      # mathlib build. TODO: move back to right before push once the
+      # federated credential setup is settled, so the bearer token is
+      # never in scope of `lake build Mathlib`.
       - name: Mint Azure cache bearer token
-        if: steps.stage.outcome == 'success'
         id: cache_token
         env:
           AZ_CLIENT_ID: ${{ secrets.MATHLIB_CACHE_WRITER_CLIENT_ID }}
@@ -165,6 +134,31 @@ jobs:
 
           echo "::add-mask::$BEARER"
           echo "MATHLIB_CACHE_AZURE_BEARER_TOKEN=$BEARER" >> "$GITHUB_ENV"
+
+      - name: Build cache tool
+        working-directory: mathlib4
+        run: lake build cache
+
+      - name: Probe cache completeness
+        id: probe
+        working-directory: mathlib4
+        continue-on-error: true
+        run: |
+          lake exe cache get
+          lake build --no-build -v Mathlib
+
+      - name: Build Mathlib
+        id: build
+        if: steps.probe.outcome != 'success'
+        working-directory: mathlib4
+        continue-on-error: true
+        run: lake build Mathlib
+
+      - name: Stage cache
+        id: stage
+        if: steps.build.outcome == 'success'
+        working-directory: mathlib4
+        run: lake exe cache stage --staging-dir=../cache-staging
 
       - name: Push staged cache to Azure
         if: steps.stage.outcome == 'success'
