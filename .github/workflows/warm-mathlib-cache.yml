@@ -1,0 +1,25 @@
+name: warm-mathlib-cache
+
+# Shim on main. The real implementation lives on the WarmCacheWorkflow
+# feature branch and will be promoted to main once it's been validated.
+# This shim exists so that workflow_dispatch is registered against this
+# repository's default branch — without it, GitHub will not let
+# `gh workflow run --ref WarmCacheWorkflow ...` find the workflow.
+
+on:
+  workflow_dispatch:
+    inputs:
+      shas:
+        description: >-
+          Optional comma-separated mathlib SHAs to warm. Forwarded to
+          the real implementation when dispatching against a feature
+          branch.
+        required: false
+        type: string
+        default: ""
+
+jobs:
+  noop:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "Shim on main. Dispatch against WarmCacheWorkflow (or merge it) for the real implementation."
