@@ -116,7 +116,10 @@ jobs:
       downstreams_json: ${{ toJson(matrix.downstreams) }}
     secrets: inherit
 
-  summary:
+  # Aggregates per-SHA results, persists `cache_warmth` rows so future plan
+  # ticks filter warm SHAs out, renders the GitHub job summary, and fails
+  # the workflow on `verify_failed` / `push_failed` / `no_result`.
+  finalize:
     needs: [plan, warm-sha]
     if: always() && needs.plan.outputs.has_jobs == 'true'
     runs-on: ubuntu-latest
@@ -204,7 +207,7 @@ jobs:
           # Print to job log too, for inline visibility.
           cat summary.json
 
-          # Hard failures surface as a red summary job. `no_result` is
+          # Hard failures surface as a red finalize job. `no_result` is
           # also failure-worthy: it means a matrix entry didn't reach a
           # terminal upload, which usually points to runner / timeout
           # trouble worth investigating.

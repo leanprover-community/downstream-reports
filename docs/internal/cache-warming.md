@@ -45,7 +45,7 @@ warm-mathlib-cache.yml         (orchestrator; also: cron every 6h, dispatch)
     │                     └─ verify             ubuntu-latest, NO token
     │                         fresh clone → cache get → assert all oleans present
     │
-    └─ summary job     → renders breakdown, upserts already_warm/warmed
+    └─ finalize job    → renders breakdown, upserts already_warm/warmed
                          SHAs into the cache_warmth table
                   │
                   ▼  workflow_run trigger (success on main)
@@ -74,11 +74,11 @@ DB state and republish.
 
 | File | Purpose |
 |---|---|
-| `.github/workflows/warm-mathlib-cache.yml` | Orchestrator: plan, matrix dispatch, summary. |
+| `.github/workflows/warm-mathlib-cache.yml` | Orchestrator: plan, matrix dispatch, finalize. |
 | `.github/workflows/_warm-one-sha.yml` | Reusable per-SHA worker (`workflow_call`). |
 | `scripts/plan_cache_warm_jobs.py` | Builds the matrix from inventory + DB or from a manual SHA list. Filters out SHAs already recorded in `cache_warmth`. |
 | `scripts/test_plan_cache_warm_jobs.py` | Unit tests for the planner. |
-| `scripts/record_warm_shas.py` | CLI used by the summary job: reads `summary.json`, upserts `(upstream, sha)` rows into `cache_warmth` for terminal-warm statuses. |
+| `scripts/record_warm_shas.py` | CLI used by the finalize job: reads `summary.json`, upserts `(upstream, sha)` rows into `cache_warmth` for terminal-warm statuses. |
 | `scripts/test_record_warm_shas.py` | Unit tests for the warmth-recording filter. |
 | `scripts/models.py` | `DownstreamConfig.warm_cache: bool = False` opt-in flag. |
 | `scripts/storage.py` | `cache_warmth` table + `load_known_warm_shas` / `record_warm_shas` on the storage backends. |
@@ -152,7 +152,7 @@ empty.
 ## Per-SHA chain (`_warm-one-sha.yml`)
 
 Three jobs. Each has its own status; a terminal status uploads
-`warm-result-<sha>` directly so the orchestrator's summary always has
+`warm-result-<sha>` directly so the orchestrator's finalize job always has
 exactly one final result per SHA. The cache tool is built fresh in
 both `build_and_stage` and `upload_cache` from a shallow `master`
 checkout, mirroring mathlib4's own tools-branch idiom — the cache
@@ -253,22 +253,22 @@ Steps:
 | `pushed` | upload_cache (push succeeded) | no — hands off to verify | green job |
 | `warmed` | verify (post-push check passed) | yes | green job |
 | `verify_failed` | verify (post-push check failed) | yes | red job (final step exits 1) |
-| `no_result` | summary (synthesised) | n/a | red summary job |
+| `no_result` | finalize (synthesised) | n/a | red finalize job |
 
 `build_failed` is recorded but not loud, because mathlib was
 occasionally non-buildable on master in the past — the FKB of a
 downstream is a mathlib commit that broke that downstream, not
 necessarily mathlib itself, but rare exceptions exist.
 
-`no_result` is synthesised by the summary job for any SHA that was
+`no_result` is synthesised by the finalize job for any SHA that was
 in the plan but didn't upload a `warm-result-<sha>` artifact —
 typically a runner crash or a job timeout that killed the worker
-before its terminal upload step ran. It surfaces as a red summary
+before its terminal upload step ran. It surfaces as a red finalize
 job so we don't silently drop those.
 
-## Orchestrator summary
+## Orchestrator finalize job
 
-The `summary` job downloads all `warm-result-<sha>` artifacts (each
+The `finalize` job downloads all `warm-result-<sha>` artifacts (each
 into its own subdirectory under `results/` — *not* `merge-multiple`,
 because every terminal stage uploads under the same in-artifact
 filename and merging would silently overwrite earlier rows),
@@ -280,7 +280,7 @@ SHA that didn't report back, and renders to the run's job summary:
 - A per-SHA table with short SHA, tag, status, and the list of
   downstreams that benefit.
 
-The summary job exits 1 if any SHA reports `push_failed`,
+The finalize job exits 1 if any SHA reports `push_failed`,
 `verify_failed`, or `no_result`.
 
 After rendering the summary, the job runs

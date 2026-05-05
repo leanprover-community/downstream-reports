@@ -19,7 +19,7 @@ name: warm-mathlib-cache (one SHA)
 # Job chaining: each job exposes its terminal/non-terminal status as a
 # job output, and the next job's `if:` skips it when the chain is
 # already done. The job that produces a terminal status uploads
-# `warm-result-<sha>` directly, so the orchestrator's summary always
+# `warm-result-<sha>` directly, so the orchestrator's finalize job always
 # has exactly one final result per SHA:
 #
 #   already_warm | build_failed     → uploaded by build_and_stage

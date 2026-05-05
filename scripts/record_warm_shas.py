@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Record SHAs the cache-warming workflow confirmed warm into ``cache_warmth``.
 
-Reads the summary JSON produced by ``warm-mathlib-cache.yml``'s ``summary``
+Reads the summary JSON produced by ``warm-mathlib-cache.yml``'s ``finalize``
 job and upserts every entry whose ``status`` is in ``WARM_STATUSES`` so that
 future ``plan_cache_warm_jobs.py`` invocations skip them.
 """
@@ -48,7 +48,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--summary",
         required=True,
-        help="Path to summary.json emitted by warm-mathlib-cache.yml's summary job.",
+        help="Path to summary.json emitted by warm-mathlib-cache.yml's finalize job.",
     )
     return parser
 
