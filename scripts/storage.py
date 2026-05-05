@@ -43,7 +43,7 @@ import json
 import os
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Iterable, Protocol, runtime_checkable
 
 
 # ---------------------------------------------------------------------------
@@ -221,6 +221,20 @@ class StorageBackend(Protocol):
         contains at minimum: ``outcome``, ``episode_state``, ``first_known_bad``,
         ``target_commit``, ``failure_stage``, ``repo``, ``run_url``, ``job_url``.
         """
+        ...
+
+    def load_known_warm_shas(self, upstream: str) -> set[str]:
+        """Return the set of upstream SHAs already confirmed warm in the cache.
+
+        Used by the cache-warming planner to skip SHAs whose Azure cache state
+        was already verified by a previous warm run. Backends with no
+        persistence (filesystem, dry-run) return an empty set so planning
+        degrades gracefully off SQL.
+        """
+        ...
+
+    def record_warm_shas(self, upstream: str, shas: Iterable[str]) -> None:
+        """Mark *shas* as confirmed warm for *upstream* (idempotent upsert)."""
         ...
 
 
@@ -448,6 +462,15 @@ class FilesystemBackend:
             for key, (_, row) in best.items()
         }
 
+    # The cache-warming workflow only runs against SQL in production. Off-SQL
+    # backends report no known-warm SHAs (so the planner re-considers everything)
+    # and silently drop record_warm_shas calls.
+    def load_known_warm_shas(self, upstream: str) -> set[str]:
+        return set()
+
+    def record_warm_shas(self, upstream: str, shas: Iterable[str]) -> None:
+        return None
+
 
 # ---------------------------------------------------------------------------
 # SQL implementation (requires sqlalchemy)
@@ -537,6 +560,17 @@ try:
         Column("started_at", DateTime(timezone=True)),
         Column("finished_at", DateTime(timezone=True)),
         Column("conclusion", String),
+    )
+
+    # Records SHAs that the cache-warming workflow has confirmed as warm in the
+    # mathlib Azure cache. Mathlib's olean cache is content-hashed and immutable
+    # per SHA, so once a SHA is recorded here the planner can skip it forever.
+    _sa_cache_warmth = Table(
+        "cache_warmth",
+        _sa_metadata,
+        Column("upstream", String, primary_key=True),
+        Column("sha", String, primary_key=True),
+        Column("warmed_at", DateTime(timezone=True), nullable=False),
     )
 
     _SA_AVAILABLE = True
@@ -840,6 +874,29 @@ class SqlBackend:
             }
         return result
 
+    def load_known_warm_shas(self, upstream: str) -> set[str]:
+        t = _sa_cache_warmth
+        stmt = sa_select(t.c.sha).where(t.c.upstream == upstream)
+        with self._engine.connect() as conn:
+            return {row[0] for row in conn.execute(stmt).fetchall()}
+
+    def record_warm_shas(self, upstream: str, shas: Iterable[str]) -> None:
+        from datetime import datetime, timezone
+
+        deduped = sorted({sha for sha in shas if sha})
+        if not deduped:
+            return
+        warmed_at = datetime.now(timezone.utc)
+        with self._engine.begin() as conn:
+            for sha in deduped:
+                self._upsert(
+                    conn,
+                    _sa_cache_warmth,
+                    values={"upstream": upstream, "sha": sha, "warmed_at": warmed_at},
+                    conflict_cols=["upstream", "sha"],
+                    update_cols=["warmed_at"],
+                )
+
 
 # ---------------------------------------------------------------------------
 # Site-generation read-only queries
@@ -1124,6 +1181,14 @@ class DryRunBackend:
     ) -> dict[tuple[str, str], dict[str, Any]]:
         print(f"[dry-run] load_prior_results({workflow!r}, {len(pairs)} pair(s)) -> {{}}")
         return {}
+
+    def load_known_warm_shas(self, upstream: str) -> set[str]:
+        print(f"[dry-run] load_known_warm_shas(upstream={upstream!r}) -> set()")
+        return set()
+
+    def record_warm_shas(self, upstream: str, shas: Iterable[str]) -> None:
+        deduped = sorted({sha for sha in shas if sha})
+        print(f"[dry-run] record_warm_shas(upstream={upstream!r}, shas={deduped})")
 
 
 # ---------------------------------------------------------------------------
