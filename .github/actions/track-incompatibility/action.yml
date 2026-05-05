@@ -49,9 +49,23 @@ inputs:
     required: false
     default: ${{ github.token }}
     description: >
-      Token for gh issue / gh pr / gh api calls.  Needs "issues: write" when
-      open-pr is false; additionally needs "contents: write" and
-      "pull-requests: write" when open-pr is true.
+      Token used for PR-side operations (branch push, opening / closing fix
+      PRs).  When open-pr is true this typically needs to be a GitHub App
+      token with "contents: write" and "pull-requests: write": pushes by the
+      default GITHUB_TOKEN do not trigger downstream CI, and PR creation can
+      be blocked by the repo-wide "Allow GitHub Actions to create and approve
+      pull requests" setting.  Ignored when open-pr is false.
+  issue-token:
+    required: false
+    default: ${{ github.token }}
+    description: >
+      Token used for issue-side operations (label creation, listing,
+      creating, editing, commenting, closing the tracking issue).  Defaults
+      to the workflow's GITHUB_TOKEN, which is the most reliable choice
+      because "issues: write" granted via the workflow's permissions block
+      is not subject to the kind of repo-wide overrides that affect PR
+      creation.  Override only if you specifically need issues to be
+      authored by a different identity.
 
   # --- New inputs: PR side ---
   open-pr:
@@ -181,7 +195,7 @@ runs:
     - name: Ensure tracking label exists
       shell: bash
       env:
-        GH_TOKEN: ${{ inputs.token }}
+        GH_TOKEN: ${{ inputs.issue-token }}
         GH_REPO: ${{ github.repository }}
         LABEL: ${{ inputs.label }}
         FKB_COMMIT: ${{ steps.fkb.outputs.commit }}
@@ -225,7 +239,7 @@ runs:
       if: steps.fkb.outputs.commit == ''
       shell: bash
       env:
-        GH_TOKEN: ${{ inputs.token }}
+        GH_TOKEN: ${{ inputs.issue-token }}
         GH_REPO: ${{ github.repository }}
         LABEL: ${{ inputs.label }}
         CLOSE_ON_RESOLVE: ${{ inputs.close-on-resolve }}
@@ -297,7 +311,7 @@ runs:
       if: steps.fkb.outputs.commit != ''
       shell: bash
       env:
-        GH_TOKEN: ${{ inputs.token }}
+        GH_TOKEN: ${{ inputs.issue-token }}
         UPSTREAM: ${{ inputs.upstream }}
         FKB_COMMIT: ${{ steps.fkb.outputs.commit }}
         LKG_COMMIT: ${{ steps.lkg.outputs.commit }}
@@ -490,7 +504,7 @@ runs:
       if: steps.fkb.outputs.commit != ''
       shell: bash
       env:
-        GH_TOKEN: ${{ inputs.token }}
+        GH_TOKEN: ${{ inputs.issue-token }}
         GH_REPO: ${{ github.repository }}
         LABEL: ${{ inputs.label }}
         ISSUE_TITLE: ${{ steps.compose.outputs.title }}

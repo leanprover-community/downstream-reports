@@ -227,7 +227,8 @@ Set `open-pr: false` to run in issue-only mode, where no PR is opened.
 | `label` | no | `dependency-incompatibility` | Label identifying the tracking issue. Created if missing. |
 | `title` | no | auto | Full issue title; auto-generated when empty. |
 | `close-on-resolve` | no | `true` | Close the tracking issue with a resolution comment when FKB clears. |
-| `token` | no | `github.token` | Token for `gh issue` / `gh pr` / `gh api`. Needs `issues: write`; also `contents: write` and `pull-requests: write` when `open-pr: true`. |
+| `token` | no | `github.token` | Token for PR-side operations (push, fix-PR open/close). Needs `contents: write` and `pull-requests: write` when `open-pr: true`. Typically a GitHub App token, since pushes by the default `GITHUB_TOKEN` do not trigger downstream CI and PR creation can be disabled repo-wide. Ignored when `open-pr: false`. |
+| `issue-token` | no | `github.token` | Token for issue-side operations (label, list, create, edit, comment, close). Defaults to `GITHUB_TOKEN`, which is reliable here because `issues: write` granted via the workflow's `permissions:` block isn't subject to repo-wide overrides. Override only to change the issue author. |
 | `open-pr` | no | `true` | Master switch for the fix-PR side. Set `false` for issue-only mode. |
 | `pr-label` | no | `dependency-incompatibility-fix` | Label applied to fix PRs; primary key for stale-PR detection. Created automatically. |
 | `branch-prefix` | no | `bump-<dependency-name>/fix` | Prefix for the fix-PR branch. Final branch: `<prefix>-<fkb-short7>` (e.g. `bump-mathlib/fix-abc1234`). Stable per FKB SHA. |
