@@ -11,21 +11,26 @@ than waiting for the 12h scheduled run.
 
 The check is layered to short-circuit as early as possible:
 
-1.  ``GET /repos/{repo}/git/refs/heads/{branch}`` — one tiny call; if the
-    branch tip is unchanged from the recorded ``downstream_commit`` the
-    manifest cannot have moved.
+1.  ``GET /repos/{repo}/git/ref/heads/{branch}`` — one tiny call (singular
+    ``ref`` endpoint, returns a single object); if the branch tip is unchanged
+    from the recorded ``downstream_commit`` the manifest cannot have moved.
 2.  ``GET https://raw.githubusercontent.com/{repo}/{sha}/lake-manifest.json``
     — fetch only when the branch moved.
 3.  ``GET /repos/{upstream}/compare/{fkb}...{current_pin}`` — only when the
     pin actually changed; ``"behind"`` and ``"diverged"`` outcomes mean the
     downstream is bumping safely within the LKG range and we let the next
-    scheduled run pick it up instead of flooding the queue.
+    scheduled run pick it up instead of flooding the queue.  The triple-dot
+    form is intentional: it computes the merge-base diff, which on mathlib's
+    straight-line ``master`` is equivalent to two-dot but degrades more
+    safely (returning ``"diverged"`` rather than an error) if a downstream
+    ever pins to a non-master branch.
 
 Three independent dedup mechanisms guard against re-dispatching the same
 ``(downstream, pin)``:
 
-*   The watcher's own ``manifest_watcher_ledger`` table, with a 6h TTL fallback
-    in case a dispatch is silently cancelled or fails partway through.
+*   The watcher's own ``manifest_watcher_ledger`` table, with a 4h TTL fallback
+    (configurable via ``--ledger-ttl-hours``) in case a dispatch is silently
+    cancelled or fails partway through.
 *   The set of downstreams whose ``select: <name>`` / ``probe: <name>`` jobs
     are currently in-flight in any queued or in-progress regression-report
     run.  ``downstream_status.pinned_commit`` is only written when the report
@@ -163,28 +168,56 @@ def gh_in_flight_downstreams(repo: str, workflow_file: str, token: str) -> set[s
     Looks at queued and in-progress runs of *workflow_file* and unions the
     matrix-job names, stripping the ``select:`` / ``probe:`` prefix so the
     result is just the bare downstream name.
+
+    First-page-only by design: with ~50 downstreams and `cancel-in-progress: false`
+    we expect 0–2 runs in flight, so 50 runs / 100 jobs cover normal operation
+    several times over.  If a backlog builds up (e.g. after an Actions outage)
+    and total_count exceeds the page size we log a warning — the worst-case
+    failure mode is a false-negative on the in-flight check, which the ledger
+    catches on the next 15-minute tick.  Following Link headers would be the
+    fix if this becomes a real problem.
     """
 
+    _RUN_PAGE_SIZE = 50
+    _JOB_PAGE_SIZE = 100
     found: set[str] = set()
     for status in ("in_progress", "queued"):
         runs_payload = gh_get_json(
             f"repos/{repo}/actions/workflows/{workflow_file}/runs"
-            f"?status={status}&per_page=50",
+            f"?status={status}&per_page={_RUN_PAGE_SIZE}",
             token,
         )
         if not isinstance(runs_payload, dict):
             continue
-        for run in runs_payload.get("workflow_runs", []) or []:
+        runs = runs_payload.get("workflow_runs", []) or []
+        total = runs_payload.get("total_count")
+        if isinstance(total, int) and total > len(runs):
+            print(
+                f"[watcher] WARNING: {total} {status} runs of {workflow_file} but only "
+                f"the first {len(runs)} were inspected; in-flight set may be incomplete",
+                file=sys.stderr,
+            )
+        for run in runs:
             run_id = run.get("id")
             if run_id is None:
                 continue
             jobs_payload = gh_get_json(
-                f"repos/{repo}/actions/runs/{run_id}/jobs?per_page=100",
+                f"repos/{repo}/actions/runs/{run_id}/jobs?per_page={_JOB_PAGE_SIZE}",
                 token,
             )
             if not isinstance(jobs_payload, dict):
                 continue
-            for job in jobs_payload.get("jobs", []) or []:
+            jobs = jobs_payload.get("jobs", []) or []
+            jobs_total = jobs_payload.get("total_count")
+            if isinstance(jobs_total, int) and jobs_total > len(jobs):
+                # 50 downstreams × (select + probe) + plan/report/alert ≈ 103 — already
+                # close to the 100-per-page max.  Warn rather than silently miss names.
+                print(
+                    f"[watcher] WARNING: run {run_id} has {jobs_total} jobs but only "
+                    f"the first {len(jobs)} were inspected",
+                    file=sys.stderr,
+                )
+            for job in jobs:
                 m = _JOB_NAME_RE.match(job.get("name", ""))
                 if m:
                     found.add(m.group(1))

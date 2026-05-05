@@ -10,6 +10,7 @@ covered by `InFlightSetTests` and `DispatchPayloadTests` via monkey-patched
 from __future__ import annotations
 
 import json
+import os
 import sys
 import unittest
 from datetime import datetime, timedelta, timezone
@@ -31,6 +32,8 @@ _NEW_PIN = "2" * 40
 _BRANCH_OLD = "a" * 40
 _BRANCH_NEW = "b" * 40
 _NOW = datetime(2026, 5, 5, 12, 0, 0, tzinfo=timezone.utc)
+# Test fixture only — production default is 4h (--ledger-ttl-hours).  The
+# fresh/stale fixtures below are 1h and 12h, so any reasonable TTL works.
 _TTL = timedelta(hours=6)
 
 
@@ -125,8 +128,8 @@ def _evaluate(
     return candidate, calls
 
 
-class BuildCandidatesTests(unittest.TestCase):
-    """Skip / dispatch decision logic for one downstream."""
+class EvaluateDownstreamTests(unittest.TestCase):
+    """Per-downstream skip / dispatch decision logic in `evaluate_downstream`."""
 
     def test_branch_unchanged_short_circuits(self) -> None:
         """Scenario: branch HEAD == status.downstream_commit ⇒ no manifest fetch."""
@@ -230,7 +233,11 @@ class BuildCandidatesTests(unittest.TestCase):
         self.assertIsNone(candidate)
         self.assertEqual(calls["compare"], [])
 
-    def test_disabled_downstream_excluded_by_build_candidates(self) -> None:
+
+class BuildCandidatesTests(unittest.TestCase):
+    """Top-level orchestration in `build_candidates` (inventory filtering, ordering)."""
+
+    def test_disabled_downstream_excluded(self) -> None:
         """Scenario: build_candidates filters out enabled=False before any HTTP call."""
         disabled = DownstreamConfig(
             name="Disabled",
@@ -255,6 +262,26 @@ class BuildCandidatesTests(unittest.TestCase):
             fetch_compare=_boom,
         )
         self.assertEqual(out, [])
+
+    def test_candidates_returned_in_name_order(self) -> None:
+        """Scenario: parallel evaluation completes in arbitrary order; output is sorted."""
+        names = ["Charlie", "Alpha", "Bravo"]
+        inventory = {n: _config(n) for n in names}
+        statuses = {n: _status() for n in names}
+
+        out = watcher.build_candidates(
+            inventory=inventory,
+            statuses=statuses,
+            ledger={},
+            in_flight=set(),
+            upstream_repo="x/y",
+            ttl=_TTL,
+            now=_NOW,
+            fetch_branch_head=lambda repo, branch: _BRANCH_NEW,
+            fetch_manifest=lambda repo, sha: _manifest(_NEW_PIN),
+            fetch_compare=lambda upstream, base, head: "ahead",
+        )
+        self.assertEqual([c.name for c in out], ["Alpha", "Bravo", "Charlie"])
 
 
 class PinnedFromManifestPayloadTests(unittest.TestCase):
@@ -403,6 +430,79 @@ class DispatchPayloadTests(unittest.TestCase):
                 "org/repo", "report.yml", "main", {"downstream": "A"}, "tok"
             )
         self.assertFalse(ok)
+
+
+class _RecordingBackend:
+    """Minimal in-memory backend that records the ledger upserts main() makes."""
+
+    def __init__(self) -> None:
+        self.statuses: dict[str, DownstreamStatusRecord] = {"PhysLib": _status()}
+        self.ledger: dict[str, ManifestWatcherLedgerRow] = {}
+        self.upserts: list[list[ManifestWatcherLedgerRow]] = []
+
+    def load_all_statuses(self, workflow, upstream):
+        return self.statuses
+
+    def load_manifest_watcher_ledger(self, upstream):
+        return self.ledger
+
+    def upsert_manifest_watcher_ledger(self, upstream, rows):
+        self.upserts.append(list(rows))
+
+
+class MainOrchestrationTests(unittest.TestCase):
+    """End-to-end main() — verifies dispatch + ledger only fire on the live path."""
+
+    def _run_main(self, *, dry_run: bool) -> _RecordingBackend:
+        backend = _RecordingBackend()
+        argv = [
+            "check_downstream_manifests.py",
+            "--inventory", "(unused; load_inventory is patched)",
+            "--upstream", "leanprover-community/mathlib4",
+        ]
+        if dry_run:
+            argv.append("--dry-run-dispatch")
+
+        env = {"GITHUB_TOKEN": "tok", "GH_REPO": "org/downstream-reports"}
+        inventory = {"PhysLib": _config("PhysLib")}
+
+        dispatched: list[dict] = []
+
+        def fake_dispatch(repo, workflow_file, ref, inputs, token):
+            dispatched.append({"inputs": inputs})
+            return True
+
+        with mock.patch.object(sys, "argv", argv), \
+             mock.patch.dict(os.environ, env, clear=False), \
+             mock.patch.object(watcher, "create_backend", return_value=backend), \
+             mock.patch.object(watcher, "load_inventory", return_value=inventory), \
+             mock.patch.object(watcher, "gh_in_flight_downstreams", return_value=set()), \
+             mock.patch.object(watcher, "gh_get_branch_head", return_value=_BRANCH_NEW), \
+             mock.patch.object(watcher, "gh_get_raw_manifest", return_value=_manifest(_NEW_PIN)), \
+             mock.patch.object(watcher, "gh_compare_status", return_value="ahead"), \
+             mock.patch.object(watcher, "gh_dispatch_workflow", side_effect=fake_dispatch):
+            rc = watcher.main()
+        self.assertEqual(rc, 0)
+        backend.dispatched = dispatched  # type: ignore[attr-defined]
+        return backend
+
+    def test_dry_run_does_not_dispatch_or_write_ledger(self) -> None:
+        """Scenario: --dry-run-dispatch ⇒ candidate logged but no API call, no ledger row."""
+        backend = self._run_main(dry_run=True)
+        self.assertEqual(backend.dispatched, [])  # type: ignore[attr-defined]
+        self.assertEqual(backend.upserts, [])
+
+    def test_live_path_dispatches_and_writes_ledger(self) -> None:
+        """Scenario: live path ⇒ one dispatch with comma-joined names, ledger upserted."""
+        backend = self._run_main(dry_run=False)
+        self.assertEqual(len(backend.dispatched), 1)  # type: ignore[attr-defined]
+        self.assertEqual(
+            backend.dispatched[0]["inputs"], {"downstream": "PhysLib"}  # type: ignore[attr-defined]
+        )
+        self.assertEqual(len(backend.upserts), 1)
+        [row] = backend.upserts[0]
+        self.assertEqual(row.downstream, "PhysLib")
+        self.assertEqual(row.observed_pin, _NEW_PIN)
 
 
 if __name__ == "__main__":
