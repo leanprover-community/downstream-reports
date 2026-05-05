@@ -369,14 +369,30 @@ def build_candidates(
     fetch_compare: Callable[[str, str, str], str | None],
     max_workers: int = 16,
 ) -> list[Candidate]:
-    """Run :func:`evaluate_downstream` over the watched inventory in parallel.
+    """Run :func:`evaluate_downstream` over the candidate inventory in parallel.
 
-    Only downstreams with ``enabled=True`` and ``watch_manifest=True`` are
-    inspected — the watcher is opt-in, so projects that don't actively
-    bump-track don't pay the API-call cost or risk false positives.
+    Two pre-filters short-circuit before any HTTP call:
+
+    1.  **Opt-in.** Only ``enabled=True`` + ``watch_manifest=True`` entries
+        are considered — the watcher is a hot path (50 entries × 4 ticks/h)
+        so projects that don't actively bump-track don't pay the cost.
+    2.  **Active regression.** Skip entries whose ``first_known_bad_commit``
+        is unset.  The watcher's whole purpose is detecting bumps *past*
+        the known breaking point; with no FKB there's nothing for it to
+        catch early, and the next 12h scheduled run will pick up any pin
+        change.  This filter also lives inside :func:`evaluate_downstream`
+        as a defensive contract — moving it here just avoids the API
+        round-trip in the common steady-state case.
     """
 
-    enabled = [c for c in inventory.values() if c.enabled and c.watch_manifest]
+    enabled = [
+        c
+        for c in inventory.values()
+        if c.enabled
+        and c.watch_manifest
+        and (statuses.get(c.name) is not None
+             and statuses[c.name].first_known_bad_commit is not None)
+    ]
 
     def _eval(config: DownstreamConfig) -> Candidate | None:
         return evaluate_downstream(
@@ -461,8 +477,16 @@ def main() -> int:
     ledger = backend.load_manifest_watcher_ledger(args.upstream)
 
     watched = sum(1 for c in inventory.values() if c.enabled and c.watch_manifest)
+    active = sum(
+        1
+        for c in inventory.values()
+        if c.enabled and c.watch_manifest
+        and (statuses.get(c.name) is not None
+             and statuses[c.name].first_known_bad_commit is not None)
+    )
     print(
-        f"[watcher] inventory: {watched} watched / {len(inventory)} enabled downstream(s)"
+        f"[watcher] inventory: {active} active (FKB set) / {watched} watched / "
+        f"{len(inventory)} enabled downstream(s)"
     )
     print(f"[watcher] statuses : {len(statuses)} record(s) loaded")
     print(f"[watcher] ledger   : {len(ledger)} row(s) loaded")

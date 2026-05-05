@@ -323,6 +323,48 @@ class BuildCandidatesTests(unittest.TestCase):
         self.assertEqual([c.name for c in out], ["Watched"])
         self.assertEqual(seen, ["org/Watched"])  # only the opted-in repo touched
 
+    def test_no_fkb_excluded_before_http(self) -> None:
+        """Scenario: opted-in but no first_known_bad_commit ⇒ no HTTP call (pre-filter)."""
+        config = _config("PhysLib", watch_manifest=True)
+
+        def _boom(*_args, **_kwargs):
+            self.fail("downstream without FKB should not be queried")
+
+        out = watcher.build_candidates(
+            inventory={"PhysLib": config},
+            statuses={"PhysLib": _status(fkb=None)},
+            ledger={},
+            in_flight=set(),
+            upstream_repo="x/y",
+            ttl=_TTL,
+            now=_NOW,
+            fetch_branch_head=_boom,
+            fetch_manifest=_boom,
+            fetch_compare=_boom,
+        )
+        self.assertEqual(out, [])
+
+    def test_no_status_record_excluded_before_http(self) -> None:
+        """Scenario: opted-in but never validated (no DB row) ⇒ no HTTP call."""
+        config = _config("BrandNew", watch_manifest=True)
+
+        def _boom(*_args, **_kwargs):
+            self.fail("downstream without a status record should not be queried")
+
+        out = watcher.build_candidates(
+            inventory={"BrandNew": config},
+            statuses={},  # no row for BrandNew
+            ledger={},
+            in_flight=set(),
+            upstream_repo="x/y",
+            ttl=_TTL,
+            now=_NOW,
+            fetch_branch_head=_boom,
+            fetch_manifest=_boom,
+            fetch_compare=_boom,
+        )
+        self.assertEqual(out, [])
+
     def test_candidates_returned_in_name_order(self) -> None:
         """Scenario: parallel evaluation completes in arbitrary order; output is sorted."""
         names = ["Charlie", "Alpha", "Bravo"]
