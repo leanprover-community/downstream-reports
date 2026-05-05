@@ -163,9 +163,14 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Collect every per-SHA result.
-          shopt -s nullglob
-          files=(results/*/result.json)
+          # Collect every per-SHA result. `actions/download-artifact@v8` extracts
+          # to `results/<artifact-name>/result.json` when multiple artifacts match
+          # the pattern, but flattens to `results/result.json` when exactly one
+          # matches (the `artifacts.length === 1 ? resolvedPath : ...` branch,
+          # which fires regardless of `merge-multiple: false`). `find` is tolerant
+          # of both layouts, so a single-entry matrix is handled the same as a
+          # many-entry one.
+          mapfile -t files < <(find results -type f -name 'result.json' 2>/dev/null)
           if [ "${#files[@]}" -gt 0 ]; then
             jq -s '.' "${files[@]}" > received.json
           else
