@@ -13,14 +13,6 @@ name: warm-mathlib-cache (one SHA)
 #                      after the push: fresh clone, `cache get`, then
 #                      `lake build --no-build --rehash -v Mathlib`.
 #
-# Threat-model note: build and push share a runner, so the token is in
-# scope of `lake build Mathlib`. We accepted this trade-off because all
-# SHAs we touch are mathlib master commits (LKG/FKB from the DB or
-# operator-supplied via dispatch), which mathlib's own CI builds with
-# the same token anyway. The `verify` job stays separate so the
-# post-push completeness check runs without the token, on a fresh
-# runner state.
-#
 # Job chaining: build_stage_push exposes its terminal/non-terminal
 # status as a job output, and `verify`'s `if:` skips it when the chain
 # is already done. The job that produces a terminal status uploads the
