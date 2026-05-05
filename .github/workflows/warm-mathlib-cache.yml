@@ -38,6 +38,14 @@ permissions:
   contents: read
   id-token: write   # required so the reusable workflow can mint the cache bearer
 
+# Only one warming run at a time across the whole repo. If a manual
+# dispatch lands while a workflow_run-triggered one is in progress, the
+# new one queues; any *previously* queued run is dropped (which is
+# exactly what we want — the latest plan is always the one to honour).
+concurrency:
+  group: warm-mathlib-cache
+  cancel-in-progress: false
+
 jobs:
   plan:
     if: >-
@@ -80,15 +88,17 @@ jobs:
             echo "has_jobs=$(jq -r '(.include | length) > 0' plan.json)"
           } >> "$GITHUB_OUTPUT"
 
-  # Each matrix element fans out into its own reusable-workflow run.
-  # SHAs progress independently (build → push → verify), which is what
-  # we want — pushing #1 doesn't have to wait for #N to finish building.
-  # Parallelism is bounded by the runner pool, not by max-parallel.
+  # Each matrix element fans out into its own reusable-workflow run
+  # (build → push → verify). max-parallel caps how many chains are in
+  # flight at a time. The self-hosted `pr` runner is shared with the
+  # regression probe job; raise/lower this with that contention in
+  # mind.
   warm-sha:
     needs: plan
     if: needs.plan.outputs.has_jobs == 'true'
     strategy:
       fail-fast: false
+      max-parallel: 4
       matrix: ${{ fromJson(needs.plan.outputs.matrix) }}
     uses: ./.github/workflows/_warm-one-sha.yml
     with:
