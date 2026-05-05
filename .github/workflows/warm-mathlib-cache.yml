@@ -94,7 +94,7 @@ jobs:
   # regression probe job; raise/lower this with that contention in
   # mind.
   warm-sha:
-    name: "warm ${{ matrix.short_sha }} (${{ matrix.tag }})"
+    name: "warm ${{ matrix.short_sha }} (${{ matrix.tag }}) ${{ join(matrix.downstreams, ', ') }}"
     needs: plan
     if: needs.plan.outputs.has_jobs == 'true'
     strategy:
