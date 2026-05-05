@@ -113,6 +113,22 @@ class LatestRunRecord:
 
 
 @dataclass
+class ManifestWatcherLedgerRow:
+    """One row in the manifest-watcher dispatch ledger.
+
+    Maps to a row in ``manifest_watcher_ledger`` (SQL) or to one entry inside
+    ``manifest_watcher_ledger.json`` on the filesystem.  The watcher writes one
+    row per dispatched downstream so subsequent ticks don't re-dispatch the
+    same ``(downstream, observed_pin)`` until ``dispatched_at`` ages out.
+    """
+
+    downstream: str
+    observed_pin: str
+    dispatched_at: str           # ISO-8601 timestamp
+    run_url: str | None = None
+
+
+@dataclass
 class RunResultRecord:
     """Complete result for one downstream in one workflow run.
 
@@ -235,6 +251,23 @@ class StorageBackend(Protocol):
 
     def record_warm_shas(self, upstream: str, shas: Iterable[str]) -> None:
         """Mark *shas* as confirmed warm for *upstream* (idempotent upsert)."""
+        ...
+
+    def load_manifest_watcher_ledger(
+        self, upstream: str
+    ) -> dict[str, "ManifestWatcherLedgerRow"]:
+        """Return the watcher's per-downstream dispatch ledger for *upstream*.
+
+        Empty dict when no rows exist.  The watcher uses this to skip
+        re-dispatching the same ``(downstream, observed_pin)`` while a previous
+        dispatch is still in flight, with a TTL fallback for stuck rows.
+        """
+        ...
+
+    def upsert_manifest_watcher_ledger(
+        self, upstream: str, rows: list["ManifestWatcherLedgerRow"]
+    ) -> None:
+        """Insert or replace ledger rows for *upstream* (one per downstream)."""
         ...
 
 
@@ -471,6 +504,64 @@ class FilesystemBackend:
     def record_warm_shas(self, upstream: str, shas: Iterable[str]) -> None:
         return None
 
+    # ------------------------------------------------------------------
+    # Manifest-watcher ledger (one JSON file per upstream)
+    # ------------------------------------------------------------------
+
+    def _ledger_path(self, upstream: str) -> Path:
+        # `upstream` is "owner/repo" — keep it readable on disk.
+        safe = upstream.replace("/", "__")
+        return self._root / "watcher" / f"manifest-{safe}.json"
+
+    def load_manifest_watcher_ledger(
+        self, upstream: str
+    ) -> dict[str, ManifestWatcherLedgerRow]:
+        path = self._ledger_path(upstream)
+        if not path.exists():
+            return {}
+        try:
+            payload = json.loads(path.read_text())
+        except Exception:
+            return {}
+        return {
+            name: ManifestWatcherLedgerRow(
+                downstream=name,
+                observed_pin=data["observed_pin"],
+                dispatched_at=data["dispatched_at"],
+                run_url=data.get("run_url"),
+            )
+            for name, data in payload.get("downstreams", {}).items()
+            if isinstance(data, dict) and data.get("observed_pin") and data.get("dispatched_at")
+        }
+
+    def upsert_manifest_watcher_ledger(
+        self, upstream: str, rows: list[ManifestWatcherLedgerRow]
+    ) -> None:
+        if not rows:
+            return
+        existing = self.load_manifest_watcher_ledger(upstream)
+        for row in rows:
+            existing[row.downstream] = row
+        path = self._ledger_path(upstream)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(
+                {
+                    "downstreams": {
+                        name: {
+                            "observed_pin": r.observed_pin,
+                            "dispatched_at": r.dispatched_at,
+                            "run_url": r.run_url,
+                        }
+                        for name, r in sorted(existing.items())
+                    },
+                },
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n"
+        )
+
 
 # ---------------------------------------------------------------------------
 # SQL implementation (requires sqlalchemy)
@@ -571,6 +662,16 @@ try:
         Column("upstream", String, primary_key=True),
         Column("sha", String, primary_key=True),
         Column("warmed_at", DateTime(timezone=True), nullable=False),
+    )
+
+    _sa_manifest_watcher_ledger = Table(
+        "manifest_watcher_ledger",
+        _sa_metadata,
+        Column("downstream", String, primary_key=True),
+        Column("upstream", String, primary_key=True),
+        Column("observed_pin", String, nullable=False),
+        Column("dispatched_at", DateTime(timezone=True), nullable=False),
+        Column("run_url", String, nullable=True),
     )
 
     _SA_AVAILABLE = True
@@ -897,6 +998,52 @@ class SqlBackend:
                     update_cols=["warmed_at"],
                 )
 
+    def load_manifest_watcher_ledger(
+        self, upstream: str
+    ) -> dict[str, ManifestWatcherLedgerRow]:
+        t = _sa_manifest_watcher_ledger
+        stmt = sa_select(
+            t.c.downstream, t.c.observed_pin, t.c.dispatched_at, t.c.run_url,
+        ).where(t.c.upstream == upstream)
+        with self._engine.connect() as conn:
+            rows = conn.execute(stmt).fetchall()
+        result: dict[str, ManifestWatcherLedgerRow] = {}
+        for row in rows:
+            dispatched_at = row[2]
+            dispatched_iso = (
+                dispatched_at.isoformat().replace("+00:00", "Z")
+                if dispatched_at is not None
+                else ""
+            )
+            result[row[0]] = ManifestWatcherLedgerRow(
+                downstream=row[0],
+                observed_pin=row[1],
+                dispatched_at=dispatched_iso,
+                run_url=row[3],
+            )
+        return result
+
+    def upsert_manifest_watcher_ledger(
+        self, upstream: str, rows: list[ManifestWatcherLedgerRow]
+    ) -> None:
+        if not rows:
+            return
+        with self._engine.begin() as conn:
+            for row in rows:
+                self._upsert(
+                    conn,
+                    _sa_manifest_watcher_ledger,
+                    values={
+                        "downstream": row.downstream,
+                        "upstream": upstream,
+                        "observed_pin": row.observed_pin,
+                        "dispatched_at": _parse_dt(row.dispatched_at),
+                        "run_url": row.run_url,
+                    },
+                    conflict_cols=["downstream", "upstream"],
+                    update_cols=["observed_pin", "dispatched_at", "run_url"],
+                )
+
 
 # ---------------------------------------------------------------------------
 # Site-generation read-only queries
@@ -1189,6 +1336,23 @@ class DryRunBackend:
     def record_warm_shas(self, upstream: str, shas: Iterable[str]) -> None:
         deduped = sorted({sha for sha in shas if sha})
         print(f"[dry-run] record_warm_shas(upstream={upstream!r}, shas={deduped})")
+
+    def load_manifest_watcher_ledger(
+        self, upstream: str
+    ) -> dict[str, ManifestWatcherLedgerRow]:
+        print(f"[dry-run] load_manifest_watcher_ledger(upstream={upstream!r}) -> {{}}")
+        return {}
+
+    def upsert_manifest_watcher_ledger(
+        self, upstream: str, rows: list[ManifestWatcherLedgerRow]
+    ) -> None:
+        lines = [f"[dry-run] upsert_manifest_watcher_ledger(upstream={upstream!r}):"]
+        for r in rows:
+            lines.append(
+                f"  {r.downstream}: observed_pin={r.observed_pin[:12]} "
+                f"dispatched_at={r.dispatched_at} run_url={r.run_url}"
+            )
+        print("\n".join(lines))
 
 
 # ---------------------------------------------------------------------------

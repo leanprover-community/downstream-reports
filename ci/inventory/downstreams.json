@@ -35,7 +35,8 @@
       "default_branch": "main",
       "dependency_name": "mathlib",
       "enabled": true,
-      "warm_cache": true
+      "warm_cache": true,
+      "watch_manifest": true
     },
     {
       "name": "FLT",
@@ -44,7 +45,8 @@
       "dependency_name": "mathlib",
       "skip_known_bad_bisect": false,
       "enabled": true,
-      "warm_cache": true
+      "warm_cache": true,
+      "watch_manifest": true
     },
     {
       "name": "infinity-cosmos",
