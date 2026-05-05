@@ -64,6 +64,8 @@ jobs:
     outputs:
       matrix: ${{ steps.plan.outputs.matrix }}
       has_jobs: ${{ steps.plan.outputs.has_jobs }}
+      skipped_warm: ${{ steps.plan.outputs.skipped_warm }}
+      has_skipped: ${{ steps.plan.outputs.has_skipped }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
@@ -94,6 +96,8 @@ jobs:
           {
             echo "matrix=$(jq -c '{include: .include}' plan.json)"
             echo "has_jobs=$(jq -r '(.include | length) > 0' plan.json)"
+            echo "skipped_warm=$(jq -c '.skipped_warm // []' plan.json)"
+            echo "has_skipped=$(jq -r '((.skipped_warm // []) | length) > 0' plan.json)"
           } >> "$GITHUB_OUTPUT"
 
   # Each matrix element fans out into its own reusable-workflow run
@@ -119,9 +123,20 @@ jobs:
   # Aggregates per-SHA results, persists `cache_warmth` rows so future plan
   # ticks filter warm SHAs out, renders the GitHub job summary, and fails
   # the workflow on `verify_failed` / `push_failed` / `no_result`.
+  #
+  # Runs whenever the planner found *anything* worth talking about — either
+  # SHAs that went through the matrix (`has_jobs`) or SHAs that the
+  # `cache_warmth` filter dropped before the matrix (`has_skipped`). The
+  # latter is what makes scheduled "everything already warm" ticks still
+  # produce a summary row instead of a silent green checkmark, and it also
+  # makes partial runs honestly report the SHAs that were filtered out
+  # alongside the ones that ran.
   finalize:
     needs: [plan, warm-sha]
-    if: always() && needs.plan.outputs.has_jobs == 'true'
+    if: >-
+      always() &&
+      (needs.plan.outputs.has_jobs == 'true' ||
+       needs.plan.outputs.has_skipped == 'true')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -131,7 +146,11 @@ jobs:
       # never collide — earlier we hit a bug where two SHAs reaching the
       # same terminal stage both wrote `result.json` and the second
       # overwrote the first, silently dropping rows from the summary.
+      #
+      # Skipped on a pure-skipped run (matrix was empty) since no
+      # `warm-result-*` artifacts exist and the action would error out.
       - name: Download per-SHA results
+        if: needs.plan.outputs.has_jobs == 'true'
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           pattern: warm-result-*
@@ -140,6 +159,7 @@ jobs:
       - name: Render summary
         env:
           MATRIX_JSON: ${{ needs.plan.outputs.matrix }}
+          SKIPPED_JSON: ${{ needs.plan.outputs.skipped_warm }}
         run: |
           set -euo pipefail
 
@@ -172,11 +192,22 @@ jobs:
             echo '[]' > missing.json
           fi
 
-          jq -s 'add' received.json missing.json > summary.json
+          # SHAs the planner filtered out via the `cache_warmth` table
+          # before the matrix ran. Tagged with a distinct status so they
+          # can be told apart from `already_warm` (which is what the
+          # per-SHA build job reports when it probes and finds the cache
+          # already populated). `record_warm_shas.py` ignores this status
+          # — these rows are by definition already in the table.
+          jq 'map({sha, tag, downstreams, status: "cache_warmth_hit"})' \
+            <<<"$SKIPPED_JSON" > skipped.json
 
-          # Counts by status, in a stable order.
+          jq -s 'add' received.json missing.json skipped.json > summary.json
+
+          # Counts by status, in a stable order. `cache_warmth_hit` is
+          # listed first because it represents the cheapest path: the
+          # SHA never even entered the matrix.
           declare -A counts=()
-          for status in already_warm warmed build_failed push_failed verify_failed no_result; do
+          for status in cache_warmth_hit already_warm warmed build_failed push_failed verify_failed no_result; do
             n=$(jq --arg s "$status" '[.[] | select(.status == $s)] | length' summary.json)
             counts[$status]=$n
           done
@@ -186,11 +217,11 @@ jobs:
           {
             echo "## Cache-warming summary"
             echo ""
-            echo "**Total SHAs:** $total"
+            echo "**Total SHAs considered:** $total"
             echo ""
             echo "| Status | Count |"
             echo "|---|---|"
-            for status in already_warm warmed build_failed push_failed verify_failed no_result; do
+            for status in cache_warmth_hit already_warm warmed build_failed push_failed verify_failed no_result; do
               if [ "${counts[$status]}" -gt 0 ]; then
                 echo "| \`$status\` | ${counts[$status]} |"
               fi
@@ -210,21 +241,27 @@ jobs:
           # Hard failures surface as a red finalize job. `no_result` is
           # also failure-worthy: it means a matrix entry didn't reach a
           # terminal upload, which usually points to runner / timeout
-          # trouble worth investigating.
+          # trouble worth investigating. `cache_warmth_hit` is never a
+          # failure — it's the steady-state "everything is fine" case.
           if jq -e 'any(.[]; .status == "verify_failed" or .status == "push_failed" or .status == "no_result")' \
                summary.json >/dev/null; then
             echo "::error::At least one SHA failed cache push, post-push verification, or didn't report a result."
             exit 1
           fi
 
+      # The remaining steps record warm SHAs into `cache_warmth` so
+      # future plan ticks filter them out. Skipped on pure-skipped runs:
+      # there is nothing to record (every entry is `cache_warmth_hit`,
+      # which `record_warm_shas.py` ignores anyway, so the round-trip
+      # would be pure overhead).
       - name: Set up Python (for cache_warmth recording)
-        if: always() && hashFiles('summary.json') != ''
+        if: always() && needs.plan.outputs.has_jobs == 'true' && hashFiles('summary.json') != ''
         uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
           python-version: '3.x'
 
       - name: Install Python dependencies
-        if: always() && hashFiles('summary.json') != ''
+        if: always() && needs.plan.outputs.has_jobs == 'true' && hashFiles('summary.json') != ''
         run: |
           python -m pip install --upgrade pip
           pip install -r scripts/requirements.txt
@@ -234,7 +271,7 @@ jobs:
       # so that the warm SHAs from a partially-failed run still get
       # recorded (each row is per-SHA and independent).
       - name: Record warm SHAs
-        if: always() && hashFiles('summary.json') != ''
+        if: always() && needs.plan.outputs.has_jobs == 'true' && hashFiles('summary.json') != ''
         env:
           POSTGRES_DSN: ${{ secrets.POSTGRES_DSN }}
         run: |

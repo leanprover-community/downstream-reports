@@ -100,7 +100,7 @@ class BuildMatrixFromDbTests(unittest.TestCase):
                 first_known_bad_commit=_SHA_B,
             ),
         }
-        self.assertEqual(build_matrix_from_db(inventory, statuses), [])
+        self.assertEqual(build_matrix_from_db(inventory, statuses), ([], []))
 
     def test_lkg_only_yields_lkg_tag(self) -> None:
         """Scenario: a SHA that's only an LKG is tagged 'lkg'."""
@@ -108,10 +108,12 @@ class BuildMatrixFromDbTests(unittest.TestCase):
         statuses = {
             "physlib": DownstreamStatusRecord(last_known_good_commit=_SHA_A),
         }
+        include, skipped = build_matrix_from_db(inventory, statuses)
         self.assertEqual(
-            build_matrix_from_db(inventory, statuses),
+            include,
             [{"sha": _SHA_A, "short_sha": _SHA_A[:7], "tag": "lkg", "downstreams": ["physlib"]}],
         )
+        self.assertEqual(skipped, [])
 
     def test_fkb_only_yields_fkb_tag(self) -> None:
         """Scenario: a SHA that's only an FKB is tagged 'fkb'."""
@@ -119,10 +121,12 @@ class BuildMatrixFromDbTests(unittest.TestCase):
         statuses = {
             "physlib": DownstreamStatusRecord(first_known_bad_commit=_SHA_A),
         }
+        include, skipped = build_matrix_from_db(inventory, statuses)
         self.assertEqual(
-            build_matrix_from_db(inventory, statuses),
+            include,
             [{"sha": _SHA_A, "short_sha": _SHA_A[:7], "tag": "fkb", "downstreams": ["physlib"]}],
         )
+        self.assertEqual(skipped, [])
 
     def test_same_sha_lkg_for_one_fkb_for_another_yields_both(self) -> None:
         """Scenario: a SHA that's LKG for project A and FKB for project B is 'both'."""
@@ -134,11 +138,11 @@ class BuildMatrixFromDbTests(unittest.TestCase):
             "physlib": DownstreamStatusRecord(last_known_good_commit=_SHA_A),
             "FLT": DownstreamStatusRecord(first_known_bad_commit=_SHA_A),
         }
-        result = build_matrix_from_db(inventory, statuses)
-        self.assertEqual(len(result), 1)
-        self.assertEqual(result[0]["sha"], _SHA_A)
-        self.assertEqual(result[0]["tag"], "both")
-        self.assertEqual(sorted(result[0]["downstreams"]), ["FLT", "physlib"])
+        include, _ = build_matrix_from_db(inventory, statuses)
+        self.assertEqual(len(include), 1)
+        self.assertEqual(include[0]["sha"], _SHA_A)
+        self.assertEqual(include[0]["tag"], "both")
+        self.assertEqual(sorted(include[0]["downstreams"]), ["FLT", "physlib"])
 
     def test_dedup_across_downstreams(self) -> None:
         """Scenario: the same LKG shared by two downstreams produces one entry."""
@@ -150,10 +154,10 @@ class BuildMatrixFromDbTests(unittest.TestCase):
             "physlib": DownstreamStatusRecord(last_known_good_commit=_SHA_A),
             "FLT": DownstreamStatusRecord(last_known_good_commit=_SHA_A),
         }
-        result = build_matrix_from_db(inventory, statuses)
-        self.assertEqual(len(result), 1)
-        self.assertEqual(result[0]["tag"], "lkg")
-        self.assertEqual(sorted(result[0]["downstreams"]), ["FLT", "physlib"])
+        include, _ = build_matrix_from_db(inventory, statuses)
+        self.assertEqual(len(include), 1)
+        self.assertEqual(include[0]["tag"], "lkg")
+        self.assertEqual(sorted(include[0]["downstreams"]), ["FLT", "physlib"])
 
     def test_distinct_lkg_and_fkb_for_same_downstream(self) -> None:
         """Scenario: one downstream's LKG and FKB land on different SHAs → two entries."""
@@ -164,9 +168,9 @@ class BuildMatrixFromDbTests(unittest.TestCase):
                 first_known_bad_commit=_SHA_B,
             ),
         }
-        result = build_matrix_from_db(inventory, statuses)
+        include, _ = build_matrix_from_db(inventory, statuses)
         self.assertEqual(
-            sorted((e["sha"], e["tag"]) for e in result),
+            sorted((e["sha"], e["tag"]) for e in include),
             [(_SHA_A, "lkg"), (_SHA_B, "fkb")],
         )
 
@@ -174,12 +178,12 @@ class BuildMatrixFromDbTests(unittest.TestCase):
         """Scenario: a status with both fields None contributes nothing."""
         inventory = {"physlib": _config("physlib")}
         statuses = {"physlib": DownstreamStatusRecord()}
-        self.assertEqual(build_matrix_from_db(inventory, statuses), [])
+        self.assertEqual(build_matrix_from_db(inventory, statuses), ([], []))
 
     def test_downstream_missing_from_statuses(self) -> None:
         """Scenario: an opted-in downstream with no DB row is silently skipped."""
         inventory = {"physlib": _config("physlib")}
-        self.assertEqual(build_matrix_from_db(inventory, statuses={}), [])
+        self.assertEqual(build_matrix_from_db(inventory, statuses={}), ([], []))
 
     def test_output_is_sorted_by_sha(self) -> None:
         """Scenario: matrix entries are emitted in deterministic SHA order."""
@@ -191,7 +195,8 @@ class BuildMatrixFromDbTests(unittest.TestCase):
             "physlib": DownstreamStatusRecord(last_known_good_commit=_SHA_C),
             "FLT": DownstreamStatusRecord(last_known_good_commit=_SHA_A),
         }
-        shas = [entry["sha"] for entry in build_matrix_from_db(inventory, statuses)]
+        include, _ = build_matrix_from_db(inventory, statuses)
+        shas = [entry["sha"] for entry in include]
         self.assertEqual(shas, sorted(shas))
 
     def test_known_warm_shas_are_dropped(self) -> None:
@@ -204,8 +209,11 @@ class BuildMatrixFromDbTests(unittest.TestCase):
             "physlib": DownstreamStatusRecord(last_known_good_commit=_SHA_A),
             "FLT": DownstreamStatusRecord(last_known_good_commit=_SHA_B),
         }
-        result = build_matrix_from_db(inventory, statuses, known_warm_shas={_SHA_A})
-        self.assertEqual([entry["sha"] for entry in result], [_SHA_B])
+        include, skipped = build_matrix_from_db(
+            inventory, statuses, known_warm_shas={_SHA_A}
+        )
+        self.assertEqual([entry["sha"] for entry in include], [_SHA_B])
+        self.assertEqual([entry["sha"] for entry in skipped], [_SHA_A])
 
     def test_all_known_warm_yields_empty_matrix(self) -> None:
         """Scenario: when every planned SHA is known warm the matrix is empty."""
@@ -216,10 +224,11 @@ class BuildMatrixFromDbTests(unittest.TestCase):
                 first_known_bad_commit=_SHA_B,
             ),
         }
-        result = build_matrix_from_db(
+        include, skipped = build_matrix_from_db(
             inventory, statuses, known_warm_shas={_SHA_A, _SHA_B}
         )
-        self.assertEqual(result, [])
+        self.assertEqual(include, [])
+        self.assertEqual([entry["sha"] for entry in skipped], [_SHA_A, _SHA_B])
 
     def test_known_warm_does_not_affect_other_shas(self) -> None:
         """Scenario: the warm filter is per-SHA, not per-downstream."""
@@ -231,13 +240,35 @@ class BuildMatrixFromDbTests(unittest.TestCase):
             ),
         }
         # Only the LKG is warm; the FKB should still be planned.
-        result = build_matrix_from_db(
+        include, skipped = build_matrix_from_db(
             inventory, statuses, known_warm_shas={_SHA_A}
         )
         self.assertEqual(
-            [(entry["sha"], entry["tag"]) for entry in result],
+            [(entry["sha"], entry["tag"]) for entry in include],
             [(_SHA_B, "fkb")],
         )
+        self.assertEqual(
+            [(entry["sha"], entry["tag"]) for entry in skipped],
+            [(_SHA_A, "lkg")],
+        )
+
+    def test_skipped_warm_preserves_tag_and_downstreams(self) -> None:
+        """Scenario: skipped entries carry the same tag/downstreams metadata as include entries."""
+        inventory = {
+            "physlib": _config("physlib"),
+            "FLT": _config("FLT"),
+        }
+        statuses = {
+            "physlib": DownstreamStatusRecord(last_known_good_commit=_SHA_A),
+            "FLT": DownstreamStatusRecord(first_known_bad_commit=_SHA_A),
+        }
+        _, skipped = build_matrix_from_db(
+            inventory, statuses, known_warm_shas={_SHA_A}
+        )
+        self.assertEqual(len(skipped), 1)
+        self.assertEqual(skipped[0]["sha"], _SHA_A)
+        self.assertEqual(skipped[0]["tag"], "both")
+        self.assertEqual(sorted(skipped[0]["downstreams"]), ["FLT", "physlib"])
 
 
 if __name__ == "__main__":

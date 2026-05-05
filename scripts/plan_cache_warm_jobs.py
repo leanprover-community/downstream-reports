@@ -19,11 +19,19 @@ Output JSON shape::
         {"sha": "<40-hex>", "tag": "lkg|fkb|both|manual",
          "downstreams": ["physlib", "FLT"]},
         ...
+      ],
+      "skipped_warm": [
+        {"sha": "<40-hex>", "tag": "lkg|fkb|both",
+         "downstreams": ["physlib", "FLT"]},
+        ...
       ]
     }
 
 Empty matrices are valid (``include: []``); the orchestrator workflow
-gates downstream jobs on a separate ``has_jobs`` boolean.
+gates downstream jobs on a separate ``has_jobs`` boolean. ``skipped_warm``
+mirrors the ``include`` entry shape for SHAs that the planner dropped via
+the ``cache_warmth`` filter, so the orchestrator's summary can list them
+alongside the SHAs that actually went through the matrix this run.
 """
 
 from __future__ import annotations
@@ -75,7 +83,7 @@ def build_matrix_from_db(
     inventory: dict[str, DownstreamConfig],
     statuses: dict[str, DownstreamStatusRecord],
     known_warm_shas: set[str] | None = None,
-) -> list[dict[str, Any]]:
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Build the matrix include list from inventory + DB statuses.
 
     Considers only inventory entries with ``warm_cache=True``. Each
@@ -83,10 +91,14 @@ def build_matrix_from_db(
     SHA that's LKG for one project and FKB for another is tagged
     ``both``.
 
-    SHAs in *known_warm_shas* are dropped after dedup so the matrix only
-    carries cold work. Mathlib's olean cache is content-hashed and
-    immutable per SHA, so a SHA confirmed warm by a previous run never
-    needs to be re-probed.
+    Returns ``(include, skipped_warm)``: the first list is the matrix
+    of cold SHAs to probe this run, the second is candidate SHAs that
+    were dropped via *known_warm_shas*. Both lists share the same entry
+    shape, so the orchestrator can render a unified summary of "what we
+    considered" rather than just "what we ran".
+
+    Mathlib's olean cache is content-hashed and immutable per SHA, so a
+    SHA confirmed warm by a previous run never needs to be re-probed.
     """
     warm = known_warm_shas or set()
 
@@ -109,25 +121,27 @@ def build_matrix_from_db(
             if name not in entry["downstreams"]:
                 entry["downstreams"].append(name)
 
-    include: list[dict[str, Any]] = []
-    for sha in sorted(by_sha):
-        if sha in warm:
-            continue
-        entry = by_sha[sha]
-        roles = entry["roles"]
+    def _entry(sha: str) -> dict[str, Any]:
+        meta = by_sha[sha]
+        roles = meta["roles"]
         if roles == {"lkg"}:
             tag = "lkg"
         elif roles == {"fkb"}:
             tag = "fkb"
         else:
             tag = "both"
-        include.append({
+        return {
             "sha": sha,
             "short_sha": sha[:7],
             "tag": tag,
-            "downstreams": entry["downstreams"],
-        })
-    return include
+            "downstreams": meta["downstreams"],
+        }
+
+    include: list[dict[str, Any]] = []
+    skipped: list[dict[str, Any]] = []
+    for sha in sorted(by_sha):
+        (skipped if sha in warm else include).append(_entry(sha))
+    return include, skipped
 
 
 def build_matrix_manual(shas: list[str]) -> list[dict[str, Any]]:
@@ -175,18 +189,22 @@ def main() -> int:
     if args.manual_shas.strip():
         manual = _parse_manual_shas(args.manual_shas)
         include = build_matrix_manual(manual)
+        skipped: list[dict[str, Any]] = []
+        mode = "manual"
     else:
         inventory = load_inventory(Path(args.inventory), include_disabled=False)
         backend = create_backend(args.backend, dsn=args.dsn, state_root=args.state_root)
         statuses = backend.load_all_statuses("regression", args.upstream)
         known_warm = backend.load_known_warm_shas(args.upstream)
-        include = build_matrix_from_db(inventory, statuses, known_warm)
+        include, skipped = build_matrix_from_db(inventory, statuses, known_warm)
+        mode = "inventory+DB"
 
-    payload = {"include": include}
+    payload = {"include": include, "skipped_warm": skipped}
     Path(args.output).write_text(json.dumps(payload, indent=2))
     print(
-        f"Cache-warming plan: {len(include)} unique SHA(s) "
-        f"({'manual' if args.manual_shas.strip() else 'inventory+DB'})",
+        f"Cache-warming plan: {len(include)} SHA(s) to warm, "
+        f"{len(skipped)} already warm (cache_warmth filter) "
+        f"({mode})",
         file=sys.stderr,
     )
     return 0
