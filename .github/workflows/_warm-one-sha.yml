@@ -110,12 +110,16 @@ jobs:
         working-directory: mathlib4-tools
         run: lake build cache
 
+      # `lake env <cmd>` evaluates the lakefile in the current working
+       # directory, resolves deps, and sets LEAN_PATH / LEAN_SRC_PATH so
+       # the cache binary can find Mathlib modules — invoking the cache
+       # binary directly fails with "unknown module prefix 'Mathlib'".
       - name: Probe cache completeness
         id: probe
         working-directory: mathlib4
         continue-on-error: true
         run: |
-          ../mathlib4-tools/.lake/build/bin/cache get
+          lake env ../mathlib4-tools/.lake/build/bin/cache get
           lake build --no-build -v Mathlib
 
       - name: Build Mathlib

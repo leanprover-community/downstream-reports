@@ -253,11 +253,12 @@ The summary job exits 1 if any SHA reports `push_failed`,
   or queues at a time across the repo; if a third dispatch arrives
   while one is running and one queued, the previously-queued one is
   dropped (the latest plan is always the one to honour).
-- **Matrix throttle.** `max-parallel: 4` on the orchestrator's
+- **Matrix throttle.** `max-parallel: 1` on the orchestrator's
   `warm-sha` matrix caps in-flight per-SHA chains. The
   `build_and_stage` job runs on the shared self-hosted `pr` runner;
-  the runner pool itself enforces serialisation, but `max-parallel`
-  is the explicit ceiling.
+  this keeps cache-warming from contending with the regression
+  probe job. Bump up later if the daily plan grows large and there's
+  headroom on the `pr` runner pool.
 
 Tune up if the warming plan grows large and there's headroom on the
 `pr` runner pool.

@@ -99,7 +99,7 @@ jobs:
     if: needs.plan.outputs.has_jobs == 'true'
     strategy:
       fail-fast: false
-      max-parallel: 4
+      max-parallel: 1
       matrix: ${{ fromJson(needs.plan.outputs.matrix) }}
     uses: ./.github/workflows/_warm-one-sha.yml
     with:
