@@ -800,7 +800,7 @@ runs:
             printf '%s\n\n' "$BUMP_DESCRIPTION"
           fi
           if [ -n "$ISSUE_URL" ]; then
-            printf 'Tracking issue: %s\n\n' "$ISSUE_URL"
+            printf 'Closes %s\n\n' "$ISSUE_URL"
           fi
           if [ -n "${CULPRIT_LOG_ARTIFACT_URL:-}" ]; then
             printf 'Failure log from the validation run: [download](%s) _(link expires after 1 year)_\n\n' \
