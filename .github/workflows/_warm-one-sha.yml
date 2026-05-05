@@ -124,13 +124,47 @@ jobs:
         working-directory: mathlib4
         run: lake exe cache stage --staging-dir=../cache-staging
 
+      # Manual OIDC ↔ Azure AD exchange. We do this inline rather than
+      # via mathlib's azure-create-cache-token action because that
+      # action shells out to `az`, which isn't installed on the
+      # self-hosted `pr` runner. The flow is the standard one:
+      #   1. Read GitHub Actions' OIDC ID token, audience-scoped for
+      #      Entra workload identity federation.
+      #   2. Exchange it at login.microsoftonline.com for an Azure AD
+      #      bearer scoped to the storage data plane.
+      #   3. Publish to $GITHUB_ENV under the variable name the cache
+      #      binary expects.
       - name: Mint Azure cache bearer token
         if: steps.stage.outcome == 'success'
         id: cache_token
-        uses: leanprover-community/mathlib-ci/.github/actions/azure-create-cache-token@17db5ff55a65df98d55cbddcc67938f70d10dab2
-        with:
-          azure-client-id: ${{ secrets.MATHLIB_CACHE_WRITER_CLIENT_ID }}
-          azure-tenant-id: ${{ secrets.LPC_AZ_TENANT_ID }}
+        env:
+          AZ_CLIENT_ID: ${{ secrets.MATHLIB_CACHE_WRITER_CLIENT_ID }}
+          AZ_TENANT_ID: ${{ secrets.LPC_AZ_TENANT_ID }}
+        run: |
+          set -euo pipefail
+
+          ID_TOKEN=$(curl -fsSL \
+            -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=api://AzureADTokenExchange" \
+            | jq -er .value)
+
+          BEARER=$(curl -fsSL -X POST \
+            "https://login.microsoftonline.com/$AZ_TENANT_ID/oauth2/v2.0/token" \
+            -H "Content-Type: application/x-www-form-urlencoded" \
+            --data-urlencode "client_id=$AZ_CLIENT_ID" \
+            --data-urlencode "scope=https://storage.azure.com/.default" \
+            --data-urlencode "client_assertion_type=urn:ietf:params:oauth:client-assertion-type:jwt-bearer" \
+            --data-urlencode "client_assertion=$ID_TOKEN" \
+            --data-urlencode "grant_type=client_credentials" \
+            | jq -er .access_token)
+
+          if [ -z "$BEARER" ] || [ "$BEARER" = "null" ]; then
+            echo "::error::Failed to mint Azure bearer token (empty response)."
+            exit 1
+          fi
+
+          echo "::add-mask::$BEARER"
+          echo "MATHLIB_CACHE_AZURE_BEARER_TOKEN=$BEARER" >> "$GITHUB_ENV"
 
       - name: Push staged cache to Azure
         if: steps.stage.outcome == 'success'

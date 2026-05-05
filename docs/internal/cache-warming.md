@@ -140,8 +140,10 @@ Steps:
    is content-hashed, so anything `cache get` already pulled is
    reused; only files whose hashes weren't in the cache get rebuilt.
 9. `lake exe cache stage --staging-dir=../cache-staging`.
-10. **Mint Azure bearer** via
-    `leanprover-community/mathlib-ci/.github/actions/azure-create-cache-token`.
+10. **Mint Azure bearer** via an inline OIDC ↔ Entra exchange (curl +
+    jq). We do this manually rather than via mathlib's
+    `azure-create-cache-token` action because that action shells out
+    to `az`, which isn't installed on the self-hosted `pr` runner.
     Ordered to happen *after* `lake build`, so the token is never in
     scope of the build's elaboration-time code.
 11. **Push** via `lake env .lake/build/bin/cache put-staged
@@ -213,11 +215,15 @@ Tune up if the warming plan grows large and there's headroom on the
 
 ## Authorization (Azure infra)
 
-The cache push uses mathlib's existing `azure-create-cache-token`
-composite action — same pattern as
-`mathlib4/.github/workflows/build_template.yml`. Distinct from the
-`azure/login`-based path `publish-lkg.yml` uses (different Azure app,
-different blob container).
+The cache push targets the same Azure storage account mathlib's own
+CI uses, with a federated credential bound to a GitHub Environment
+on this repo. Distinct from the `azure/login`-based path
+`publish-lkg.yml` uses (different Azure app, different blob
+container). We perform the OIDC ↔ Entra token exchange inline rather
+than via mathlib's `azure-create-cache-token` composite action: that
+action requires `az` on PATH, which the self-hosted `pr` runner
+doesn't have. The exchange itself is the standard OAuth2 flow at
+`login.microsoftonline.com`.
 
 ### One-time prerequisites
 
