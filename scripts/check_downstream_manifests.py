@@ -369,9 +369,14 @@ def build_candidates(
     fetch_compare: Callable[[str, str, str], str | None],
     max_workers: int = 16,
 ) -> list[Candidate]:
-    """Run :func:`evaluate_downstream` over the inventory in parallel."""
+    """Run :func:`evaluate_downstream` over the watched inventory in parallel.
 
-    enabled = [c for c in inventory.values() if c.enabled]
+    Only downstreams with ``enabled=True`` and ``watch_manifest=True`` are
+    inspected — the watcher is opt-in, so projects that don't actively
+    bump-track don't pay the API-call cost or risk false positives.
+    """
+
+    enabled = [c for c in inventory.values() if c.enabled and c.watch_manifest]
 
     def _eval(config: DownstreamConfig) -> Candidate | None:
         return evaluate_downstream(
@@ -455,7 +460,10 @@ def main() -> int:
     statuses = backend.load_all_statuses("regression", args.upstream)
     ledger = backend.load_manifest_watcher_ledger(args.upstream)
 
-    print(f"[watcher] inventory: {len(inventory)} enabled downstream(s)")
+    watched = sum(1 for c in inventory.values() if c.enabled and c.watch_manifest)
+    print(
+        f"[watcher] inventory: {watched} watched / {len(inventory)} enabled downstream(s)"
+    )
     print(f"[watcher] statuses : {len(statuses)} record(s) loaded")
     print(f"[watcher] ledger   : {len(ledger)} row(s) loaded")
 

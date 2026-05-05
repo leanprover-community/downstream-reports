@@ -38,14 +38,24 @@ _TTL = timedelta(hours=6)
 
 
 def _config(
-    name: str = "PhysLib", *, default_branch: str = "main", dependency_name: str = "mathlib"
+    name: str = "PhysLib",
+    *,
+    default_branch: str = "main",
+    dependency_name: str = "mathlib",
+    watch_manifest: bool = True,
 ) -> DownstreamConfig:
-    """Minimal enabled DownstreamConfig."""
+    """Minimal enabled DownstreamConfig.
+
+    Defaults to ``watch_manifest=True`` because the per-downstream evaluation
+    tests assume the entry is opted in.  Opt-out is exercised explicitly in
+    ``BuildCandidatesTests``.
+    """
     return DownstreamConfig(
         name=name,
         repo=f"org/{name}",
         default_branch=default_branch,
         dependency_name=dependency_name,
+        watch_manifest=watch_manifest,
     )
 
 
@@ -244,6 +254,7 @@ class BuildCandidatesTests(unittest.TestCase):
             repo="org/Disabled",
             default_branch="main",
             enabled=False,
+            watch_manifest=True,
         )
 
         def _boom(*_args, **_kwargs):
@@ -262,6 +273,55 @@ class BuildCandidatesTests(unittest.TestCase):
             fetch_compare=_boom,
         )
         self.assertEqual(out, [])
+
+    def test_unwatched_downstream_excluded(self) -> None:
+        """Scenario: enabled=True but watch_manifest=False ⇒ no HTTP call, no candidate."""
+        unwatched = _config("Unwatched", watch_manifest=False)
+
+        def _boom(*_args, **_kwargs):
+            self.fail("unwatched downstream should not be queried")
+
+        out = watcher.build_candidates(
+            inventory={"Unwatched": unwatched},
+            statuses={"Unwatched": _status()},
+            ledger={},
+            in_flight=set(),
+            upstream_repo="x/y",
+            ttl=_TTL,
+            now=_NOW,
+            fetch_branch_head=_boom,
+            fetch_manifest=_boom,
+            fetch_compare=_boom,
+        )
+        self.assertEqual(out, [])
+
+    def test_mixed_inventory_only_watched_evaluated(self) -> None:
+        """Scenario: mix of opted-in and opted-out entries — only the opted-in get HTTP calls."""
+        inventory = {
+            "Watched": _config("Watched", watch_manifest=True),
+            "Unwatched": _config("Unwatched", watch_manifest=False),
+        }
+        statuses = {n: _status() for n in inventory}
+        seen: list[str] = []
+
+        def _branch(repo: str, branch: str) -> str:
+            seen.append(repo)
+            return _BRANCH_NEW
+
+        out = watcher.build_candidates(
+            inventory=inventory,
+            statuses=statuses,
+            ledger={},
+            in_flight=set(),
+            upstream_repo="x/y",
+            ttl=_TTL,
+            now=_NOW,
+            fetch_branch_head=_branch,
+            fetch_manifest=lambda repo, sha: _manifest(_NEW_PIN),
+            fetch_compare=lambda upstream, base, head: "ahead",
+        )
+        self.assertEqual([c.name for c in out], ["Watched"])
+        self.assertEqual(seen, ["org/Watched"])  # only the opted-in repo touched
 
     def test_candidates_returned_in_name_order(self) -> None:
         """Scenario: parallel evaluation completes in arbitrary order; output is sorted."""
