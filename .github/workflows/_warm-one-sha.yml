@@ -1,25 +1,30 @@
 name: warm-mathlib-cache (one SHA)
 
 # Per-SHA worker invoked once per matrix entry by warm-mathlib-cache.yml.
-# Two jobs:
+# Three jobs:
 #
-#   build_stage_push — self-hosted, holds the cache bearer token (minted
-#                      via OIDC bound to the cache-warming-token
-#                      environment). Clones mathlib at <sha>, probes the
-#                      cache, builds Mathlib if needed, stages, and
-#                      pushes to Azure.
+#   build_and_stage  — self-hosted, NO cache token. Clones mathlib at
+#                      <sha>, probes the cache, builds Mathlib if
+#                      needed, stages .ltar files. The cache tool is
+#                      built fresh from a shallow master checkout.
+#   upload_cache     — ubuntu, holds the cache bearer token (minted via
+#                      OIDC bound to the cache-warming-token
+#                      environment). Builds its own cache tool from a
+#                      shallow master checkout and runs `put-staged`.
 #   verify           — ubuntu, NO token. Independent confirmation that
-#                      every Mathlib olean is fetchable from the cache
-#                      after the push: fresh clone, `cache get`, then
-#                      `lake build --no-build --rehash -v Mathlib`.
+#                      every Mathlib olean is fetchable: fresh clone,
+#                      `cache get`, `lake build --no-build --rehash -v
+#                      Mathlib`.
 #
-# Job chaining: build_stage_push exposes its terminal/non-terminal
-# status as a job output, and `verify`'s `if:` skips it when the chain
-# is already done. The job that produces a terminal status uploads the
-# `warm-result-<sha>` artifact directly:
+# Job chaining: each job exposes its terminal/non-terminal status as a
+# job output, and the next job's `if:` skips it when the chain is
+# already done. The job that produces a terminal status uploads
+# `warm-result-<sha>` directly, so the orchestrator's summary always
+# has exactly one final result per SHA:
 #
-#   already_warm | build_failed | push_failed → uploaded by build_stage_push
-#   warmed | verify_failed                    → uploaded by verify
+#   already_warm | build_failed     → uploaded by build_and_stage
+#   push_failed                     → uploaded by upload_cache
+#   warmed | verify_failed          → uploaded by verify
 
 on:
   workflow_call:
@@ -39,23 +44,16 @@ on:
 
 permissions:
   contents: read
-  id-token: write   # required for OIDC bearer mint
+  id-token: write   # required for OIDC bearer mint in upload_cache
 
 jobs:
-  build_stage_push:
+  build_and_stage:
     runs-on: [self-hosted, pr]
-    # Bind the OIDC subject claim to a GitHub Environment, NOT a branch,
-    # so the federated credential on the mathlib cache-writer Azure app
-    # (configured against
-    #   repo:leanprover-community/downstream-reports:environment:cache-warming-token)
-    # accepts dispatch from any branch. Production runs are still gated
-    # to main by the workflow_run filter on the orchestrator workflow.
-    environment: cache-warming-token
     outputs:
       status: ${{ steps.write_result.outputs.status }}
     steps:
-      # The self-hosted `pr` runner doesn't ship jq. linux/amd64-only,
-      # which is fine for the `pr` label.
+      # Self-hosted `pr` runner doesn't ship jq. linux/amd64 only;
+      # fine for this runner label.
       - name: Install jq
         run: |
           mkdir -p "$HOME/.local/bin"
@@ -72,13 +70,13 @@ jobs:
 
       # Full commit history (blobs deferred). Needed so the next step
       # can run an ancestor check against origin/master.
-      - name: Clone mathlib
+      - name: Clone mathlib at target SHA
         run: |
           git clone --filter=blob:none https://github.com/leanprover-community/mathlib4 mathlib4
 
-      # Refuse to warm cache for SHAs that aren't on master. This guards
-      # against operator typos in `workflow_dispatch shas=...` and any
-      # future code path that might surface a non-master SHA from the DB.
+      # Refuse non-master SHAs. Guards against operator typos in
+      # `workflow_dispatch shas=...` and any future code path that
+      # might surface a non-master SHA from the DB.
       - name: Verify SHA is on master
         env:
           SHA: ${{ inputs.sha }}
@@ -99,11 +97,144 @@ jobs:
           SHA: ${{ inputs.sha }}
         run: git -C mathlib4 checkout "$SHA"
 
-      # Mint moved before build for fail-fast during testing — Azure auth
-      # misconfiguration surfaces in seconds instead of after a 30+ min
-      # mathlib build. TODO: move back to right before push once the
-      # federated credential setup is settled, so the bearer token is
-      # never in scope of `lake build Mathlib`.
+      # Build the cache tool from a shallow master checkout, kept
+      # separate from the target SHA's working tree. Both jobs use
+      # this pattern, mirroring mathlib4/build_template.yml's
+      # tools-branch idiom.
+      - name: Clone mathlib master (cache tool)
+        run: |
+          git clone --depth=1 --branch=master \
+            https://github.com/leanprover-community/mathlib4 mathlib4-tools
+
+      - name: Build cache tool
+        working-directory: mathlib4-tools
+        run: lake build cache
+
+      - name: Probe cache completeness
+        id: probe
+        working-directory: mathlib4
+        continue-on-error: true
+        run: |
+          ../mathlib4-tools/.lake/build/bin/cache get
+          lake build --no-build -v Mathlib
+
+      - name: Build Mathlib
+        id: build
+        if: steps.probe.outcome != 'success'
+        working-directory: mathlib4
+        continue-on-error: true
+        run: lake build Mathlib
+
+      - name: Stage cache
+        id: stage
+        if: steps.build.outcome == 'success'
+        working-directory: mathlib4
+        run: |
+          lake env ../mathlib4-tools/.lake/build/bin/cache stage \
+            --staging-dir=../cache-staging
+
+      # Just .ltar files — no binary. upload_cache builds its own
+      # trusted cache tool from a clean master checkout.
+      - name: Upload staging artifact
+        if: steps.stage.outcome == 'success'
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: stage-${{ inputs.sha }}
+          path: cache-staging/
+          if-no-files-found: error
+
+      - name: Write result
+        id: write_result
+        if: always()
+        env:
+          SHA: ${{ inputs.sha }}
+          TAG: ${{ inputs.tag }}
+          DOWNSTREAMS_JSON: ${{ inputs.downstreams_json }}
+          PROBE_OUTCOME: ${{ steps.probe.outcome }}
+          BUILD_OUTCOME: ${{ steps.build.outcome }}
+          STAGE_OUTCOME: ${{ steps.stage.outcome }}
+        run: |
+          if   [ "$PROBE_OUTCOME" = "success" ];   then STATUS=already_warm
+          elif [ "$BUILD_OUTCOME" != "success" ];  then STATUS=build_failed
+          elif [ "$STAGE_OUTCOME" != "success" ];  then STATUS=build_failed
+          else                                          STATUS=staged
+          fi
+          mkdir -p out
+          jq -n \
+            --arg sha "$SHA" \
+            --arg tag "$TAG" \
+            --arg status "$STATUS" \
+            --argjson downstreams "$DOWNSTREAMS_JSON" \
+            '{sha:$sha, tag:$tag, status:$status, downstreams:$downstreams}' \
+            > "out/result.json"
+          cat out/result.json
+          echo "status=$STATUS" >> "$GITHUB_OUTPUT"
+
+      # Terminal: upload directly as the final result (already_warm,
+      # build_failed). The chain stops here.
+      - name: Upload final result (terminal)
+        if: always() && steps.write_result.outputs.status != 'staged'
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: warm-result-${{ inputs.sha }}
+          path: out/result.json
+          if-no-files-found: error
+
+      # Non-terminal: hand off to upload_cache.
+      - name: Upload intermediate result (staged)
+        if: steps.write_result.outputs.status == 'staged'
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: intermediate-${{ inputs.sha }}
+          path: out/result.json
+          if-no-files-found: error
+
+  upload_cache:
+    needs: build_and_stage
+    if: needs.build_and_stage.outputs.status == 'staged'
+    runs-on: ubuntu-latest
+    # Bind the OIDC subject claim to a GitHub Environment, NOT a
+    # branch, so the federated credential on the mathlib cache-writer
+    # Azure app accepts dispatch from any branch. Production runs are
+    # still gated to main by the workflow_run filter on the
+    # orchestrator.
+    environment: cache-warming-token
+    outputs:
+      status: ${{ steps.write_result.outputs.status }}
+    steps:
+      - name: Download intermediate result
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: intermediate-${{ inputs.sha }}
+          path: prev
+
+      - name: Download staging artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: stage-${{ inputs.sha }}
+          path: cache-staging
+
+      - name: Install elan
+        run: |
+          curl https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh -sSf \
+            | sh -s -- -y --default-toolchain none
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+
+      # Build a trusted cache binary from a clean master checkout —
+      # the same pattern build_and_stage uses. The cache token below
+      # never sees any binary produced by the build runner.
+      - name: Clone mathlib master (cache tool)
+        run: |
+          git clone --depth=1 --branch=master \
+            https://github.com/leanprover-community/mathlib4 mathlib4-tools
+
+      - name: Build cache tool
+        working-directory: mathlib4-tools
+        run: lake build cache
+
+      # Manual OIDC ↔ Entra exchange. Same flow as
+      # mathlib's azure-create-cache-token action, done inline so the
+      # workflow doesn't depend on `az` being on PATH.
       - name: Mint Azure cache bearer token
         id: cache_token
         env:
@@ -135,36 +266,10 @@ jobs:
           echo "::add-mask::$BEARER"
           echo "MATHLIB_CACHE_AZURE_BEARER_TOKEN=$BEARER" >> "$GITHUB_ENV"
 
-      - name: Build cache tool
-        working-directory: mathlib4
-        run: lake build cache
-
-      - name: Probe cache completeness
-        id: probe
-        working-directory: mathlib4
-        continue-on-error: true
-        run: |
-          lake exe cache get
-          lake build --no-build -v Mathlib
-
-      - name: Build Mathlib
-        id: build
-        if: steps.probe.outcome != 'success'
-        working-directory: mathlib4
-        continue-on-error: true
-        run: lake build Mathlib
-
-      - name: Stage cache
-        id: stage
-        if: steps.build.outcome == 'success'
-        working-directory: mathlib4
-        run: lake exe cache stage --staging-dir=../cache-staging
-
       - name: Push staged cache to Azure
-        if: steps.stage.outcome == 'success'
         id: push
         continue-on-error: true   # capture push_failed before failing the job
-        working-directory: mathlib4
+        working-directory: mathlib4-tools
         env:
           MATHLIB_CACHE_USE_CLOUDFLARE: "0"
         run: |
@@ -172,12 +277,7 @@ jobs:
             --staging-dir=../cache-staging \
             --repo=leanprover-community/mathlib4
 
-      # The mint action writes MATHLIB_CACHE_AZURE_BEARER_TOKEN into
-      # $GITHUB_ENV, exposing it to every subsequent step. The build
-      # already ran (mint happens after `lake build Mathlib`), but we
-      # still don't want the token in the env of the result-writing /
-      # artifact-upload steps below. Clearing here narrows the token's
-      # exposure to roughly mint→push.
+      # Narrow the bearer's exposure to roughly mint→push.
       - name: Clear cache bearer token
         if: always() && steps.cache_token.outcome == 'success'
         run: |
@@ -187,35 +287,21 @@ jobs:
         id: write_result
         if: always()
         env:
-          SHA: ${{ inputs.sha }}
-          TAG: ${{ inputs.tag }}
-          DOWNSTREAMS_JSON: ${{ inputs.downstreams_json }}
-          PROBE_OUTCOME: ${{ steps.probe.outcome }}
-          BUILD_OUTCOME: ${{ steps.build.outcome }}
-          STAGE_OUTCOME: ${{ steps.stage.outcome }}
           PUSH_OUTCOME: ${{ steps.push.outcome }}
         run: |
-          if   [ "$PROBE_OUTCOME" = "success" ];   then STATUS=already_warm
-          elif [ "$BUILD_OUTCOME" != "success" ];  then STATUS=build_failed
-          elif [ "$STAGE_OUTCOME" != "success" ];  then STATUS=build_failed
-          elif [ "$PUSH_OUTCOME"  != "success" ];  then STATUS=push_failed
-          else                                          STATUS=pushed
-          fi
           mkdir -p out
-          jq -n \
-            --arg sha "$SHA" \
-            --arg tag "$TAG" \
-            --arg status "$STATUS" \
-            --argjson downstreams "$DOWNSTREAMS_JSON" \
-            '{sha:$sha, tag:$tag, status:$status, downstreams:$downstreams}' \
-            > "out/result.json"
+          if [ "$PUSH_OUTCOME" = "success" ]; then
+            STATUS=pushed
+          else
+            STATUS=push_failed
+          fi
+          jq --arg status "$STATUS" '.status=$status' prev/result.json > out/result.json
           cat out/result.json
           echo "status=$STATUS" >> "$GITHUB_OUTPUT"
 
-      # Terminal: upload directly as final result. Covers
-      # already_warm, build_failed, push_failed.
-      - name: Upload final result (terminal)
-        if: always() && steps.write_result.outputs.status != 'pushed'
+      # Terminal: push_failed becomes the final result.
+      - name: Upload final result (push_failed)
+        if: always() && steps.write_result.outputs.status == 'push_failed'
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: warm-result-${{ inputs.sha }}
@@ -238,8 +324,8 @@ jobs:
           exit 1
 
   verify:
-    needs: build_stage_push
-    if: needs.build_stage_push.outputs.status == 'pushed'
+    needs: upload_cache
+    if: needs.upload_cache.outputs.status == 'pushed'
     runs-on: ubuntu-latest
     steps:
       - name: Download pushed result

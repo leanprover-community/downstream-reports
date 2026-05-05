@@ -35,8 +35,11 @@ warm-mathlib-cache.yml         (orchestrator)
     │
     └─ warm-sha matrix → calls _warm-one-sha.yml once per SHA (max-parallel: 4)
                           │
-                          ├─ build_stage_push   self-hosted, has cache token
-                          │   clone → probe → build → stage → push
+                          ├─ build_and_stage    self-hosted, NO token
+                          │   clone target SHA → probe → build → stage
+                          │
+                          ├─ upload_cache       ubuntu-latest, has cache token
+                          │   shallow master → build cache → mint → put-staged
                           │
                           └─ verify             ubuntu-latest, NO token
                               fresh clone → cache get → assert all oleans present
@@ -111,53 +114,81 @@ empty.
 
 ## Per-SHA chain (`_warm-one-sha.yml`)
 
-Two jobs. Each has its own status; a terminal status uploads
+Three jobs. Each has its own status; a terminal status uploads
 `warm-result-<sha>` directly so the orchestrator's summary always has
-exactly one final result per SHA.
+exactly one final result per SHA. The cache tool is built fresh in
+both `build_and_stage` and `upload_cache` from a shallow `master`
+checkout, mirroring mathlib4's own tools-branch idiom — the cache
+binary that sees the bearer token never came off the build runner.
 
-### `build_stage_push`
+### `build_and_stage`
 
 - `runs-on: [self-hosted, pr]`
-- `environment: cache-warming-token` — binds the OIDC subject to that
-  environment so the federated credential accepts dispatch from any
-  branch.
+- No cache token in scope.
 
 Steps:
 
 1. Install jq (the `pr` runner doesn't ship it).
 2. Install elan (no default toolchain — lake reads `lean-toolchain`
    from the checkout).
-3. Clone mathlib (full commit graph, `--filter=blob:none` for size).
+3. Clone mathlib at the target SHA (`mathlib4/`, full commit graph,
+   `--filter=blob:none` for size).
 4. **Verify SHA is on master** — `git merge-base --is-ancestor
    "$SHA" origin/master`. The job exits 1 with a clear error
    otherwise. Guards against typos in the dispatch input.
 5. Checkout the SHA.
-6. `lake build cache` — produces `.lake/build/bin/cache`.
-7. **Probe:** `lake exe cache get` then `lake build --no-build -v
-   Mathlib`. If both succeed, the cache is already complete; status
+6. Clone mathlib master shallow into `mathlib4-tools/`.
+7. `lake build cache` in `mathlib4-tools/`.
+8. **Probe:** `../mathlib4-tools/.lake/build/bin/cache get` (run from
+   `mathlib4/`, no `lake env` needed for `get`) then
+   `lake build --no-build -v Mathlib`. If both succeed, status
    becomes `already_warm` and the chain ends.
-8. `lake build Mathlib` — only runs when the probe failed. The cache
-   is content-hashed, so anything `cache get` already pulled is
-   reused; only files whose hashes weren't in the cache get rebuilt.
-9. `lake exe cache stage --staging-dir=../cache-staging`.
-10. **Mint Azure bearer** via an inline OIDC ↔ Entra exchange (curl +
-    jq). We do this manually rather than via mathlib's
-    `azure-create-cache-token` action because that action shells out
-    to `az`, which isn't installed on the self-hosted `pr` runner.
-    Ordered to happen *after* `lake build`, so the token is never in
-    scope of the build's elaboration-time code.
-11. **Push** via `lake env .lake/build/bin/cache put-staged
-    --staging-dir=../cache-staging --repo=leanprover-community/mathlib4`.
-12. **Clear** `MATHLIB_CACHE_AZURE_BEARER_TOKEN` from `$GITHUB_ENV`
-    so the result-writing and artifact-upload steps that follow don't
-    see it.
-13. Write result.json with status, output to job, upload as either
-    `warm-result-<sha>` (terminal) or `pushed-<sha>` (hand off).
+9. `lake build Mathlib` (in `mathlib4/`, only runs when the probe
+   failed). The cache is content-hashed, so anything `cache get`
+   already pulled is reused; only files whose hashes weren't in the
+   cache get rebuilt.
+10. `lake env ../mathlib4-tools/.lake/build/bin/cache stage
+    --staging-dir=../cache-staging`. `lake env` is required for
+    `stage` (and `put-staged`) so `leantar` is found on PATH.
+11. Upload `stage-<sha>` artifact (just `.ltar` files — no binary).
+12. Write result, upload as `warm-result-<sha>` (terminal:
+    `already_warm`/`build_failed`) or `intermediate-<sha>`
+    (non-terminal: `staged`).
+
+### `upload_cache`
+
+- `runs-on: ubuntu-latest`
+- `needs: build_and_stage`, `if: needs.build_and_stage.outputs.status == 'staged'` —
+  skipped entirely on `already_warm` / `build_failed`.
+- `environment: cache-warming-token` — binds the OIDC subject so the
+  federated credential accepts dispatch from any branch.
+
+Steps:
+
+1. Download `intermediate-<sha>` and `stage-<sha>`.
+2. Install elan.
+3. Clone mathlib master shallow into `mathlib4-tools/`.
+4. `lake build cache` in `mathlib4-tools/` — a fresh, trusted cache
+   binary that never came off the build runner.
+5. **Mint Azure bearer** via an inline OIDC ↔ Entra exchange (curl +
+   jq). We do this manually rather than via mathlib's
+   `azure-create-cache-token` action because that action shells out
+   to `az`; the inline mint keeps the workflow self-contained.
+6. **Push** via `lake env .lake/build/bin/cache put-staged
+   --staging-dir=../cache-staging
+   --repo=leanprover-community/mathlib4` (run from
+   `mathlib4-tools/`).
+7. **Clear** `MATHLIB_CACHE_AZURE_BEARER_TOKEN` from `$GITHUB_ENV`
+   so the result-writing and artifact-upload steps that follow
+   don't see it.
+8. Write result, upload as `warm-result-<sha>` (terminal:
+   `push_failed`) or `pushed-<sha>` (non-terminal: `pushed`).
+9. Exit 1 on push failure, surfacing as a red job.
 
 ### `verify`
 
 - `runs-on: ubuntu-latest`, no token.
-- `if: needs.build_stage_push.outputs.status == 'pushed'` — skipped
+- `if: needs.upload_cache.outputs.status == 'pushed'` — skipped
   entirely otherwise.
 
 Steps:
@@ -168,21 +199,21 @@ Steps:
 4. `lake exe cache get` then `lake build --no-build --rehash -v
    Mathlib`. Mirrors mathlib's own `post_steps` verification. The
    fresh clone is essential — reusing the build runner's working
-   directory would let local oleans satisfy the check even if nothing
-   was uploaded.
+   directory would let local oleans satisfy the check even if
+   nothing was uploaded.
 5. Roll status to `warmed` or `verify_failed`.
 6. Upload `warm-result-<sha>`.
-7. Exit 1 if the verify lake check failed, surfacing as a red verify
-   job in the workflow.
+7. Exit 1 if the verify lake check failed.
 
 ## Status flow
 
 | Status | Where set | Terminal | Surfaces as |
 |---|---|---|---|
-| `already_warm` | build_stage_push (probe succeeded) | yes | green job |
-| `build_failed` | build_stage_push (`lake build Mathlib` failed) | yes | green job, recorded in summary |
-| `push_failed` | build_stage_push (cache push errored) | yes | red job (final step exits 1) |
-| `pushed` | build_stage_push (push succeeded) | no — hands off to verify | green job |
+| `already_warm` | build_and_stage (probe succeeded) | yes | green job |
+| `build_failed` | build_and_stage (`lake build Mathlib` failed) | yes | green job, recorded in summary |
+| `staged` | build_and_stage (build + stage succeeded) | no — hands off to upload_cache | green job |
+| `push_failed` | upload_cache (cache push errored) | yes | red job (final step exits 1) |
+| `pushed` | upload_cache (push succeeded) | no — hands off to verify | green job |
 | `warmed` | verify (post-push check passed) | yes | green job |
 | `verify_failed` | verify (post-push check failed) | yes | red job (final step exits 1) |
 
@@ -206,7 +237,7 @@ SHA reports `push_failed` or `verify_failed`.
   dropped (the latest plan is always the one to honour).
 - **Matrix throttle.** `max-parallel: 4` on the orchestrator's
   `warm-sha` matrix caps in-flight per-SHA chains. The
-  `build_stage_push` job runs on the shared self-hosted `pr` runner;
+  `build_and_stage` job runs on the shared self-hosted `pr` runner;
   the runner pool itself enforces serialisation, but `max-parallel`
   is the explicit ceiling.
 
@@ -331,19 +362,18 @@ data) the in-job verify can't.
 
 ## Trade-offs
 
-- **Single-job build + push.** Build and push share a self-hosted
-  runner, so the bearer token is in scope of the same job that
-  evaluates `lake build Mathlib`. We accepted this because every SHA
-  the workflow processes is a mathlib master commit (LKG/FKB from the
-  DB or operator-supplied), which mathlib's own CI builds with the
-  same token in a separate job — an attacker who can land malicious
-  code on master could exfiltrate via mathlib's CI either way. The
-  isolation that matters in practice is mint-after-build ordering plus
-  the post-push env clear, plus the verify job staying off-runner.
-- **Master-only.** The build_stage_push job refuses non-master SHAs
-  via an explicit ancestor check. Cache pushes for branch / tag SHAs
-  would pollute the canonical cache namespace and aren't meaningful
-  for our consumers.
+- **Three-job split mirrors mathlib4 CI.** Build runs on a self-hosted
+  runner with no token; push runs on ubuntu-latest with the bearer;
+  verify runs on a fresh ubuntu without the bearer. The cache binary
+  the upload job uses is built fresh from a shallow `master`
+  checkout, so it's never a binary that came off the build runner.
+  This is the same posture as
+  `mathlib4/.github/workflows/build_template.yml`'s
+  `build` → `upload_cache` → `post_steps` chain.
+- **Master-only.** `build_and_stage` refuses non-master SHAs via an
+  explicit ancestor check. Cache pushes for branch / tag SHAs would
+  pollute the canonical cache namespace and aren't meaningful for
+  our consumers.
 - **Probe is best-effort.** `lake build --no-build -v Mathlib` after
   `cache get` is the canonical way to check completeness. False
   negatives (cache present but probe failed) waste a build but are
