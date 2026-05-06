@@ -65,9 +65,9 @@ inventory.
 
 | Output | Description |
 |--------|-------------|
-| `pr-number` | PR number (empty when `action=noop`) |
-| `pr-url` | PR URL (empty when `action=noop`) |
-| `action` | `"created"`, `"updated"`, or `"noop"` |
+| `pr-number` | PR number (empty when `action=noop`; populated for `created` / `updated` / `up-to-date`) |
+| `pr-url` | PR URL (empty when `action=noop`; populated for `created` / `updated` / `up-to-date`) |
+| `action` | `"created"`, `"updated"`, `"up-to-date"` (remote branch already had the same tree with an open PR — push and edit skipped), or `"noop"` |
 | `updated` | `"true"` if hopscotch successfully bumped the project |
 | `skipped` | `"true"` if the project was already at the target commit |
 | `build-failed` | `"true"` if hopscotch ran but the build failed |
@@ -181,6 +181,14 @@ to the triggering run and records today's date.
 If there are no working-tree changes (`git diff` is clean) the action exits with
 `action=noop` and no PR is touched.
 
+To stay quiet under sub-daily cadences, the action also short-circuits when the
+remote branch already has a commit whose **tree** matches the one it would push
+*and* an open PR already points at the branch. In that case both the force-push
+and the PR title/body edit are skipped, and the action exits with
+`action=up-to-date` (with the existing PR's `pr-number` / `pr-url` surfaced).
+The fresh-SHA / same-tree commit that would otherwise trigger PR CI on every
+tick of an awaiting-merge bump PR therefore never lands.
+
 ### Inputs
 
 | Input | Required | Default | Description |
@@ -200,9 +208,9 @@ If there are no working-tree changes (`git diff` is clean) the action exits with
 
 | Output | Description |
 |--------|-------------|
-| `pr-number` | PR number (empty when `action=noop`) |
-| `pr-url` | PR URL (empty when `action=noop`) |
-| `action` | `"created"`, `"updated"`, or `"noop"` |
+| `pr-number` | PR number (empty when `action=noop`; populated for `created` / `updated` / `up-to-date`) |
+| `pr-url` | PR URL (empty when `action=noop`; populated for `created` / `updated` / `up-to-date`) |
+| `action` | `"created"` (new PR opened), `"updated"` (existing PR's title/body edited after a force-push), `"up-to-date"` (remote branch already had an identical tree at HEAD with an open PR — no push, no edit), or `"noop"` (no working-tree changes vs HEAD) |
 
 ---
 

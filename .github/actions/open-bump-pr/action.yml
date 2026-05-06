@@ -57,13 +57,17 @@ inputs:
 
 outputs:
   pr-number:
-    description: 'PR number (empty if action=noop)'
+    description: 'PR number (empty if action=noop; populated for created / updated / up-to-date)'
     value: ${{ steps.resolve-outputs.outputs.pr_number }}
   pr-url:
-    description: 'PR URL (empty if action=noop)'
+    description: 'PR URL (empty if action=noop; populated for created / updated / up-to-date)'
     value: ${{ steps.resolve-outputs.outputs.pr_url }}
   action:
-    description: '"created", "updated", or "noop" (no changes to commit)'
+    description: >-
+      "created" (new PR opened), "updated" (existing PR's title/body edited
+      after a force-push), "up-to-date" (remote branch already had an
+      identical tree at HEAD with an open PR pointing at it — no push, no
+      edit), or "noop" (no working-tree changes vs HEAD, nothing to commit).
     value: ${{ steps.resolve-outputs.outputs.action }}
 
 runs:
@@ -85,6 +89,21 @@ runs:
 
     # ------------------------------------------------------------------
     # Step 2: Create the branch, commit, and force-push.
+    #
+    # Idempotency on unchanged input: if the remote branch already has a
+    # commit whose tree matches the one we just composed, *and* an open PR
+    # already points at that branch, skip the force-push (and the PR edit
+    # downstream). Without this guard, a caller that runs on a sub-daily
+    # cadence would force-push a fresh-SHA / same-tree commit every tick
+    # and churn the awaiting-merge PR with a CI rerun and a timeline event
+    # for no actual change. The git commit itself is always made locally
+    # so that the tree comparison has a concrete object to diff against;
+    # if the comparison says "no push needed" the local commit is simply
+    # discarded when the runner exits.
+    #
+    # When the remote tree matches but no open PR exists (e.g. a closed
+    # PR's branch was left around), we still push and let step 3 open a
+    # new PR — the cheap path is correctness-preserving but doesn't apply.
     # ------------------------------------------------------------------
     - name: Commit and push branch
       id: commit-and-push
@@ -94,6 +113,7 @@ runs:
         BRANCH: ${{ inputs.branch }}
         COMMIT_MESSAGE: ${{ inputs.commit-message }}
         TOKEN: ${{ inputs.token }}
+        GH_TOKEN: ${{ inputs.token }}
         GIT_USER_NAME: ${{ inputs.git-user-name }}
         GIT_USER_EMAIL: ${{ inputs.git-user-email }}
       run: |
@@ -107,10 +127,49 @@ runs:
         OLD_HEADER=$(git config --local http.https://github.com/.extraheader || true)
         git config --unset http.https://github.com/.extraheader || true
 
+        PUSH_URL="https://x-access-token:${TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+
         git checkout -B "$BRANCH"
         git add -A
         git commit -m "$MSG"
-        git push --force "https://x-access-token:${TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "$BRANCH"
+
+        LOCAL_TREE=$(git rev-parse HEAD^{tree})
+
+        # Probe the remote branch's tree, if the branch exists.
+        REMOTE_TREE=""
+        if git ls-remote --exit-code --heads "$PUSH_URL" "$BRANCH" >/dev/null 2>&1; then
+          git fetch --depth=1 "$PUSH_URL" "$BRANCH"
+          REMOTE_TREE=$(git rev-parse FETCH_HEAD^{tree})
+        fi
+
+        # If trees match, only short-circuit when an *open* PR is pointing
+        # at the branch. Otherwise we'd silently fail to surface a PR for
+        # a leftover branch from a previously-closed PR.
+        TREE_UNCHANGED=false
+        EXISTING_PR_NUMBER=""
+        EXISTING_PR_URL=""
+        if [ -n "$REMOTE_TREE" ] && [ "$LOCAL_TREE" = "$REMOTE_TREE" ]; then
+          existing=$(gh pr list \
+            --head "$BRANCH" \
+            --state open \
+            --json number,url \
+            --jq '.[0] // empty')
+          if [ -n "$existing" ]; then
+            EXISTING_PR_NUMBER=$(echo "$existing" | jq -r '.number')
+            EXISTING_PR_URL=$(echo "$existing"    | jq -r '.url')
+            TREE_UNCHANGED=true
+          fi
+        fi
+
+        if [ "$TREE_UNCHANGED" = "true" ]; then
+          echo "Remote '$BRANCH' already at tree $LOCAL_TREE with open PR #$EXISTING_PR_NUMBER — skipping force-push."
+        else
+          git push --force "$PUSH_URL" "$BRANCH"
+        fi
+
+        echo "tree_unchanged=$TREE_UNCHANGED"           >> "$GITHUB_OUTPUT"
+        echo "existing_pr_number=$EXISTING_PR_NUMBER"   >> "$GITHUB_OUTPUT"
+        echo "existing_pr_url=$EXISTING_PR_URL"         >> "$GITHUB_OUTPUT"
 
         if [ -n "$OLD_HEADER" ]; then
           git config --local http.https://github.com/.extraheader "$OLD_HEADER"
@@ -118,10 +177,17 @@ runs:
 
     # ------------------------------------------------------------------
     # Step 3: Create or update the PR.
+    #
+    # Skipped when step 2 short-circuited via tree_unchanged. In that case
+    # the remote branch already has the right tree and an open PR; editing
+    # the PR's title/body would only churn the footer ("last updated on…")
+    # and add a low-value event to the timeline.
     # ------------------------------------------------------------------
     - name: Create or update PR
       id: create-or-update-pr
-      if: steps.check-changes.outputs.no_changes != 'true'
+      if: >-
+        steps.check-changes.outputs.no_changes != 'true'
+        && steps.commit-and-push.outputs.tree_unchanged != 'true'
       shell: bash
       env:
         GH_TOKEN: ${{ inputs.token }}
@@ -205,6 +271,9 @@ runs:
       shell: bash
       env:
         NO_CHANGES: ${{ steps.check-changes.outputs.no_changes }}
+        TREE_UNCHANGED: ${{ steps.commit-and-push.outputs.tree_unchanged }}
+        EXISTING_PR_NUMBER: ${{ steps.commit-and-push.outputs.existing_pr_number }}
+        EXISTING_PR_URL: ${{ steps.commit-and-push.outputs.existing_pr_url }}
         PR_NUMBER: ${{ steps.create-or-update-pr.outputs.pr_number }}
         PR_URL: ${{ steps.create-or-update-pr.outputs.pr_url }}
         PR_ACTION: ${{ steps.create-or-update-pr.outputs.pr_action }}
@@ -213,6 +282,12 @@ runs:
           echo "action=noop"   >> "$GITHUB_OUTPUT"
           echo "pr_number="    >> "$GITHUB_OUTPUT"
           echo "pr_url="       >> "$GITHUB_OUTPUT"
+        elif [ "${TREE_UNCHANGED:-}" = "true" ]; then
+          # Remote branch already had the same tree and an open PR — push
+          # was skipped, so surface the existing PR's identity.
+          echo "action=up-to-date"                  >> "$GITHUB_OUTPUT"
+          echo "pr_number=${EXISTING_PR_NUMBER:-}"  >> "$GITHUB_OUTPUT"
+          echo "pr_url=${EXISTING_PR_URL:-}"        >> "$GITHUB_OUTPUT"
         else
           echo "action=${PR_ACTION:-created}"  >> "$GITHUB_OUTPUT"
           echo "pr_number=${PR_NUMBER:-}"      >> "$GITHUB_OUTPUT"

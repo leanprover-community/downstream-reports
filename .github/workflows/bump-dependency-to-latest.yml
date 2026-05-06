@@ -93,7 +93,11 @@ on:
         description: 'PR URL. Empty when no bump was needed (skipped or build-failed).'
         value: ${{ jobs.bump.outputs.pr-url }}
       action:
-        description: '"created", "updated", or "noop" (nothing to commit).'
+        description: >-
+          "created" (new PR opened), "updated" (existing PR's title/body
+          edited after a force-push), "up-to-date" (remote bump branch
+          already had an identical tree at HEAD with an open PR — push
+          and edit both skipped), or "noop" (nothing to commit).
         value: ${{ jobs.bump.outputs.action }}
       updated:
         description: '"true" if hopscotch successfully bumped the project.'
