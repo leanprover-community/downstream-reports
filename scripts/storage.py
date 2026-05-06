@@ -237,16 +237,19 @@ class StorageBackend(Protocol):
         contains at minimum: ``outcome``, ``episode_state``, ``first_known_bad``,
         ``target_commit``, ``failure_stage``, ``repo``, ``run_url``, ``job_url``.
 
-        # FIXME: this docstring does not specify the tie-break when a
-        # ``(downstream, commit)`` pair has multiple matching runs — the
-        # implementation returns the **newest** (latest ``created_at``)
-        # result, and on-demand callers depend on that ordering.  See
-        # scripts/test_storage.py::test_load_prior_results_returns_newest_when_a_pair_has_multiple_runs
-        # for the executable contract.  Update the docstring to call out
-        # newest-wins next time this function is touched.
+        Ordering: when a ``(downstream, downstream_commit)`` pair has
+        multiple matching runs, the **newest** result (highest
+        ``created_at``) wins.  Older runs are by definition stale; the
+        on-demand select step depends on this newest-wins tie-break to
+        decide whether the most recent attempt at a commit was a pass
+        or a fail.
 
         Error outcomes are excluded — a run that errored is not a
-        conclusive prior result.
+        conclusive prior result, and we want to retry it on the next
+        run rather than treat it as already-tested.
+
+        Pinned by
+        ``test_storage.TestFilesystemBackendLoadPriorResults``.
         """
         ...
 

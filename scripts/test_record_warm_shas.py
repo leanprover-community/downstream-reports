@@ -129,10 +129,9 @@ class TestCollectWarmShasDedup(unittest.TestCase):
 class TestCollectWarmShasMissingSha:
     """Tests for entries that arrive without a usable SHA field."""
 
-    # NOTE: the production docstring on collect_warm_shas carries a FIXME
-    # acknowledging that it does not document the silent-skip behaviour for
-    # missing/empty SHAs.  This class is the executable contract for that
-    # behaviour until the docstring catches up.
+    # NOTE: the production docstring on collect_warm_shas spells out the
+    # silent-skip-on-missing-sha contract; this class is its executable
+    # form so any future loosening of that contract fails here first.
 
     @pytest.mark.parametrize(
         "summary",

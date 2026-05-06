@@ -718,10 +718,11 @@ class TestFilesystemBackendLoadPriorResults(unittest.TestCase):
         newer passed.  ``load_prior_results`` returns the *newest*
         outcome — that's the current truth, not the first attempt.
 
-        # NOTE: the production docstring on ``load_prior_results`` does
-        # not explicitly document the "newest-wins" tie-break.  See the
-        # mismatch report's entry on this gap; the test serves as the
-        # executable contract.
+        The production docstring on ``load_prior_results`` documents
+        this newest-wins tie-break; this test is the executable form of
+        that contract so any change to the SQL ordering in
+        ``SqlBackend`` (or the in-memory iteration in
+        ``FilesystemBackend``) fails here first.
         """
         # Arrange
         with tempfile.TemporaryDirectory() as tmp:

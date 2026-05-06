@@ -39,19 +39,16 @@ both kinds of error rare; each test below pins one rung of it.
 Test architecture note
 ----------------------
 The decision logic is tested with **injected fetcher callables** rather
-than monkey-patched ``urllib`` — the agent audit flagged this as
-over-mocking.  We accept that trade-off here because the production
-HTTP layer is covered separately by ``InFlightSetTests`` /
-``DispatchPayloadTests``, and unit-testing the decision logic with
-hand-crafted lambdas keeps the cases legible.
+than monkey-patched ``urllib`` — the audit flagged this as over-mocking.
+We accept that trade-off here because the production HTTP layer is
+covered separately by ``InFlightSetTests`` / ``DispatchPayloadTests``,
+and unit-testing the decision logic with hand-crafted lambdas keeps the
+cases legible.
 
-# REVIEW: ``MainOrchestrationTests._RecordingBackend`` exposes
-# ``dispatched`` and ``upserts`` attributes that are added dynamically
-# inside the test rather than declared on the test double.  This is a
-# code smell carried over from the pre-refactor file; the recording
-# backend should be promoted to a typed test double.  Left as-is to
-# avoid changing test semantics; tracked in the audit report's
-# "Flags Left in Code" section.
+``MainOrchestrationTests`` uses ``_RecordingBackend`` as a typed
+in-memory test double that records both ledger upserts and workflow
+dispatches; tests assert against the single backend instance rather
+than juggling separate state.
 """
 
 from __future__ import annotations
@@ -582,12 +579,23 @@ class DispatchPayloadTests(unittest.TestCase):
 
 
 class _RecordingBackend:
-    """Minimal in-memory backend that records the ledger upserts main() makes."""
+    """Minimal in-memory backend that records both ledger upserts and
+    workflow dispatches main() makes during a test run.
+
+    The backend itself is only the storage half; the dispatch half is
+    handled by the workflow_dispatch HTTP wrapper, which is patched out
+    separately.  We expose ``dispatched`` here so a single fixture can
+    represent everything a test needs to assert about a main() run.
+    """
 
     def __init__(self) -> None:
         self.statuses: dict[str, DownstreamStatusRecord] = {"PhysLib": _status()}
         self.ledger: dict[str, ManifestWatcherLedgerRow] = {}
         self.upserts: list[list[ManifestWatcherLedgerRow]] = []
+        # Populated by the fake_dispatch closure in MainOrchestrationTests
+        # via the same instance, so tests have a single object to assert
+        # against rather than juggling backend + dispatch list separately.
+        self.dispatched: list[dict] = []
 
     def load_all_statuses(self, workflow, upstream):
         return self.statuses
@@ -615,10 +623,8 @@ class MainOrchestrationTests(unittest.TestCase):
         env = {"GITHUB_TOKEN": "tok", "GH_REPO": "org/downstream-reports"}
         inventory = {"PhysLib": _config("PhysLib")}
 
-        dispatched: list[dict] = []
-
         def fake_dispatch(repo, workflow_file, ref, inputs, token):
-            dispatched.append({"inputs": inputs})
+            backend.dispatched.append({"inputs": inputs})
             return True
 
         with mock.patch.object(sys, "argv", argv), \
@@ -632,22 +638,19 @@ class MainOrchestrationTests(unittest.TestCase):
              mock.patch.object(watcher, "gh_dispatch_workflow", side_effect=fake_dispatch):
             rc = watcher.main()
         self.assertEqual(rc, 0)
-        backend.dispatched = dispatched  # type: ignore[attr-defined]
         return backend
 
     def test_dry_run_does_not_dispatch_or_write_ledger(self) -> None:
         """Scenario: --dry-run-dispatch ⇒ candidate logged but no API call, no ledger row."""
         backend = self._run_main(dry_run=True)
-        self.assertEqual(backend.dispatched, [])  # type: ignore[attr-defined]
+        self.assertEqual(backend.dispatched, [])
         self.assertEqual(backend.upserts, [])
 
     def test_live_path_dispatches_and_writes_ledger(self) -> None:
         """Scenario: live path ⇒ one dispatch with comma-joined names, ledger upserted."""
         backend = self._run_main(dry_run=False)
-        self.assertEqual(len(backend.dispatched), 1)  # type: ignore[attr-defined]
-        self.assertEqual(
-            backend.dispatched[0]["inputs"], {"downstream": "PhysLib"}  # type: ignore[attr-defined]
-        )
+        self.assertEqual(len(backend.dispatched), 1)
+        self.assertEqual(backend.dispatched[0]["inputs"], {"downstream": "PhysLib"})
         self.assertEqual(len(backend.upserts), 1)
         [row] = backend.upserts[0]
         self.assertEqual(row.downstream, "PhysLib")
