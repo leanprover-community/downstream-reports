@@ -40,9 +40,7 @@ on:
   workflow_dispatch:
 
 env:
-  # Single source of truth for the bump-PR branch — referenced both
-  # by open-bump-pr's `branch` and by the close-LKG step below.
-  # bump-to-latest hardcodes this same value internally.
+  # Shared between open-bump-pr's `branch` and the close-LKG step.
   LKG_BRANCH: hopscotch/lkg-bump
 
 jobs:
@@ -54,10 +52,8 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      # Skip the LKG bump while an incompatibility is reported — reviewer
-      # attention should focus on the FKB fix PR opened by the open-issue
-      # job below. The two combined keep at most one open bump PR at a
-      # time: the routine LKG bump (no regression) or the FKB fix PR.
+      # Skip the LKG bump while a regression is active — reviewer
+      # attention should focus on the FKB fix PR (open-issue job below).
       - name: Check whether an incompatibility is reported
         id: fkb
         uses: leanprover-community/downstream-reports/.github/actions/query-latest@main
@@ -80,7 +76,7 @@ jobs:
 
   open-issue:
     runs-on: ubuntu-latest
-    needs: bump   # so the LKG bump PR is created first; the FKB PR (if any) gets a higher number
+    needs: bump   # LKG PR is created first; the FKB PR (if any) gets a higher number
     permissions:
       issues: write
       contents: write
@@ -92,12 +88,9 @@ jobs:
         id: track
         uses: leanprover-community/downstream-reports/.github/actions/track-incompatibility@main
 
-      # When an FKB fix PR is open, close any leftover LKG bump PR so
-      # only one bump PR is open at a time. `pr-number` is populated
-      # exactly when track-incompatibility opened or recognised an open
-      # fix PR (pr-action ∈ {created, noop-existing}); checking it
-      # rather than enumerating pr-action values keeps this step
-      # forward-compatible if track-incompatibility grows new states.
+      # `pr-number` is populated exactly when an FKB fix PR is open;
+      # checking it rather than enumerating `pr-action` values keeps
+      # this forward-compatible.
       - name: Close LKG bump PR when an FKB fix PR is open
         if: steps.track.outputs.pr-number != ''
         env:
@@ -110,9 +103,8 @@ jobs:
           gh pr close "$lkg_pr" --comment "Closing in favor of #${FKB_PR}: an incompatibility is currently reported, so maintainer attention should go to the fix PR pinned at the first-known-bad commit. A new last-known-good bump PR will be opened automatically once the incompatibility is resolved."
 ```
 
-For just the LKG bump (no `track-incompatibility`, no close-LKG step), drop the
-`open-issue` job and the `query-latest fkb` gate — the resulting workflow is
-three steps in one job.
+For just the LKG bump (no incompatibility tracking), drop the `open-issue` job
+and the `query-latest fkb` gate.
 
 ---
 
