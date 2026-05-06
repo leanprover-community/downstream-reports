@@ -598,10 +598,15 @@ runs:
 
     # ------------------------------------------------------------------
     # Step 11: Close stale fix PRs (FKB advanced to a new commit).
-    # A PR is stale when its head branch does not match the branch for
-    # the current FKB.  Runs only when FKB is present and close-stale-prs
-    # is true.  The old branch is NOT deleted so WIP commits stay
-    # reachable.
+    # "Stale" means the head branch's FKB-short prefix doesn't match the
+    # current FKB. PRs on the canonical branch (`<prefix>-<short>`) and
+    # on suffixed variants (`<prefix>-<short>-<random>`, used when the
+    # canonical branch lingers from a previously-closed PR) are both
+    # kept — same FKB SHA, just a different branch — so that step 12
+    # below can short-circuit instead of opening a redundant new PR
+    # every run. The old branch is NOT deleted so WIP commits stay
+    # reachable. Runs only when FKB is present and close-stale-prs
+    # is true.
     # ------------------------------------------------------------------
     - name: Close stale fix PRs
       id: close-stale-prs
@@ -634,8 +639,13 @@ runs:
           PR_URL=$(echo "$pr"     | jq -r '.url')
           HEAD_REF=$(echo "$pr"   | jq -r '.headRefName')
 
-          if [ "$HEAD_REF" = "$CURRENT_BRANCH" ]; then
-            echo "PR #$PR_NUMBER is on current branch '$CURRENT_BRANCH' — keeping."
+          # Keep PRs whose branch is the canonical FKB branch *or* a
+          # suffixed variant of it (`<canonical>-<random>`). The trailing
+          # `-` in the second pattern is what guards against accidentally
+          # matching a different FKB SHA whose branch happens to share a
+          # prefix with this one.
+          if [[ "$HEAD_REF" == "$CURRENT_BRANCH" || "$HEAD_REF" == "$CURRENT_BRANCH"-* ]]; then
+            echo "PR #$PR_NUMBER is on a current-FKB branch ('$HEAD_REF') — keeping."
             continue
           fi
 
@@ -653,11 +663,16 @@ runs:
         done < <(echo "$OPEN_PRS" | jq -c '.[]')
 
     # ------------------------------------------------------------------
-    # Step 12: Check whether an open fix PR already exists on the current
-    # FKB branch.  If it does, no bump or push is needed.
-    # If no open PR exists but the remote branch does (leftover from a
-    # previously-closed PR), append a short random hex suffix so the new
-    # PR gets a fresh branch and the push requires no --force.
+    # Step 12: Check whether an open fix PR already exists for the current
+    # FKB SHA — on the canonical branch `<prefix>-<short>` *or* a suffixed
+    # variant `<prefix>-<short>-<random>`. If so, no bump or push is
+    # needed: the rule is "no new PR for an FKB SHA already covered by an
+    # open PR." Step 11 above kept the open PR alive across runs for
+    # exactly this short-circuit.
+    #
+    # If no open PR exists but the canonical remote branch does (leftover
+    # from a previously-closed PR), append a short random hex suffix so
+    # the new PR gets a fresh branch and the push requires no --force.
     # ------------------------------------------------------------------
     - name: Check for existing fix PR
       id: check-pr
@@ -669,6 +684,7 @@ runs:
         FKB_COMMIT: ${{ steps.fkb.outputs.commit }}
         DEPENDENCY_NAME: ${{ inputs.dependency-name }}
         BRANCH_PREFIX: ${{ inputs.branch-prefix }}
+        PR_LABEL: ${{ inputs.pr-label }}
       run: |
         set -euo pipefail
 
@@ -676,19 +692,25 @@ runs:
         FKB_SHORT="${FKB_COMMIT:0:7}"
         BASE_BRANCH="${BRANCH_PREFIX_EFFECTIVE}-${FKB_SHORT}"
 
-        echo "Looking for existing fix PR on branch '$BASE_BRANCH'..."
+        echo "Looking for existing fix PR matching branch prefix '$BASE_BRANCH'..."
 
+        # `gh pr list --head` only matches the head branch exactly, so we
+        # filter by the fix-PR label and post-match in jq, picking up both
+        # the canonical and the suffixed cases. Keys are number + url +
+        # headRefName so we can echo a useful log line.
         EXISTING=$(gh pr list \
-          --head "$BASE_BRANCH" \
+          --label "$PR_LABEL" \
           --state open \
-          --json number,url \
-          --jq '.[0] // empty')
+          --json number,url,headRefName \
+          --jq --arg base "$BASE_BRANCH" \
+            '[.[] | select(.headRefName == $base or (.headRefName | startswith($base + "-")))] | .[0] // empty')
 
         if [ -n "$EXISTING" ]; then
-          PR_NUMBER=$(echo "$EXISTING" | jq -r '.number')
-          PR_URL=$(echo "$EXISTING"    | jq -r '.url')
-          echo "Found existing fix PR #$PR_NUMBER: $PR_URL — no bump needed."
-          echo "current_branch=${BASE_BRANCH}"   >> "$GITHUB_OUTPUT"
+          PR_NUMBER=$(echo "$EXISTING"  | jq -r '.number')
+          PR_URL=$(echo "$EXISTING"     | jq -r '.url')
+          HEAD_REF=$(echo "$EXISTING"   | jq -r '.headRefName')
+          echo "Found existing fix PR #$PR_NUMBER on '$HEAD_REF': $PR_URL — no bump needed."
+          echo "current_branch=${HEAD_REF}"      >> "$GITHUB_OUTPUT"
           echo "existing_pr_number=${PR_NUMBER}" >> "$GITHUB_OUTPUT"
           echo "existing_pr_url=${PR_URL}"       >> "$GITHUB_OUTPUT"
           exit 0
