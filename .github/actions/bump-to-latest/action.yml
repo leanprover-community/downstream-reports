@@ -50,6 +50,35 @@ inputs:
                                      (null when no active regression)
         last-good-release          — the latest semver release tag (e.g. v4.13.0)
                                      reachable from the last-known-good commit
+  branch:
+    required: false
+    default: 'hopscotch/lkg-bump'
+    description: >
+      The bump-PR's branch — same notion as open-bump-pr's `branch` input.
+      Used here as a probe target: the action reads the dependency pin from
+      the manifest at <github.repository>@<branch> (via GITHUB_TOKEN), and
+      if it already pins the dependency at the target commit, exits with
+      skipped=true and never invokes hopscotch (so no lake build).
+
+      Defaulted to the same value as open-bump-pr's default, so the typical
+      caller pairing the two actions gets sub-daily-cadence idempotency
+      automatically — the ~15-min lake build is skipped while the bump PR
+      awaits merge. Pass the same value you'd pass to open-bump-pr (the
+      reusable wrapper at .github/workflows/bump-dependency-to-latest.yml
+      threads the wrapper's `branch` input through to both).
+
+      The probe is automatically disabled when query-type is
+      "first-known-bad" — FKB targets live on per-FKB-SHA branches handled
+      by track-incompatibility's own short-circuit logic, and probing the
+      LKG-branch convention against an FKB target would be wrong by
+      construction. So FKB callers do not need to set this.
+
+      A 404 (no branch yet, or just merged), missing manifest, missing
+      dependency entry, or any API failure is treated as "no match" so the
+      bump runs as normal — better to spend a build than silently miss a
+      legitimate one. As a corollary, callers who use a non-default branch
+      and don't override this input will simply not get the optimization
+      (the probe 404s on `hopscotch/lkg-bump` and the bump runs every tick).
 
 outputs:
   rev:
@@ -99,6 +128,105 @@ runs:
       run: bash "${{ github.action_path }}/../../scripts/fetch-latest.sh"
 
     # ------------------------------------------------------------------
+    # Step 1.5: Probe the bump-PR branch for an existing bump. If its
+    # manifest already pins the dependency at the target commit, the
+    # Compare pins step below short-circuits the entire bump — no
+    # hopscotch, no lake build. Keeps sub-daily reruns cheap when the bump
+    # PR is awaiting merge: the bump branch already carries the target
+    # pin, so re-deriving it on `main` every tick is pure waste.
+    #
+    # Skipped when:
+    #   - query-type is "first-known-bad" — FKB targets live on per-FKB-SHA
+    #     branches (e.g. bump-mathlib/fix-<short>) and have their own
+    #     short-circuit logic in track-incompatibility; probing a single
+    #     bump-PR branch against an FKB target is wrong by construction
+    #     and, in the rare state where the branch lingers at a SHA that's
+    #     just been recharacterized as the FKB, would silently suppress
+    #     the FKB fix PR.
+    #   - the target lookup yielded no commit (handled later in Compare).
+    #
+    # Treated as "no match" (so the bump runs):
+    #   - the branch doesn't exist (404), or has no manifest at the path
+    #   - the dependency is missing from the branch's manifest
+    #   - any GitHub API failure (we don't want a transient blip to
+    #     silently skip the legitimate bump)
+    # ------------------------------------------------------------------
+    - name: Probe bump-PR branch for an existing bump
+      id: probe-ref
+      if: >-
+        inputs.query-type != 'first-known-bad'
+        && steps.fetch-snapshot.outputs.commit != ''
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        REF: ${{ inputs.branch }}
+        TARGET_COMMIT: ${{ steps.fetch-snapshot.outputs.commit }}
+        DEPENDENCY_NAME: ${{ inputs.dependency-name }}
+        PROJECT_DIR: ${{ inputs.project-dir }}
+      run: |
+        set -euo pipefail
+
+        # Build the manifest path relative to the repo root.
+        if [ -z "$PROJECT_DIR" ] || [ "$PROJECT_DIR" = "." ]; then
+          MANIFEST_PATH="lake-manifest.json"
+        else
+          # Strip a leading "./" if present.
+          rel="${PROJECT_DIR#./}"
+          MANIFEST_PATH="${rel%/}/lake-manifest.json"
+        fi
+
+        # Capture stderr so we can distinguish "branch doesn't exist" (a
+        # 404, which is normal — first run, or branch deleted after merge)
+        # from a genuine API failure (which we still treat as no-match for
+        # safety, but want surfaced in the run logs).
+        api_err=$(mktemp)
+        if encoded=$(gh api \
+            "repos/${GITHUB_REPOSITORY}/contents/${MANIFEST_PATH}?ref=${REF}" \
+            --jq '.content' 2>"$api_err"); then
+          rm -f "$api_err"
+        else
+          err=$(cat "$api_err" 2>/dev/null || true)
+          rm -f "$api_err"
+          if printf '%s' "$err" | grep -q -i 'not found\|404'; then
+            echo "Ref '${REF}' has no '${MANIFEST_PATH}' (404 — branch may not exist yet, or was just merged)."
+          else
+            # Annotate so the failure surfaces in the run summary; bump
+            # still proceeds (better to spend a build than to silently
+            # skip a legitimate one).
+            echo "::warning::Probe of '${REF}:${MANIFEST_PATH}' failed unexpectedly; treating as no-match. Underlying error: ${err}"
+          fi
+          echo "match=false" >> "$GITHUB_OUTPUT"
+          echo "ref_pin="    >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+
+        if [ -z "$encoded" ]; then
+          echo "::warning::Empty response when probing '${REF}:${MANIFEST_PATH}'; treating as no-match."
+          echo "match=false" >> "$GITHUB_OUTPUT"
+          echo "ref_pin="    >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+
+        ref_pin=$(printf '%s' "$encoded" | base64 -d \
+          | jq -r --arg dep "$DEPENDENCY_NAME" \
+              '.packages[] | select(.name == $dep) | .rev // empty')
+
+        if [ -z "$ref_pin" ]; then
+          echo "Dependency '${DEPENDENCY_NAME}' not present in '${REF}:${MANIFEST_PATH}'."
+          echo "match=false" >> "$GITHUB_OUTPUT"
+          echo "ref_pin="    >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+
+        echo "Ref '${REF}' pins '${DEPENDENCY_NAME}' at ${ref_pin} (target ${TARGET_COMMIT})."
+        echo "ref_pin=${ref_pin}" >> "$GITHUB_OUTPUT"
+        if [ "$ref_pin" = "$TARGET_COMMIT" ]; then
+          echo "match=true"  >> "$GITHUB_OUTPUT"
+        else
+          echo "match=false" >> "$GITHUB_OUTPUT"
+        fi
+
+    # ------------------------------------------------------------------
     # Step 2: Read the current mathlib pin from lake-manifest.json.
     # ------------------------------------------------------------------
     - name: Read current pin from lake-manifest.json
@@ -131,7 +259,8 @@ runs:
         echo "current_pin=$CURRENT_PIN" >> "$GITHUB_OUTPUT"
 
     # ------------------------------------------------------------------
-    # Step 3: Compare pins. If already at target, skip the build steps.
+    # Step 3: Compare pins. If already at target — either in project-dir's
+    # manifest or in the bump-PR branch's manifest — skip the build steps.
     # ------------------------------------------------------------------
     - name: Compare pins
       id: compare
@@ -140,11 +269,16 @@ runs:
         TARGET_REV: ${{ steps.fetch-snapshot.outputs.rev }}
         TARGET_COMMIT: ${{ steps.fetch-snapshot.outputs.commit }}
         CURRENT_PIN: ${{ steps.read-manifest.outputs.current_pin }}
+        REF_MATCH: ${{ steps.probe-ref.outputs.match }}
+        COMPARE_REF: ${{ inputs.branch }}
       run: |
         # Use TARGET_COMMIT (SHA) for the equality check so that tag names
         # compare correctly against the SHA stored in lake-manifest.json.
         if [ -z "$TARGET_REV" ]; then
           echo "Target commit is empty (no active entry for this query-type) — nothing to do."
+          echo "skipped=true" >> "$GITHUB_OUTPUT"
+        elif [ "${REF_MATCH:-}" = "true" ]; then
+          echo "Ref '${COMPARE_REF}' already pins the dependency at target $TARGET_REV — nothing to do."
           echo "skipped=true" >> "$GITHUB_OUTPUT"
         elif [ "$CURRENT_PIN" = "$TARGET_COMMIT" ]; then
           echo "Already at target $TARGET_REV — nothing to do."

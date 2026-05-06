@@ -715,6 +715,8 @@ runs:
     # Hard-coded: query-type=first-known-bad and skip-build=true (the FKB
     # fails to build by definition; skip-build avoids wasting CI minutes).
     # Runs only when no existing PR was found for the current FKB branch.
+    # bump-to-latest auto-disables its bump-PR-branch probe for
+    # query-type=first-known-bad, so no override is needed here.
     # ------------------------------------------------------------------
     - name: Bump lakefile to first-known-bad
       id: bump

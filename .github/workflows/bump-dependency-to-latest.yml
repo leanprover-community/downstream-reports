@@ -133,6 +133,11 @@ jobs:
           hopscotch-version: ${{ inputs.hopscotch-version }}
           query-type:        ${{ inputs.query-type }}
           skip-build:        ${{ inputs.skip-build }}
+          # Single source of truth: thread the wrapper's `branch` input to
+          # both bump-to-latest (probe target) and open-bump-pr (push
+          # target) so the pre-flight gate stays aligned with where the
+          # PR actually lives, including when the caller overrides branch.
+          branch:            ${{ inputs.branch }}
 
       - name: Open or update PR
         id: open-pr

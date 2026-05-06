@@ -20,6 +20,46 @@ that need more control.
 
 ---
 
+## Sub-daily cron cadence
+
+The actions are idempotent on unchanged input, so a downstream's `update.yml`
+can run on a sub-daily cron (e.g. `0 */2 * * *`) without producing PR / issue /
+CI noise on ticks where the snapshot hasn't moved. Two layered short-circuits
+make this safe:
+
+- **`bump-to-latest`** probes its `branch` input (the bump-PR branch) before
+  running hopscotch. If that branch's manifest already pins the dependency at
+  the snapshot's target, the action exits with `skipped=true` and never spends
+  a `lake build`. Auto-disabled for `query-type: first-known-bad` (FKB lives
+  on per-FKB-SHA branches handled by `track-incompatibility`).
+- **`open-bump-pr`** compares the local commit's tree against the remote bump
+  branch's HEAD tree. If they're identical and an open PR already points at
+  the branch, the force-push and the `gh pr edit` are both skipped (the
+  action surfaces this via `action: up-to-date`).
+
+Adoption (using the reusable wrapper):
+
+```yaml
+on:
+  schedule:
+    - cron: "0 */2 * * *"   # every two hours
+jobs:
+  bump:
+    uses: leanprover-community/downstream-reports/.github/workflows/bump-dependency-to-latest.yml@main
+```
+
+The wrapper threads its `branch` input to both `bump-to-latest`'s probe and
+`open-bump-pr`'s push, so a single source of truth for the bump-PR branch is
+maintained automatically.
+
+Adoption (composing the actions directly): pass the **same** `branch` value to
+both `bump-to-latest` and `open-bump-pr`. A mismatch silently degrades to "no
+optimization" — the probe 404s on the wrong branch and the bump runs every
+tick (correct, just wasteful). Sourcing the value from one `env:` constant is
+the recommended pattern.
+
+---
+
 ## `bump-dependency-to-latest` reusable workflow
 
 **Path:** `.github/workflows/bump-dependency-to-latest.yml`
@@ -149,6 +189,7 @@ suggested PR title, body snippet, and git commit message — pass
 | `hopscotch-version` | no | `v1.4.1` | Hopscotch release tag to download |
 | `generate-description` | no | `true` | Set to `false` to skip GitHub API calls; `pr-title`, `bump-description`, and `commit-message` will be empty |
 | `query-type` | no | `last-known-good` | Which commit to bump to: `last-known-good`, `first-known-bad`, or `last-good-release` (semver tag, e.g. `v4.13.0`) |
+| `branch` | no | `hopscotch/lkg-bump` | The bump-PR's branch — same notion as `open-bump-pr`'s `branch`. Used here as a probe target: the action reads the dependency pin from the manifest at `<github.repository>@<branch>` (via `GITHUB_TOKEN`) and, if it already matches the target, exits with `skipped=true` and never invokes hopscotch (so no `lake build`). Default matches `open-bump-pr`'s default, so the typical caller pairing the two actions gets sub-daily-cadence idempotency for free — the ~15-min lake build is skipped while the bump PR awaits merge. **Must match the value passed to `open-bump-pr`'s `branch`** — a mismatch silently degrades to "no optimization" (the probe 404s on the wrong branch and the bump runs every tick). The reusable wrapper at `.github/workflows/bump-dependency-to-latest.yml` threads its single `branch` input through to both actions for you; direct callers should source it from one place (e.g. an `env:` constant). **Auto-disabled when `query-type=first-known-bad`** (FKB targets live on per-FKB-SHA branches handled by `track-incompatibility`). A 404 / missing manifest / missing dependency is treated as "no match" so the bump runs; an unexpected API failure also defaults to no-match but emits a `::warning::` annotation so the failure shows up in the run summary. |
 
 ### Outputs
 
