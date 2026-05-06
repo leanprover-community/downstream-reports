@@ -104,18 +104,31 @@ runs:
 
     # ------------------------------------------------------------------
     # Step 1.5: Probe the LKG bump-PR branch (open-bump-pr's default
-    # `branch`) for an existing bump. If its manifest already pins the
-    # dependency at the target commit, the Compare pins step below
-    # short-circuits the entire bump — no hopscotch, no lake build. Keeps
-    # sub-daily reruns cheap when the bump PR is awaiting merge: the
-    # branch already carries the target pin, so re-deriving it on `main`
-    # every tick is pure waste.
+    # `branch`) for an existing bump. If an open PR already exists on
+    # that branch and its manifest already pins the dependency at the
+    # target commit, the Compare pins step below short-circuits the
+    # entire bump — no hopscotch, no lake build. Keeps sub-daily reruns
+    # cheap when the bump PR is awaiting merge: the branch already
+    # carries the target pin, so re-deriving it on `main` every tick is
+    # pure waste.
     #
     # The probe target is hardcoded to the `open-bump-pr` convention. A
     # caller using a non-default branch on the paired open-bump-pr step
-    # silently loses this optimization (the probe 404s on the wrong
-    # branch and the bump runs every tick) — graceful degradation, not
-    # a regression vs. the pre-optimization behaviour.
+    # silently loses this optimization (the probe finds no open PR or
+    # 404s on the wrong branch and the bump runs every tick) — graceful
+    # degradation, not a regression vs. the pre-optimization behaviour.
+    #
+    # The open-PR existence is part of the gate, not just the manifest
+    # pin. A leftover branch from a previously-closed/merged PR can
+    # outlive the PR (auto-delete-on-merge isn't always configured); if
+    # such a branch happens to pin the current target, gating only on
+    # the manifest would treat it as "bump done" and skip — but no PR
+    # is open to surface that bump, so nothing actually lands. By also
+    # requiring an open PR, we make the short-circuit equivalent to "an
+    # in-flight PR already covers this," and let the bump run otherwise
+    # so open-bump-pr can open a fresh PR (its tree-equality check
+    # correctly handles the "remote tree matches but no PR" case by
+    # falling through to push + create).
     #
     # Skipped when:
     #   - query-type is "first-known-bad" — FKB targets live on per-FKB-SHA
@@ -130,7 +143,8 @@ runs:
     # All failure paths emit no-match (so the bump runs as normal) and
     # exit 0 — the contract is "any unexpected condition → run the bump,"
     # so that a transient API blip / unfamiliar response shape /
-    # malformed manifest can never silently skip a legitimate bump.
+    # malformed manifest / missing open PR can never silently skip a
+    # legitimate bump.
     # ------------------------------------------------------------------
     - name: Probe bump-PR branch for an existing bump
       id: probe-ref
@@ -162,6 +176,30 @@ runs:
           echo "match=false" >> "$GITHUB_OUTPUT"
         }
 
+        # Gate the optimization on an open PR existing on REF. If the
+        # branch is leftover from a closed/merged PR (auto-delete isn't
+        # always on), short-circuiting on a stale pin would skip the bump
+        # without anything surfacing it as a PR. Cheap pr-list call up
+        # front avoids that, and saves a manifest fetch in the common
+        # "first run / branch deleted" case.
+        pr_err=$(mktemp)
+        if open_pr=$(gh pr list \
+            --head "${REF}" --state open \
+            --json number --jq '.[0].number // empty' 2>"$pr_err"); then
+          rm -f "$pr_err"
+        else
+          err=$(cat "$pr_err" 2>/dev/null || true)
+          rm -f "$pr_err"
+          echo "::warning::Failed to list open PRs on '${REF}'; treating as no-match. Underlying error: ${err}"
+          emit_no_match
+          exit 0
+        fi
+        if [ -z "$open_pr" ]; then
+          echo "No open PR on '${REF}' — running bump so open-bump-pr can open a fresh PR (its tree-equality check handles the existing-branch-no-PR case)."
+          emit_no_match
+          exit 0
+        fi
+
         # Capture stderr so we can distinguish "branch doesn't exist" (a
         # 404, normal — first run, or branch deleted after merge) from a
         # genuine API failure (still treated as no-match, but surfaced
@@ -177,7 +215,7 @@ runs:
           err=$(cat "$api_err" 2>/dev/null || true)
           rm -f "$api_err"
           if printf '%s' "$err" | grep -q -i 'not found\|404'; then
-            echo "Branch '${REF}' has no '${MANIFEST_PATH}' (404 — branch may not exist yet, or was just merged)."
+            echo "Branch '${REF}' has no '${MANIFEST_PATH}' (404 — branch may not exist yet, or was just merged). Note: the open-PR check above already passed, so this is unexpected; running bump to be safe."
           else
             echo "::warning::Probe of '${REF}:${MANIFEST_PATH}' failed unexpectedly; treating as no-match. Underlying error: ${err}"
           fi
