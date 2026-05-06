@@ -1,5 +1,68 @@
 #!/usr/bin/env python3
-"""Focused tests for the downstream regression workflow modules."""
+"""
+Tests for: scripts.cache, scripts.validation, scripts.select_downstream_regression_window,
+           scripts.probe_downstream_regression_window
+
+This file pre-dates the select/probe split — it was written when the
+regression workflow was a single script, and now exercises pieces of
+four production modules.  The file name is preserved (rather than
+splitting into ``test_cache.py`` / ``test_validation.py`` / etc.)
+because the existing CI invocations and documentation reference it,
+and the tests are organised into clearly-scoped classes that read
+naturally as a single suite.
+
+# NOTE: a future refactor could split this file into one test module per
+# production module.  Left consolidated for now — the class boundaries
+# below are the de-facto split:
+#   GitHubCacheScopeTests / WarmCacheTests        → cache.py
+#   InvokeToolTests / CommitPlanArtifactTests /
+#     WindowSelectionArtifactTests /
+#     ClassifyExitCodeTests / BuildSkipResultTests → validation.py
+#   TrySkipAlreadyGoodTests                       → select_downstream_regression_window.py
+#   TrySkipKnownBadBisectTests / TryCulpritProbeTests → probe_downstream_regression_window.py
+#   SkipOptimisationFlagsTests                    → DownstreamConfig + both parsers
+
+Coverage scope:
+    - Cache scope resolution (``github_cache_scope``) and environment
+      stripping (``cache_env``) — the defence-in-depth that ensures
+      hopscotch subprocesses on the self-hosted runner cannot see CI
+      secrets.
+    - ``warm_downstream_cache`` — the lake-cache warmup invoked before
+      hopscotch.
+    - Tool invocation (``invoke_tool``) — prefers a prebuilt binary,
+      falls back to ``lake exe``.
+    - Selection / commit-plan / result artifacts — round-trip
+      serialisation.
+    - Skip heuristics — ``try_skip_already_good`` (select side) and
+      ``try_skip_known_bad_bisect`` + ``run_culprit_probe`` (probe
+      side).  These are both opt-in optimisations; their CLI flags
+      and inventory flags are pinned in ``SkipOptimisationFlagsTests``.
+
+Out of scope:
+    - The hopscotch tool itself; tests mock ``run_validation_attempt``
+      where it would otherwise shell out.
+    - The cache push to Azure Blob Storage; ``warm_downstream_cache``
+      is a ``lake exe cache get`` (read), not a put.
+    - SQL backend interactions; the skip heuristics work entirely from
+      a ``DownstreamStatusRecord`` constructed in-memory by the select
+      step (no DB access from probe).
+
+Why this matters
+----------------
+The skip heuristics gate the most expensive step in the regression
+workflow — the bisect.  A wrong skip decision is a silent failure: the
+report would persist a stale culprit attribution rather than running a
+fresh bisect, and the public site would advertise a wrong FKB.  The
+``downstream_commit`` guard is the contract that makes the heuristics
+safe; ``TrySkipKnownBadBisectTests.test_returns_none_when_downstream_changed``
+is the executable form of that guard.
+
+The cache scope and ``cache_env`` tests are the defence-in-depth layer
+for the project's secret-stripping invariant: any job that runs
+hopscotch (or ``lake build``) must have no secrets in its ``env:``
+blocks.  The job boundary is the *primary* guarantee; ``cache_env``'s
+denylist in ``scripts/cache.py`` is the secondary, in-process layer.
+"""
 
 from __future__ import annotations
 

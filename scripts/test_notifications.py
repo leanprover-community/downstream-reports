@@ -1,5 +1,55 @@
 #!/usr/bin/env python3
-"""Unit tests for the notifications module (alert logic, formatting, senders)."""
+"""
+Tests for: scripts.notifications
+
+Coverage scope (~99 tests across 12 classes):
+    - ``compute_alert_actions`` — workflow-aware dispatcher.  Two
+      classes pin the regression-vs-ondemand semantics:
+      ``ComputeAlertActionsTests`` (regression: only ``new_failure`` /
+      ``recovered`` produce actions) and
+      ``ComputeAlertActionsWorkflowTests`` (ondemand: all non-error
+      states plus skipped downstreams).
+    - ``format_*_message`` — eleven message formatters, one per
+      message type the bot can emit.  Each has a dedicated test class
+      that pins every interpolated field independently.
+    - ``DryRunSender`` / ``execute_alerts`` — sender abstractions and
+      the per-action error-isolation contract (one sender failure must
+      not stop the rest).
+    - ``ALERTABLE_STATES`` — the set the regression workflow filters by.
+    - ``format_summary_message`` / ``format_error_notice_message`` —
+      summary table + error-batch formatters used by
+      ``send_summary.py``.
+    - Commit-link helpers (``_commit_link_with_title`` and the
+      tag-aware variants).
+
+Out of scope:
+    - ``ZulipSender``: requires the ``zulip`` package and a live API
+      key; instantiation is gated behind a ``RuntimeError`` if the
+      module is missing.  Production paths are exercised by hand
+      against the real Zulip in CI rather than the unit suite.
+    - ``fetch_commit_titles`` / ``fetch_tags``: HTTP calls to the
+      GitHub API; the formatters that consume their output are tested
+      with hand-built dicts in place of fetch results.
+
+Why this matters
+----------------
+Every Zulip message the bot posts is one of the formatters tested
+here.  A field silently dropped by ``format_new_failure_message``
+would mean an alert without a culprit link — operators would have to
+go fishing in the workflow logs for the SHA.  A wrong dispatch in
+``compute_alert_actions`` (regression formatter chosen for an ondemand
+run) would post the wrong language ("regression") for what is actually
+a bumping-branch validation; the workflow-selector tests are the
+contract that prevents that.
+
+# NOTE: this file uses many small ``assertIn`` calls per test rather
+# than a single structural assertion against the full message body.
+# That choice is deliberate: a structural assertion would couple the
+# tests tightly to the exact markdown layout, and we expect the
+# layout to evolve while the field interpolation contract stays
+# stable.  The cost is multi-assert tests; the benefit is that
+# layout tweaks don't trigger a wave of test churn.
+"""
 
 from __future__ import annotations
 

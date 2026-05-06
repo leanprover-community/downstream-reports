@@ -1,5 +1,52 @@
 #!/usr/bin/env python3
-"""Tests for the regression episode state machine and result aggregation."""
+"""
+Tests for: scripts.aggregate_results
+
+Coverage scope:
+    - ``apply_result`` — the episode state machine.  Every documented
+      ``(prior_state × outcome)`` transition has at least one test;
+      ``ApplyResultTests`` is the executable form of the project's
+      episode-state-machine contract.
+    - ``find_non_adjacent_endpoints`` — adjacency-invariant validator.
+    - ``_pin_crossed_fkb`` — the predicate that decides whether a
+      continuing-FAILED result opens a new episode (``NEW_FAILURE``)
+      vs. continuing the existing one (``FAILING``).
+    - ``truncate_log_text`` / ``load_culprit_log_text`` /
+      ``filter_culprit_log_text`` / ``first_bad_position`` — log /
+      window utilities used by ``render_report``.
+    - ``render_report`` — markdown rendering of the per-run report
+      (skipped section, culprit-log truncation, release tags).
+    - ``fetch_release_tags_api`` — GitHub API wrapper, mocked at the
+      HTTP layer.
+
+Out of scope:
+    - ``main()``: the CLI entry point glues argparse, backend
+      construction, and report rendering together; exercised
+      end-to-end by the regression workflow itself.
+    - ``_gh_get`` / ``fetch_commit_distances`` — thin HTTP wrappers
+      exercised transitively via ``fetch_release_tags_api`` and
+      ``_pin_crossed_fkb``.
+
+Why this matters
+----------------
+``apply_result`` is the heart of the regression contract.  A wrong
+transition silently corrupts the persisted ``DownstreamStatusRecord``,
+and from there propagates into the public snapshot, the rendered site,
+and the alert payloads.  Every transition in the matrix is therefore
+pinned by an explicit test; new transitions must come with a new test.
+
+FAILING-state boundary semantics
+--------------------------------
+During a continuing FAILING episode, a fresh bisect run (``search_mode
+== "bisect"`` with both ``last_successful_commit`` and
+``first_failing_commit`` populated) supersedes BOTH stored endpoints
+with the new bisect's adjacent pair.  This is the contract that keeps
+the persisted ``(last_known_good_commit, first_known_bad_commit)``
+adjacent on master even when the downstream commit changes and a
+fresh bisect now binds the regression to a different upstream commit.
+Pinned by ``test_failing_bisect_finds_earlier_transition_replaces_pair``;
+implemented in ``apply_result`` at aggregate_results.py:460-474.
+"""
 
 from __future__ import annotations
 
@@ -192,12 +239,23 @@ class ApplyResultTests(unittest.TestCase):
         self.assertEqual(updated.last_known_good_commit, "good_old")
 
     def test_failing_bisect_finds_earlier_transition_replaces_pair(self) -> None:
-        """Scenario: continuing FAILING and bisect identifies a different transition.
-
-        When the downstream commit changed and a fresh bisect now binds the
-        regression to an earlier upstream commit, we replace BOTH endpoints
-        with the new bisect's adjacent pair rather than keeping a stale FKB.
         """
+        When a fresh bisect during a continuing FAILING episode identifies a
+        different transition (typically because the downstream's
+        ``downstream_commit`` changed and the regression now binds to an
+        earlier upstream commit), we replace **both** endpoints with the
+        new bisect's adjacent pair rather than keeping a stale FKB.
+
+        Why this matters
+        ----------------
+        Persisting a stale FKB while the LKG advances would violate the
+        adjacency invariant that ``find_non_adjacent_endpoints`` polices —
+        the persisted (LKG, FKB) pair must always be parent/child on
+        master, and only a fresh bisect can guarantee that.  See
+        ``apply_result`` at aggregate_results.py:460-474 for the
+        implementation and inline justification.
+        """
+        # Arrange — current FAILING state with original boundary.
         current = DownstreamStatusRecord(
             last_known_good_commit="good_old",
             first_known_bad_commit="original_bad",
@@ -209,9 +267,24 @@ class ApplyResultTests(unittest.TestCase):
             last_successful_commit="new_good",
             search_mode="bisect",
         )
+
+        # Act
         updated, state = apply_result(current, result)
-        self.assertEqual(state, EpisodeState.FAILING)
-        self.assertEqual(updated.first_known_bad_commit, "new_bad")
+
+        # Assert
+        self.assertEqual(
+            state,
+            EpisodeState.FAILING,
+            msg="State stays FAILING — the episode is not new, just refined",
+        )
+        self.assertEqual(
+            updated.first_known_bad_commit,
+            "new_bad",
+            msg=(
+                "Fresh bisect supersedes the stored FKB so the persisted "
+                "(LKG, FKB) pair stays adjacent on master"
+            ),
+        )
         self.assertEqual(updated.last_known_good_commit, "new_good")
 
     # -- pin advanced past FKB: new episode --

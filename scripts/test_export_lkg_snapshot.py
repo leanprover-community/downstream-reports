@@ -1,5 +1,37 @@
 #!/usr/bin/env python3
-"""Tests for export_lkg_snapshot.py — snapshot builder and CLI."""
+"""
+Tests for: scripts.export_lkg_snapshot
+
+Coverage scope:
+    - ``build_snapshot`` — the pure builder.  Inventory + status records
+      → versioned JSON-shaped dict.  Tests pin every documented field
+      (``schema_version``, ``upstream``, ``exported_at``, ``source_run``,
+      ``downstreams[*].{repo, dependency_name, last_known_good_commit,
+      first_known_bad_commit, last_good_release, last_good_release_commit}``).
+    - ``main`` (CLI) — argv → output file.  Integration-style: writes a
+      real temp file and re-reads it.
+    - ``_fetch_source_run`` — DB lookup that resolves the regression run
+      URL embedded in the snapshot's ``source_run``.  Mocked at the
+      sqlalchemy boundary; no real DB.
+
+Out of scope:
+    - Network I/O for the inventory (the inventory is loaded from a
+      committed JSON file in CI; no fetch path).
+    - Snapshot upload to Azure Blob Storage; that lives entirely in the
+      ``publish-lkg.yml`` workflow.
+    - The runs snapshot — see ``test_export_runs_snapshot.py``.
+
+Why this matters
+----------------
+``lkg/latest.json`` is the public contract that downstream Lean
+projects' bump actions read every time they open a PR.  A wrong
+``last_known_good_commit`` field would advertise a SHA whose Azure
+olean cache is cold (the warming pipeline is the gate against this; the
+snapshot is the artefact users see).  ``schema_version`` is the
+forward-compatibility lever — pinning it here means a maintainer who
+bumps it has to update the test in lockstep, which forces them to
+think about whether existing consumers can still read the new shape.
+"""
 
 from __future__ import annotations
 
@@ -83,10 +115,27 @@ class BuildSnapshotSchemaTests(unittest.TestCase):
     """Tests for the top-level fields and schema version of build_snapshot()."""
 
     def test_schema_version_is_constant(self) -> None:
-        """Scenario: snapshot schema_version always matches SCHEMA_VERSION."""
-        snap = build_snapshot(_make_backend(), _INVENTORY, _UPSTREAM)
+        """
+        ``SCHEMA_VERSION`` is the lever that lets us evolve the snapshot
+        shape in a way downstream consumers can detect.  Pinning the
+        literal value (``1``) here means a maintainer who bumps it has
+        to update this test, which forces them to think about whether
+        existing consumers (the bump-to-latest action, the public
+        dashboard) can still read the new shape.
+        """
+        # Arrange
+        backend = _make_backend()
+
+        # Act
+        snap = build_snapshot(backend, _INVENTORY, _UPSTREAM)
+
+        # Assert
         self.assertEqual(snap["schema_version"], SCHEMA_VERSION)
-        self.assertEqual(snap["schema_version"], 1)
+        self.assertEqual(
+            snap["schema_version"],
+            1,
+            msg="Schema bumps must be deliberate; update consumers in lockstep",
+        )
 
     def test_upstream_field_matches_argument(self) -> None:
         """Scenario: upstream field reflects the caller-supplied value."""
@@ -370,12 +419,30 @@ class FetchSourceRunTests(unittest.TestCase):
         self.assertIn("99", result["run_url"])
 
     def test_returns_none_on_exception(self) -> None:
-        """Scenario: DB error is swallowed and None is returned."""
+        """
+        A DB error during ``_fetch_source_run`` is swallowed; the snapshot
+        is still emitted with ``source_run=None``.  This is intentional:
+        the snapshot's primary contract (LKG/FKB commits) is independent
+        of the source-run URL, so a transient DB hiccup should not block
+        publication.  The "broken" snapshot just loses the back-link to
+        the originating GitHub Actions run, which is recoverable on the
+        next successful export.
+        """
+        # Arrange
         from scripts.export_lkg_snapshot import _fetch_source_run
 
+        # Act
         with patch("sqlalchemy.create_engine", side_effect=RuntimeError("boom")):
             result = _fetch_source_run("postgresql://fake")
-        self.assertIsNone(result)
+
+        # Assert
+        self.assertIsNone(
+            result,
+            msg=(
+                "DB exceptions in _fetch_source_run must not propagate; "
+                "they must degrade to source_run=None so publication continues"
+            ),
+        )
 
 
 if __name__ == "__main__":

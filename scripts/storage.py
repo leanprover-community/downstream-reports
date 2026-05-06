@@ -236,6 +236,17 @@ class StorageBackend(Protocol):
         Returns ``{(downstream, downstream_commit): {...}}`` where each value
         contains at minimum: ``outcome``, ``episode_state``, ``first_known_bad``,
         ``target_commit``, ``failure_stage``, ``repo``, ``run_url``, ``job_url``.
+
+        # FIXME: this docstring does not specify the tie-break when a
+        # ``(downstream, commit)`` pair has multiple matching runs — the
+        # implementation returns the **newest** (latest ``created_at``)
+        # result, and on-demand callers depend on that ordering.  See
+        # scripts/test_storage.py::test_load_prior_results_returns_newest_when_a_pair_has_multiple_runs
+        # for the executable contract.  Update the docstring to call out
+        # newest-wins next time this function is touched.
+
+        Error outcomes are excluded — a run that errored is not a
+        conclusive prior result.
         """
         ...
 

@@ -1,10 +1,57 @@
 #!/usr/bin/env python3
-"""Tests for check_downstream_manifests.py — the regression-run watcher.
+"""
+Tests for: scripts.check_downstream_manifests
 
-The watcher's pure decision logic (`evaluate_downstream` / `build_candidates`)
-is exercised here directly with injected fetcher callables; the HTTP layer is
-covered by `InFlightSetTests` and `DispatchPayloadTests` via monkey-patched
-`_gh_request`.
+Coverage scope:
+    - ``evaluate_downstream`` — per-downstream decision logic.  Six
+      layered filters (branch unchanged → pin unchanged → no FKB →
+      compare result → in-flight set → ledger TTL); each filter has a
+      dedicated test that fires exactly that branch.
+    - ``build_candidates`` — orchestration: opt-in / enabled / no-FKB
+      pre-filters that fire before any HTTP call.
+    - ``pinned_from_manifest_payload`` — manifest-parse helper (lives
+      in ``git_ops`` but is exercised here because the watcher is its
+      only caller).
+    - ``gh_in_flight_downstreams`` / ``gh_dispatch_workflow`` — HTTP
+      layer, monkey-patched ``_gh_request``.
+    - ``main`` — orchestration of the above plus the ledger writes.
+
+Out of scope:
+    - The 12-hour scheduled regression run; the watcher is a sub-15-minute
+      hot-path service that piggybacks on top.  End-to-end behaviour is
+      asserted by the workflow itself.
+    - Real GitHub API calls.  The ``in-flight`` job-name regex
+      (``select: <name>`` / ``probe: <name>``) and the dispatch payload
+      shape are pinned against the documented API contract; if GitHub
+      changes either, the integration would break and we would catch
+      it in the deployed workflow's logs.
+
+Why this matters
+----------------
+A false-positive dispatch (the watcher fires when the downstream
+hasn't actually moved) wastes a self-hosted runner.  A false-negative
+(the watcher misses a real bump past FKB) means a downstream that just
+landed on a known-broken commit waits up to 12 hours for the next
+scheduled run to pick it up — which is exactly the gap the watcher
+exists to close.  The six-filter ladder is the contract that makes
+both kinds of error rare; each test below pins one rung of it.
+
+Test architecture note
+----------------------
+The decision logic is tested with **injected fetcher callables** rather
+than monkey-patched ``urllib`` — the agent audit flagged this as
+over-mocking.  We accept that trade-off here because the production
+HTTP layer is covered separately by ``InFlightSetTests`` /
+``DispatchPayloadTests``, and unit-testing the decision logic with
+hand-crafted lambdas keeps the cases legible.
+
+# REVIEW: ``MainOrchestrationTests._RecordingBackend`` exposes
+# ``dispatched`` and ``upserts`` attributes that are added dynamically
+# inside the test rather than declared on the test double.  This is a
+# code smell carried over from the pre-refactor file; the recording
+# backend should be promoted to a typed test double.  Left as-is to
+# avoid changing test semantics; tracked in the audit report's
+# "Flags Left in Code" section.
 """
 
 from __future__ import annotations

@@ -1,0 +1,27 @@
+[tool.pytest.ini_options]
+# The test suite lives next to the production code in scripts/.  Pytest is
+# invoked from the repo root via `python3 -m pytest scripts/`; the rootdir
+# pin keeps that working regardless of how it's launched.
+testpaths = ["scripts"]
+python_files = ["test_*.py"]
+python_classes = ["Test*", "*Tests"]
+python_functions = ["test_*"]
+
+# Markers must be registered to avoid `PytestUnknownMarkWarning`.  The
+# integration marker covers the SQLAlchemy-against-real-SQLite tests in
+# test_export_runs_snapshot.py — they spin up a fresh schema per test
+# and are noticeably slower than the in-memory unit tests.
+markers = [
+    "integration: tests that exercise SQLAlchemy ORM/SQL or real subprocesses (deselect with '-m \"not integration\"')",
+    "slow: marks tests that take more than 1s in aggregate (deselect with '-m \"not slow\"')",
+    "smoke: minimal set of tests that verify basic system health",
+]
+
+# Treat warnings as errors so docstring-stale or import-deprecation issues
+# surface in CI rather than scrolling past in the test summary.  The
+# explicit `default::` filter for ResourceWarning lets tempfile cleanup
+# noise through (some platforms emit it from `tempfile.TemporaryDirectory`
+# on interpreter shutdown, unrelated to test correctness).
+filterwarnings = [
+    "default::ResourceWarning",
+]

@@ -21,7 +21,17 @@ WARM_STATUSES = frozenset({"already_warm", "warmed"})
 
 
 def collect_warm_shas(summary: list[dict]) -> list[str]:
-    """Return the deduplicated SHAs whose status is terminal-warm."""
+    """Return the deduplicated SHAs whose status is terminal-warm.
+
+    # FIXME: this docstring is incomplete — the implementation also
+    # silently skips entries whose ``sha`` field is missing or empty
+    # (defensive behaviour against malformed summary rows from the
+    # warm-mathlib-cache.yml shell-level summary builder).  See
+    # scripts/test_record_warm_shas.py::TestCollectWarmShasMissingSha
+    # for the executable form of that contract.  Update the docstring
+    # to spell the silent-skip out the next time this function is
+    # touched.
+    """
     seen: set[str] = set()
     out: list[str] = []
     for entry in summary:

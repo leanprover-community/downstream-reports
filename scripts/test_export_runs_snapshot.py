@@ -1,5 +1,44 @@
 #!/usr/bin/env python3
-"""Tests for export_runs_snapshot.py — snapshot builder, CLI, and SQL query."""
+"""
+Tests for: scripts.export_runs_snapshot
+
+Coverage scope:
+    - ``build_runs_snapshot`` — pure builder.  ``LatestRunRecord`` rows
+      + inventory → ``runs/latest.json``-shaped dict.  Pins every
+      documented field (``schema_version``, ``upstream``,
+      ``exported_at``, ``source_run``, plus per-downstream
+      ``run_id``, ``run_url``, ``job_url``, ``downstream_commit``,
+      ``reported_at``, ``culprit_log_artifact_url``).
+    - ``main`` (CLI) — argv → output file; covers SQL-vs-dry-run
+      backend dispatch, including the contract that ``dry-run`` never
+      issues a SQL query.
+    - ``_fetch_source_run`` — the same DB lookup as in
+      ``export_lkg_snapshot``, but pointed at the runs schema.
+    - ``LoadLatestRunPerDownstream`` — integration tests against an
+      in-memory SQLite database.  These tests are
+      ``@pytest.mark.integration`` so the unit tick can deselect them.
+
+Out of scope:
+    - Snapshot upload to Azure Blob Storage; lives in ``publish-lkg.yml``.
+    - The LKG snapshot — see ``test_export_lkg_snapshot.py``.
+    - SqlBackend's other methods (``record_warm_shas``, manifest watcher
+      ledger) — exercised in their respective workflow's unit tests.
+
+Why this matters
+----------------
+``runs/latest.json`` is the second public artefact (alongside
+``lkg/latest.json``) consumed by the ``open-incompatibility-issue``
+composite action.  It carries the back-link to the GitHub Actions run
+and the precise downstream commit the regression was confirmed on, so
+issues opened on consuming repos can deep-link to the failing job log.
+A field silently dropped here means the issue body loses its
+provenance link — the snapshot test pins each field so that drift is
+caught at unit-test time rather than visible in stale issue bodies.
+
+The ``LoadLatestRunPerDownstreamTests`` class spins up real SQLAlchemy
+ORM tables in an in-memory SQLite database; this is the only place in
+the unit suite where the SQL query side of ``SqlBackend`` is exercised.
+"""
 
 from __future__ import annotations
 
@@ -399,6 +438,14 @@ class FetchSourceRunTests(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 
+# Integration tier: real SQLAlchemy + in-memory SQLite.  The
+# ``integration`` marker lets a fast unit-only run deselect via
+# ``pytest -m "not integration"``; the default ``pytest scripts/``
+# invocation still includes them.
+import pytest
+
+
+@pytest.mark.integration
 class LoadLatestRunPerDownstreamTests(unittest.TestCase):
     """End-to-end test of the SQL helper against an in-memory SQLite DB."""
 
