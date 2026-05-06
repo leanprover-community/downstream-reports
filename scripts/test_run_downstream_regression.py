@@ -3,24 +3,18 @@
 Tests for: scripts.cache, scripts.validation, scripts.select_downstream_regression_window,
            scripts.probe_downstream_regression_window
 
-This file pre-dates the select/probe split — it was written when the
-regression workflow was a single script, and now exercises pieces of
-four production modules.  The file name is preserved (rather than
-splitting into ``test_cache.py`` / ``test_validation.py`` / etc.)
-because the existing CI invocations and documentation reference it,
-and the tests are organised into clearly-scoped classes that read
-naturally as a single suite.
+This file groups tests for the four production modules that together
+implement the regression workflow's select-and-probe pipeline.  Each
+test class is scoped to one module:
 
-# NOTE: a future refactor could split this file into one test module per
-# production module.  Left consolidated for now — the class boundaries
-# below are the de-facto split:
-#   GitHubCacheScopeTests / WarmCacheTests        → cache.py
-#   InvokeToolTests / CommitPlanArtifactTests /
-#     WindowSelectionArtifactTests /
-#     ClassifyExitCodeTests / BuildSkipResultTests → validation.py
-#   TrySkipAlreadyGoodTests                       → select_downstream_regression_window.py
-#   TrySkipKnownBadBisectTests / TryCulpritProbeTests → probe_downstream_regression_window.py
-#   SkipOptimisationFlagsTests                    → DownstreamConfig + both parsers
+    GitHubCacheScopeTests / WarmCacheTests           → cache.py
+    InvokeToolTests / CommitPlanArtifactTests /
+      WindowSelectionArtifactTests /
+      ClassifyExitCodeTests / BuildSkipResultTests   → validation.py
+    TrySkipAlreadyGoodTests                          → select_downstream_regression_window.py
+    TrySkipKnownBadBisectTests /
+      TryCulpritProbeTests                           → probe_downstream_regression_window.py
+    SkipOptimisationFlagsTests                       → DownstreamConfig + both parsers
 
 Coverage scope:
     - Cache scope resolution (``github_cache_scope``) and environment

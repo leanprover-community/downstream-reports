@@ -38,12 +38,13 @@ both kinds of error rare; each test below pins one rung of it.
 
 Test architecture note
 ----------------------
-The decision logic is tested with **injected fetcher callables** rather
-than monkey-patched ``urllib`` — the audit flagged this as over-mocking.
-We accept that trade-off here because the production HTTP layer is
-covered separately by ``InFlightSetTests`` / ``DispatchPayloadTests``,
-and unit-testing the decision logic with hand-crafted lambdas keeps the
-cases legible.
+The decision logic is tested with **injected fetcher callables**: each
+``EvaluateDownstreamTests`` test passes hand-crafted ``fetch_*`` lambdas
+to ``evaluate_downstream``.  This keeps each filter rung legible as a
+table — input fixtures in, expected ``Candidate`` (or ``None``) out —
+without coupling the test to ``urllib``.  The production HTTP layer is
+covered separately by ``InFlightSetTests`` and ``DispatchPayloadTests``,
+which patch the module's ``_gh_request`` wrapper directly.
 
 ``MainOrchestrationTests`` uses ``_RecordingBackend`` as a typed
 in-memory test double that records both ledger upserts and workflow

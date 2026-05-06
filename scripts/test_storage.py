@@ -15,11 +15,10 @@ Out of scope:
     - ``SqlBackend`` (PostgreSQL): exercised in CI by the regression
       workflow itself; integration coverage of the SQL load path is in
       ``test_export_runs_snapshot.LoadLatestRunPerDownstreamTests`` (in-
-      memory SQLite).  The other SqlBackend methods —
-      ``load_known_warm_shas``, ``record_warm_shas``,
-      ``load_manifest_watcher_ledger``, ``upsert_manifest_watcher_ledger``
-      — are not unit-tested here.  See "Flags Left in Code" in the
-      audit report.
+      memory SQLite).  ``load_known_warm_shas``, ``record_warm_shas``,
+      ``load_manifest_watcher_ledger``, and
+      ``upsert_manifest_watcher_ledger`` rely on the SqlBackend
+      implementation and are not exercised by the unit suite.
     - ``DryRunBackend``: by design it has no state to assert against; it
       only prints.
 
