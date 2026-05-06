@@ -22,27 +22,21 @@ Loads the latest per-downstream state from the database and sends a compact Mark
 
 See [`docs/workflows.md`](docs/workflows.md) for a detailed description of the scheduled validation and summary workflows, including job structure, window selection algorithm, and Zulip configuration.
 
-## Reusable actions and workflows for downstream repos
+## Composite actions for downstream repos
 
-This repo publishes a reusable workflow and three composite GitHub Actions that
-downstream Lean projects can use to consume the LKG data and automate mathlib
-bumps:
+This repo publishes four composite GitHub Actions that downstream Lean
+projects can use to consume the LKG data and automate mathlib bumps:
 
-| Name | Kind | Description |
-|------|------|-------------|
-| [`bump-dependency-to-latest`](.github/workflows/bump-dependency-to-latest.yml) | Reusable workflow | Zero-boilerplate scheduled bumping — the simplest option. |
-| [`bump-to-latest`](.github/actions/bump-to-latest) | Composite action | Looks up the target commit (LKG or FKB), checks the current pin, and runs `hopscotch` to bump and build. |
-| [`open-bump-pr`](.github/actions/open-bump-pr) | Composite action | Commits working-tree changes and creates or updates a PR. |
-| [`query-latest`](.github/actions/query-latest) | Composite action | Lightweight read-only lookup — returns the target commit for a downstream without cloning or building. |
+| Name | Description |
+|------|-------------|
+| [`bump-to-latest`](.github/actions/bump-to-latest) | Looks up the target commit (LKG or FKB), checks the current pin, and runs `hopscotch` to bump and build. |
+| [`open-bump-pr`](.github/actions/open-bump-pr) | Commits working-tree changes and creates or updates a PR. |
+| [`query-latest`](.github/actions/query-latest) | Lightweight read-only lookup — returns the target commit for a downstream without cloning or building. |
+| [`track-incompatibility`](.github/actions/track-incompatibility) | Opens / maintains a persistent issue and (optionally) a fix PR while a `first-known-bad` regression is active; closes both when it clears. |
 
-See [`docs/actions.md`](docs/actions.md) for the full input/output reference and
-example workflows.
-
-> **SHA pinning:** the reusable workflow (`bump-dependency-to-latest`) internally
-> pins the composite actions to `@main`, so callers cannot override their
-> version. If you need to pin to a specific SHA for security or stability, use
-> the composite actions directly (Options 2–4 above) and specify the SHA in each
-> `uses:` line, e.g. `uses: leanprover-community/downstream-reports/.github/actions/bump-to-latest@<sha>`.
+See [`docs/actions.md`](docs/actions.md) for the full input/output reference,
+the recommended **canonical example** that combines them all, and notes on
+running the workflow on a sub-daily cron.
 
 ## Keeping your downstream up to date with the public last-known-good (LKG) data
 
@@ -59,56 +53,15 @@ commit may no longer build cleanly against its current state. This is why
 You can consume the LKG data from your own repo in several ways depending on how
 much automation you want.
 
-### Option 1 — Reusable workflow (simplest)
+### Option 1 — Bump and open a PR (recommended)
 
-The `bump-dependency-to-latest` reusable workflow looks up your downstream's current
-LKG commit, runs `hopscotch` to bump and verify the build, and opens (or updates)
-a single PR with an auto-generated title and description. If the project is
-already at the LKG commit the run is a no-op; if the build fails the run exits
-without touching any PR.
-
-**This is the right choice if:**
-- You want a scheduled bump PR with no custom logic
-- The defaults (one open PR, force-pushed branch, auto-generated message) suit you
-
-**Use a different option if:**
-- You need to run extra steps inside the bump job — e.g. post-bump checks, notifications on failure, or custom commit logic (use Option 2)
-- You want to push the bump directly to a branch instead of opening a PR (use Option 3)
-
-```yaml
-name: Bump mathlib to latest
-
-on:
-  schedule:
-    - cron: "0 18 * * *"   # run daily; adjust to taste
-  workflow_dispatch:
-
-jobs:
-  bump:
-    uses: leanprover-community/downstream-reports/.github/workflows/bump-dependency-to-latest.yml@main
-    permissions:
-      contents: write
-      pull-requests: write
-```
-
-Optional inputs — pass any of these under `with:` if you need to customise:
-
-| Input | Default | Description |
-|-------|---------|-------------|
-| `branch` | `hopscotch/lkg-bump` | Branch name for the bump PR |
-| `base` | repo default branch | Base branch for the PR |
-| `labels` | — | Comma-separated labels to apply (e.g. `"dependencies"`) |
-| `dependency-name` | `mathlib` | Dependency name in the lakefile |
-| `hopscotch-version` | `v1.4.1` | Hopscotch release tag |
-| `commit-type` | `last-known-good` | Which commit to bump to: `last-known-good` or `first-known-bad` |
-
-### Option 2 — Composite actions (custom workflow)
-
-Use `bump-to-latest` followed by `open-bump-pr` directly when you need extra steps
-— for example, running your own checks between the build and the PR, or
-combining the bump with other automation. The action builds against the target
-commit, and if successful it opens (or updates) a PR in your repo. The PR is
-kept to a single commit and its description is updated on every run.
+Compose `bump-to-latest` + `open-bump-pr` to bump the dependency, build to
+verify, and open (or update) a single PR. If the project is already at the LKG
+commit the run is a no-op; if the build fails the run exits without touching
+any PR. The actions are idempotent on unchanged input, so this can run on a
+sub-daily cron — see [`docs/actions.md`](docs/actions.md) for the full
+**canonical example** (which adds `track-incompatibility` for FKB tracking)
+and the sub-daily cadence notes.
 
 ```yaml
 name: Bump mathlib to latest
@@ -143,7 +96,7 @@ jobs:
           commit-message: ${{ steps.bump.outputs.commit-message }}
 ```
 
-### Option 3 — Bump and push directly
+### Option 2 — Bump and push directly
 
 If you prefer to commit the bump straight to your default branch (no PR), use
 `bump-to-latest` alone and then push:
@@ -165,7 +118,7 @@ If you prefer to commit the bump straight to your default branch (no PR), use
           git push
 ```
 
-### Option 4 — Just fetch the target commit
+### Option 3 — Just fetch the target commit
 
 Use `query-latest` to retrieve the current LKG or FKB commit SHA without cloning,
 building, or touching your working tree. This is the right starting point for

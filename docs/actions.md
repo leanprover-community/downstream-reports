@@ -1,15 +1,20 @@
-# Reusable workflows and composite actions
+# Composite actions
 
-This repo publishes two reusable workflows and four composite actions for
-downstream Lean projects to consume.
+This repo publishes four composite actions for downstream Lean projects to
+consume:
 
-For the common case — a scheduled job that bumps a dependency and opens a PR
-— use the `bump-dependency-to-latest` reusable workflow directly (see below).
-For tracking active incompatibilities in a persistent issue **and** opening a
-ready-to-work fix PR, use `track-incompatibility` (the recommended option). 
-The composite actions (`bump-to-latest`,
-`open-bump-pr`, `query-latest`, `track-incompatibility`) are the building blocks for custom workflows
-that need more control.
+- `bump-to-latest` — read the snapshot's target commit and bump the dependency
+  pin (with a `lake build` sanity check).
+- `open-bump-pr` — commit working-tree changes onto a dedicated branch and
+  create or update a PR.
+- `query-latest` — lightweight read-only lookup of the snapshot.
+- `track-incompatibility` — open and maintain a persistent GitHub issue (and
+  optionally a fix PR) tracking the current `first-known-bad` regression.
+
+For the common case — a scheduled job that bumps a dependency, opens a PR, and
+tracks any incompatibility — compose `bump-to-latest` + `open-bump-pr` plus a
+`track-incompatibility` job. See the [canonical example](#canonical-example)
+below.
 
 > **Extensibility note.** Today the actions are used exclusively for the
 > mathlib upstream. The intent is to keep them general enough to support other
@@ -20,77 +25,26 @@ that need more control.
 
 ---
 
-## `bump-dependency-to-latest` reusable workflow
+## Canonical example
 
-**Path:** `.github/workflows/bump-dependency-to-latest.yml`
-
-Wraps `bump-to-latest` + `open-bump-pr` into a single callable unit. This is the
-recommended starting point for downstreams that just want a scheduled bump PR
-with no boilerplate.
-
-### Minimal usage
+A two-job workflow that keeps the dependency moving, opens an LKG-bump PR while
+no incompatibility is reported, and maintains a persistent tracking issue +
+fix PR while one is. This is the pattern FLT runs in production.
 
 ```yaml
-name: Bump mathlib to latest
+name: Update Dependencies
 
 on:
   schedule:
-    - cron: "0 18 * * *"   # adjust to taste
+    - cron: "0 */2 * * *"   # see "Sub-daily cron cadence" below
   workflow_dispatch:
 
-jobs:
-  bump:
-    uses: leanprover-community/downstream-reports/.github/workflows/bump-dependency-to-latest.yml@main
-    permissions:
-      contents: write
-      pull-requests: write
-```
+env:
+  # Single source of truth for the bump-PR branch — referenced both
+  # by open-bump-pr's `branch` and by the close-LKG step below.
+  # bump-to-latest hardcodes this same value internally.
+  LKG_BRANCH: hopscotch/lkg-bump
 
-The `downstream` lookup defaults to `github.repository` (matched as a repo
-slug), so no inputs are required as long as the repo is registered in the
-inventory.
-
-### Inputs
-
-| Input | Default | Description |
-|-------|---------|-------------|
-| `branch` | `hopscotch/lkg-bump` | Branch name for the bump PR. Force-pushed on every run. |
-| `base` | repo default branch | Base branch for the PR |
-| `labels` | — | Comma-separated labels to apply to the PR |
-| `dependency-name` | `mathlib` | Dependency name in the lakefile |
-| `hopscotch-version` | `v1.4.1` | Hopscotch release tag to download |
-| `query-type` | `last-known-good` | Which commit to bump to: `last-known-good` or `first-known-bad` |
-
-### Outputs
-
-| Output | Description |
-|--------|-------------|
-| `pr-number` | PR number (empty when `action=noop`; populated for `created` / `updated` / `up-to-date`) |
-| `pr-url` | PR URL (empty when `action=noop`; populated for `created` / `updated` / `up-to-date`) |
-| `action` | `"created"`, `"updated"`, `"up-to-date"` (remote branch already had the same tree with an open PR — push and edit skipped), or `"noop"` |
-| `updated` | `"true"` if hopscotch successfully bumped the project |
-| `skipped` | `"true"` if the project was already at the target commit |
-| `build-failed` | `"true"` if hopscotch ran but the build failed |
-
-### Customised example
-
-```yaml
-jobs:
-  bump:
-    uses: leanprover-community/downstream-reports/.github/workflows/bump-dependency-to-latest.yml@main
-    permissions:
-      contents: write
-      pull-requests: write
-    with:
-      branch: automation/lkg-bump
-      labels: dependencies
-```
-
-**With a GitHub App token** (to open PRs as a bot account rather than `github-actions[bot]`):
-
-Use the composite actions directly so the token stays within one job — GitHub masks step outputs automatically, but job outputs are plaintext and cannot safely carry a token.
-
-```yaml
 jobs:
   bump:
     runs-on: ubuntu-latest
@@ -98,31 +52,88 @@ jobs:
       contents: write
       pull-requests: write
     steps:
-      - uses: actions/create-github-app-token@v1
-        id: app-token
-        with:
-          app-id: ${{ vars.MY_BOT_APP_ID }}
-          private-key: ${{ secrets.MY_BOT_PRIVATE_KEY }}
-
       - uses: actions/checkout@v6
-        with:
-          token: ${{ steps.app-token.outputs.token }}
 
-      - name: Bump to latest
+      # Skip the LKG bump while an incompatibility is reported — reviewer
+      # attention should focus on the FKB fix PR opened by the open-issue
+      # job below. The two combined keep at most one open bump PR at a
+      # time: the routine LKG bump (no regression) or the FKB fix PR.
+      - name: Check whether an incompatibility is reported
+        id: fkb
+        uses: leanprover-community/downstream-reports/.github/actions/query-latest@main
+        with:
+          query-type: first-known-bad
+
+      - name: Bump to latest mathlib
         id: bump
+        if: steps.fkb.outputs.commit == ''
         uses: leanprover-community/downstream-reports/.github/actions/bump-to-latest@main
 
-      - name: Open PR
-        if: steps.bump.outputs.updated == 'true'
+      - name: Open or update PR
+        if: steps.fkb.outputs.commit == '' && steps.bump.outputs.updated == 'true'
         uses: leanprover-community/downstream-reports/.github/actions/open-bump-pr@main
         with:
-          title:           ${{ steps.bump.outputs.pr-title }}
-          message:         ${{ steps.bump.outputs.bump-description }}
-          commit-message:  ${{ steps.bump.outputs.commit-message }}
-          token:           ${{ steps.app-token.outputs.token }}
-          git-user-name:   my-bot[bot]
-          git-user-email:  ${{ vars.MY_BOT_APP_ID }}+my-bot[bot]@users.noreply.github.com
+          branch:         ${{ env.LKG_BRANCH }}
+          title:          ${{ steps.bump.outputs.pr-title }}
+          message:        ${{ steps.bump.outputs.bump-description }}
+          commit-message: ${{ steps.bump.outputs.commit-message }}
+
+  open-issue:
+    runs-on: ubuntu-latest
+    needs: bump   # so the LKG bump PR is created first; the FKB PR (if any) gets a higher number
+    permissions:
+      issues: write
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Open or update incompatibility issue
+        id: track
+        uses: leanprover-community/downstream-reports/.github/actions/track-incompatibility@main
+
+      # When an FKB fix PR is open, close any leftover LKG bump PR so
+      # only one bump PR is open at a time.
+      - name: Close LKG bump PR when an FKB fix PR is open
+        if: steps.track.outputs.pr-action == 'created' || steps.track.outputs.pr-action == 'noop-existing'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FKB_PR: ${{ steps.track.outputs.pr-number }}
+        run: |
+          set -euo pipefail
+          lkg_pr=$(gh pr list --state open --head "$LKG_BRANCH" --json number --jq '.[0].number // empty')
+          if [ -z "$lkg_pr" ]; then exit 0; fi
+          gh pr close "$lkg_pr" --comment "Closing in favor of #${FKB_PR}: an incompatibility is currently reported, so maintainer attention should go to the fix PR pinned at the first-known-bad commit. A new last-known-good bump PR will be opened automatically once the incompatibility is resolved."
 ```
+
+For just the LKG bump (no `track-incompatibility`, no close-LKG step), drop the
+`open-issue` job and the `query-latest fkb` gate — the resulting workflow is
+three steps in one job.
+
+---
+
+## Sub-daily cron cadence
+
+The actions are idempotent on unchanged input, so the workflow above can run on
+a sub-daily cron (e.g. `"0 */2 * * *"`, every two hours) without producing
+PR / issue / CI noise on ticks where the snapshot hasn't moved. Two layered
+short-circuits make this safe:
+
+- **`bump-to-latest`** probes the LKG bump-PR branch (`hopscotch/lkg-bump`,
+  matching `open-bump-pr`'s default) before running hopscotch. If that branch's
+  manifest already pins the dependency at the snapshot's target, the action
+  exits with `skipped=true` and never spends a `lake build` (~15 min).
+  Auto-disabled for `query-type: first-known-bad` (FKB lives on per-FKB-SHA
+  branches handled by `track-incompatibility`).
+- **`open-bump-pr`** compares the local commit's tree against the remote bump
+  branch's HEAD tree. If they're identical and an open PR already points at
+  the branch, the force-push and the `gh pr edit` are both skipped (the
+  action surfaces this via `action: up-to-date`).
+
+A caller using a non-default branch on `open-bump-pr` silently loses the
+`bump-to-latest` optimization: the probe 404s on `hopscotch/lkg-bump` and the
+bump runs every tick. That's correct (no false skips) but wasteful at sub-daily
+cadence — stick with the default branch name unless you have a reason not to.
 
 ---
 
@@ -335,36 +346,14 @@ downstream repo can use it with no inputs at all.
 
 ---
 
-## Typical workflows
+## Common patterns
 
-**Simplest — reusable workflow (no boilerplate):**
+The [canonical example](#canonical-example) above covers the recommended
+two-job pattern. The snippets below show smaller pieces.
 
-```yaml
-name: Bump mathlib to latest
-
-on:
-  schedule:
-    - cron: "0 18 * * *"
-  workflow_dispatch:
-
-jobs:
-  bump:
-    uses: leanprover-community/downstream-reports/.github/workflows/bump-dependency-to-latest.yml@main
-    permissions:
-      contents: write
-      pull-requests: write
-```
-
-**Custom — composite actions (when you need extra steps):**
+**Just the LKG bump (no incompatibility tracking):**
 
 ```yaml
-name: Bump mathlib to latest
-
-on:
-  schedule:
-    - cron: "0 18 * * *"
-  workflow_dispatch:
-
 permissions:
   contents: write
   pull-requests: write
@@ -378,7 +367,6 @@ jobs:
       - name: Bump to latest
         id: bump
         uses: leanprover-community/downstream-reports/.github/actions/bump-to-latest@main
-        # no inputs needed — defaults to github.repository matched by repo slug
 
       - name: Open PR
         if: steps.bump.outputs.updated == 'true'
@@ -395,7 +383,6 @@ jobs:
       - name: Get latest commit
         id: latest
         uses: leanprover-community/downstream-reports/.github/actions/query-latest@main
-        # no inputs needed — defaults to github.repository
 
       - run: echo "LKG is ${{ steps.latest.outputs.commit }}"
 ```
@@ -415,23 +402,6 @@ jobs:
 **Bump to the latest compatible semver release tag (e.g. `v4.13.0`):**
 
 ```yaml
-# Bump to the latest compatible mathlib release tag (rather than a raw commit).
-# The resulting lakefile pins `inputRev` to a human-readable tag like "v4.13.0".
-
-jobs:
-  bump:
-    uses: leanprover-community/downstream-reports/.github/workflows/bump-dependency-to-latest.yml@main
-    permissions:
-      contents: write
-      pull-requests: write
-    with:
-      query-type: last-good-release
-      branch: automation/release-bump
-```
-
-Or using the composite actions directly for a read-only lookup:
-
-```yaml
       - name: Look up latest compatible release
         id: release
         uses: leanprover-community/downstream-reports/.github/actions/query-latest@main
@@ -447,3 +417,39 @@ When `query-type: last-good-release`:
 - `rev` is a **tag name** (e.g. `v4.13.0`) that `hopscotch dep` and Lake's `inputRev` both accept directly.
 - `commit` is the resolved SHA, for consumers that need byte-equality comparison against the `rev` field in `lake-manifest.json`.
 - Both fields are empty when no semver release precedes the downstream's current LKG.
+
+**With a GitHub App token** (to open PRs as a bot account rather than `github-actions[bot]`):
+
+```yaml
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/create-github-app-token@v1
+        id: app-token
+        with:
+          app-id: ${{ vars.MY_BOT_APP_ID }}
+          private-key: ${{ secrets.MY_BOT_PRIVATE_KEY }}
+
+      - uses: actions/checkout@v6
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+
+      - name: Bump to latest
+        id: bump
+        uses: leanprover-community/downstream-reports/.github/actions/bump-to-latest@main
+
+      - name: Open PR
+        if: steps.bump.outputs.updated == 'true'
+        uses: leanprover-community/downstream-reports/.github/actions/open-bump-pr@main
+        with:
+          title:           ${{ steps.bump.outputs.pr-title }}
+          message:         ${{ steps.bump.outputs.bump-description }}
+          commit-message:  ${{ steps.bump.outputs.commit-message }}
+          token:           ${{ steps.app-token.outputs.token }}
+          git-user-name:   my-bot[bot]
+          git-user-email:  ${{ vars.MY_BOT_APP_ID }}+my-bot[bot]@users.noreply.github.com
+```
