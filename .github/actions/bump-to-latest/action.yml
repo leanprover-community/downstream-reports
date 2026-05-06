@@ -105,8 +105,8 @@ runs:
     # ------------------------------------------------------------------
     # Step 1.5: If an open PR on the LKG bump branch already pins the
     # dependency at the target, short-circuit the bump (Compare pins
-    # below). Avoids ~15 min of redundant lake build on sub-daily reruns
-    # while a bump PR awaits merge.
+    # below). Avoids redundant lake builds on sub-daily reruns while a
+    # bump PR awaits merge.
     #
     # Skipped for query-type=first-known-bad — FKB lives on per-SHA
     # branches handled by track-incompatibility, and probing the LKG

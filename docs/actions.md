@@ -118,9 +118,9 @@ short-circuits make this safe:
 - **`bump-to-latest`** probes the LKG bump-PR branch (`hopscotch/lkg-bump`,
   matching `open-bump-pr`'s default) before running hopscotch. If that branch's
   manifest already pins the dependency at the snapshot's target, the action
-  exits with `skipped=true` and never spends a `lake build` (~15 min).
-  Auto-disabled for `query-type: first-known-bad` (FKB lives on per-FKB-SHA
-  branches handled by `track-incompatibility`).
+  exits with `skipped=true` and never invokes `lake build`. Auto-disabled for
+  `query-type: first-known-bad` (FKB lives on per-FKB-SHA branches handled
+  by `track-incompatibility`).
 - **`open-bump-pr`** compares the local commit's tree against the remote bump
   branch's HEAD tree. If they're identical and an open PR already points at
   the branch, the force-push and the `gh pr edit` are both skipped (the
