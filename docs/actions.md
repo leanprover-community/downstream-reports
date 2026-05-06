@@ -27,9 +27,12 @@ below.
 
 ## Canonical example
 
-A two-job workflow that keeps the dependency moving, opens an LKG-bump PR while
-no incompatibility is reported, and maintains a persistent tracking issue +
-fix PR while one is. This is the pattern FLT runs in production.
+A two-job workflow that opens an LKG-bump PR (so the project can advance to
+the latest compatible dependency commit at any time) and, when a regression
+is reported, a separate fix PR pinned at the FKB (so the breaking change
+can be worked on in parallel). The two PRs live on different branches and
+don't conflict — the LKG PR is mergeable immediately to keep the project
+moving while the fix lands later.
 
 ```yaml
 name: Update Dependencies
@@ -38,10 +41,6 @@ on:
   schedule:
     - cron: "0 */2 * * *"   # see "Sub-daily cron cadence" below
   workflow_dispatch:
-
-env:
-  # Shared between open-bump-pr's `branch` and the close-LKG step.
-  LKG_BRANCH: hopscotch/lkg-bump
 
 jobs:
   bump:
@@ -52,31 +51,20 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      # Skip the LKG bump while a regression is active — reviewer
-      # attention should focus on the FKB fix PR (open-issue job below).
-      - name: Check whether an incompatibility is reported
-        id: fkb
-        uses: leanprover-community/downstream-reports/.github/actions/query-latest@main
-        with:
-          query-type: first-known-bad
-
       - name: Bump to latest mathlib
         id: bump
-        if: steps.fkb.outputs.commit == ''
         uses: leanprover-community/downstream-reports/.github/actions/bump-to-latest@main
 
       - name: Open or update PR
-        if: steps.fkb.outputs.commit == '' && steps.bump.outputs.updated == 'true'
+        if: steps.bump.outputs.updated == 'true'
         uses: leanprover-community/downstream-reports/.github/actions/open-bump-pr@main
         with:
-          branch:         ${{ env.LKG_BRANCH }}
           title:          ${{ steps.bump.outputs.pr-title }}
           message:        ${{ steps.bump.outputs.bump-description }}
           commit-message: ${{ steps.bump.outputs.commit-message }}
 
   open-issue:
     runs-on: ubuntu-latest
-    needs: bump   # LKG PR is created first; the FKB PR (if any) gets a higher number
     permissions:
       issues: write
       contents: write
@@ -84,27 +72,15 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - name: Open or update incompatibility issue
-        id: track
+      - name: Open or update incompatibility issue (and fix PR)
         uses: leanprover-community/downstream-reports/.github/actions/track-incompatibility@main
-
-      # `pr-number` is populated exactly when an FKB fix PR is open;
-      # checking it rather than enumerating `pr-action` values keeps
-      # this forward-compatible.
-      - name: Close LKG bump PR when an FKB fix PR is open
-        if: steps.track.outputs.pr-number != ''
-        env:
-          GH_TOKEN: ${{ github.token }}
-          FKB_PR: ${{ steps.track.outputs.pr-number }}
-        run: |
-          set -euo pipefail
-          lkg_pr=$(gh pr list --state open --head "$LKG_BRANCH" --json number --jq '.[0].number // empty')
-          if [ -z "$lkg_pr" ]; then exit 0; fi
-          gh pr close "$lkg_pr" --comment "Closing in favor of #${FKB_PR}: an incompatibility is currently reported, so maintainer attention should go to the fix PR pinned at the first-known-bad commit. A new last-known-good bump PR will be opened automatically once the incompatibility is resolved."
 ```
 
-For just the LKG bump (no incompatibility tracking), drop the `open-issue` job
-and the `query-latest fkb` gate.
+For just the LKG bump (no incompatibility tracking), drop the `open-issue`
+job. To suppress the LKG PR while a regression is active (so the only open
+PR is the FKB fix one), gate the `bump` job on `query-latest`'s
+`first-known-bad` output and add a step that closes the LKG PR when
+`track-incompatibility`'s `pr-number` output is non-empty.
 
 ---
 
