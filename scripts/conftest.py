@@ -67,6 +67,55 @@ import datetime as _dt
 FIXED_NOW = _dt.datetime(2026, 5, 5, 12, 0, 0, tzinfo=_dt.timezone.utc)
 DEFAULT_LEDGER_TTL = _dt.timedelta(hours=6)
 
+# ----------------------------------------------------------------------
+# Skip-heuristic test fixtures.  Both
+# ``test_select_downstream_regression_window`` and
+# ``test_probe_downstream_regression_window`` exercise heuristics that
+# operate on a ``WindowSelection`` for a single downstream; the helpers
+# below construct minimal-but-valid instances so each test only spells
+# out the fields its scenario varies.
+# ----------------------------------------------------------------------
+
+import sys as _sys
+from pathlib import Path as _Path
+
+# Ensure the repo root is on sys.path so ``scripts.*`` imports work when
+# pytest is invoked from anywhere in the tree.
+_sys.path.insert(0, str(_Path(__file__).resolve().parent.parent))
+
+from scripts.models import DownstreamConfig, WindowSelection
+
+PHYSLIB_CONFIG = DownstreamConfig(
+    name="physlib",
+    repo="leanprover-community/physlib",
+    default_branch="master",
+)
+
+
+def make_selection(**overrides) -> WindowSelection:
+    """Build a ``WindowSelection`` with sensible skip-heuristic defaults.
+
+    What state it provides
+    ----------------------
+    A selection for ``physlib`` against ``master``, with all four
+    SHA-shaped fields populated using stable ``"t"*40`` / ``"d"*40`` /
+    ``"p"*40`` placeholders.  Each test passes ``**overrides`` to vary
+    only the fields its scenario cares about — the rest stay stable so
+    the test reads as the diff between baseline and scenario.
+    """
+    defaults = dict(
+        downstream="physlib",
+        repo="leanprover-community/physlib",
+        default_branch="master",
+        upstream_ref="master",
+        target_commit="t" * 40,
+        downstream_commit="d" * 40,
+        pinned_commit="p" * 40,
+    )
+    defaults.update(overrides)
+    return WindowSelection(**defaults)
+
+
 __all__ = [
     "SHA_A",
     "SHA_B",
@@ -78,4 +127,6 @@ __all__ = [
     "NEW_PIN",
     "FIXED_NOW",
     "DEFAULT_LEDGER_TTL",
+    "PHYSLIB_CONFIG",
+    "make_selection",
 ]
