@@ -698,11 +698,13 @@ runs:
         # filter by the fix-PR label and post-match in jq, picking up both
         # the canonical and the suffixed cases. Keys are number + url +
         # headRefName so we can echo a useful log line.
+        # Piped to a separate jq call so we can pass `--arg`; gh's
+        # built-in `--jq` only forwards the expression, not jq flags.
         EXISTING=$(gh pr list \
           --label "$PR_LABEL" \
           --state open \
           --json number,url,headRefName \
-          --jq --arg base "$BASE_BRANCH" \
+          | jq --arg base "$BASE_BRANCH" \
             '[.[] | select(.headRefName == $base or (.headRefName | startswith($base + "-")))] | .[0] // empty')
 
         if [ -n "$EXISTING" ]; then
