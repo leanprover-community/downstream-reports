@@ -42,7 +42,7 @@ from __future__ import annotations
 import subprocess
 import sys
 import tempfile
-import unittest
+from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
@@ -68,8 +68,20 @@ def _git(repo: Path, *args: str) -> str:
     return run(["git", *args], cwd=repo).stdout.strip()
 
 
-def _make_fixture_repo() -> tempfile.TemporaryDirectory:
-    """Create a temporary git repo with a linear history and several tags.
+@dataclass(frozen=True)
+class _GitFixture:
+    """Bundle of repo path + resolved SHAs the fixture provides to tests."""
+
+    repo: Path
+    head: str
+    c2: str
+    c1: str
+    c0: str
+
+
+@pytest.fixture(scope="module")
+def git_fixture() -> _GitFixture:
+    """Provide a temporary git repo with a linear history and several tags.
 
     What state it provides
     ----------------------
@@ -94,6 +106,14 @@ def _make_fixture_repo() -> tempfile.TemporaryDirectory:
       needing a separate fixture.
     * c3 (HEAD past all tags) is the realistic case: the downstream just
       bumped to a master commit ahead of the latest release.
+
+    Why module scope
+    ----------------
+    The repo is read-only after construction — every test in this file
+    only invokes git's read-only operations (``rev-parse``,
+    ``describe``, ``rev-list``).  Module scope means the fixture is
+    built once and torn down at the end of the module rather than per
+    test, keeping the suite fast.
     """
     tmpdir = tempfile.TemporaryDirectory()
     repo = Path(tmpdir.name)
@@ -111,34 +131,23 @@ def _make_fixture_repo() -> tempfile.TemporaryDirectory:
             _git(repo, "tag", "v4.12.0")
             _git(repo, "tag", "master-2026-04-15")
 
-    return tmpdir
+    fixture = _GitFixture(
+        repo=repo,
+        head=_git(repo, "rev-parse", "HEAD"),
+        c2=_git(repo, "rev-parse", "v4.12.0^{}"),
+        c1=_git(repo, "rev-parse", "v4.11.0^{}"),
+        c0=_git(repo, "rev-list", "--max-parents=0", "HEAD"),
+    )
+    yield fixture
+    tmpdir.cleanup()
 
 
-# ----------------------------------------------------------------------
-# unittest fixtures: the repo is read-only after construction, so we
-# build it once per class and tear it down in tearDownClass.  Module
-# scope would be marginally faster but couples teardown to interpreter
-# shutdown; class scope is the conservative choice.
-# ----------------------------------------------------------------------
-
-
-class TestLatestReachableTag(unittest.TestCase):
+class TestLatestReachableTag:
     """Tests for ``latest_reachable_tag`` against the fixture repo."""
 
-    @classmethod
-    def setUpClass(cls) -> None:
-        cls._tmpdir = _make_fixture_repo()
-        cls._repo = Path(cls._tmpdir.name)
-        cls._head = _git(cls._repo, "rev-parse", "HEAD")
-        cls._c2 = _git(cls._repo, "rev-parse", "v4.12.0^{}")
-        cls._c1 = _git(cls._repo, "rev-parse", "v4.11.0^{}")
-        cls._c0 = _git(cls._repo, "rev-list", "--max-parents=0", "HEAD")
-
-    @classmethod
-    def tearDownClass(cls) -> None:
-        cls._tmpdir.cleanup()
-
-    def test_latest_reachable_tag_from_head_returns_newest_semver_tag(self) -> None:
+    def test_latest_reachable_tag_from_head_returns_newest_semver_tag(
+        self, git_fixture: _GitFixture
+    ) -> None:
         """
         From a commit past both v4.11.0 and v4.12.0, the function returns
         v4.12.0.  This is the steady-state path: a downstream sits on
@@ -150,20 +159,18 @@ class TestLatestReachableTag(unittest.TestCase):
         last/newest), the public site would advertise an old release
         long after newer ones shipped.
         """
-        # Arrange — fixture state set up in setUpClass.
+        # Arrange — fixture state set up by git_fixture.
 
         # Act
-        tag = latest_reachable_tag(self._repo, self._head)
+        tag = latest_reachable_tag(git_fixture.repo, git_fixture.head)
 
         # Assert
-        self.assertEqual(
-            tag,
-            "v4.12.0",
-            msg="HEAD is past both semver tags; v4.12.0 is the newest reachable",
+        assert tag == "v4.12.0", (
+            "HEAD is past both semver tags; v4.12.0 is the newest reachable"
         )
 
     def test_latest_reachable_tag_with_non_semver_tag_co_located_excludes_it(
-        self,
+        self, git_fixture: _GitFixture
     ) -> None:
         """
         ``master-2026-04-15`` lives on the same commit as ``v4.12.0``.  If
@@ -175,22 +182,20 @@ class TestLatestReachableTag(unittest.TestCase):
         they confirm v4.12.0 is selected *because* of the semver filter,
         not coincidentally.
         """
-        # Arrange — fixture state set up in setUpClass.
+        # Arrange — fixture state set up by git_fixture.
 
         # Act
-        tag = latest_reachable_tag(self._repo, self._head)
+        tag = latest_reachable_tag(git_fixture.repo, git_fixture.head)
 
         # Assert
-        self.assertNotEqual(
-            tag,
-            "master-2026-04-15",
-            msg=(
-                "Daily-branch tags must be excluded by RELEASE_TAG_GLOB; "
-                "publishing one as last_good_release would be wrong"
-            ),
+        assert tag != "master-2026-04-15", (
+            "Daily-branch tags must be excluded by RELEASE_TAG_GLOB; "
+            "publishing one as last_good_release would be wrong"
         )
 
-    def test_latest_reachable_tag_at_v4_11_returns_v4_11(self) -> None:
+    def test_latest_reachable_tag_at_v4_11_returns_v4_11(
+        self, git_fixture: _GitFixture
+    ) -> None:
         """
         From the commit *at* v4.11.0 (c1), v4.12.0 is not yet in the
         ancestry, so v4.11.0 is the answer.  This is the case that
@@ -198,19 +203,19 @@ class TestLatestReachableTag(unittest.TestCase):
         we must return the older release that *is* reachable, not the
         newer one that isn't.
         """
-        # Arrange — fixture state set up in setUpClass.
+        # Arrange — fixture state set up by git_fixture.
 
         # Act
-        tag = latest_reachable_tag(self._repo, self._c1)
+        tag = latest_reachable_tag(git_fixture.repo, git_fixture.c1)
 
         # Assert
-        self.assertEqual(
-            tag,
-            "v4.11.0",
-            msg="Commit at v4.11.0 cannot reach v4.12.0; older tag is correct",
+        assert tag == "v4.11.0", (
+            "Commit at v4.11.0 cannot reach v4.12.0; older tag is correct"
         )
 
-    def test_latest_reachable_tag_before_any_tag_returns_none(self) -> None:
+    def test_latest_reachable_tag_before_any_tag_returns_none(
+        self, git_fixture: _GitFixture
+    ) -> None:
         """
         From a commit older than every tag, return ``None`` — there is
         no release the downstream could honestly claim compatibility
@@ -221,28 +226,16 @@ class TestLatestReachableTag(unittest.TestCase):
         # Arrange — c0 predates v4.11.0 and v4.12.0.
 
         # Act
-        tag = latest_reachable_tag(self._repo, self._c0)
+        tag = latest_reachable_tag(git_fixture.repo, git_fixture.c0)
 
         # Assert
-        self.assertIsNone(
-            tag,
-            msg="No tag is reachable from the root commit; result must be None",
-        )
+        assert tag is None, "No tag is reachable from the root commit; result must be None"
 
 
-class TestResolveTag(unittest.TestCase):
+class TestResolveTag:
     """Tests for ``resolve_tag``."""
 
-    @classmethod
-    def setUpClass(cls) -> None:
-        cls._tmpdir = _make_fixture_repo()
-        cls._repo = Path(cls._tmpdir.name)
-
-    @classmethod
-    def tearDownClass(cls) -> None:
-        cls._tmpdir.cleanup()
-
-    def test_resolve_tag_returns_full_40_char_sha(self) -> None:
+    def test_resolve_tag_returns_full_40_char_sha(self, git_fixture: _GitFixture) -> None:
         """
         The snapshot stores the resolved commit alongside the tag name
         (``last_good_release_commit``) so the public site can render a
@@ -251,21 +244,18 @@ class TestResolveTag(unittest.TestCase):
         against the function ever returning a short SHA or an error
         string.
         """
-        # Arrange — fixture state set up in setUpClass.
+        # Arrange — fixture state set up by git_fixture.
 
         # Act
-        sha = resolve_tag(self._repo, "v4.12.0")
+        sha = resolve_tag(git_fixture.repo, "v4.12.0")
 
         # Assert
-        self.assertEqual(
-            len(sha), 40, msg="Full SHAs are 40 hex chars; short SHAs are not safe to store"
-        )
-        self.assertTrue(
-            all(ch in "0123456789abcdef" for ch in sha),
-            msg=f"Resolved SHA {sha!r} contains non-hex characters",
+        assert len(sha) == 40, "Full SHAs are 40 hex chars; short SHAs are not safe to store"
+        assert all(ch in "0123456789abcdef" for ch in sha), (
+            f"Resolved SHA {sha!r} contains non-hex characters"
         )
 
-    def test_resolve_tag_matches_git_rev_list_output(self) -> None:
+    def test_resolve_tag_matches_git_rev_list_output(self, git_fixture: _GitFixture) -> None:
         """
         The function must produce the same SHA that ``git rev-list -n 1
         <tag>`` does.  Equivalence with the canonical git CLI invocation
@@ -273,19 +263,17 @@ class TestResolveTag(unittest.TestCase):
         the test to internal implementation details.
         """
         # Arrange
-        expected = _git(self._repo, "rev-list", "-n", "1", "v4.12.0")
+        expected = _git(git_fixture.repo, "rev-list", "-n", "1", "v4.12.0")
 
         # Act
-        actual = resolve_tag(self._repo, "v4.12.0")
+        actual = resolve_tag(git_fixture.repo, "v4.12.0")
 
         # Assert
-        self.assertEqual(
-            actual,
-            expected,
-            msg="resolve_tag must agree with `git rev-list -n 1 <tag>`",
-        )
+        assert actual == expected, "resolve_tag must agree with `git rev-list -n 1 <tag>`"
 
-    def test_resolve_tag_for_unknown_tag_raises_called_process_error(self) -> None:
+    def test_resolve_tag_for_unknown_tag_raises_called_process_error(
+        self, git_fixture: _GitFixture
+    ) -> None:
         """
         A typo in a tag name must surface loudly, not silently return
         ``None`` or an empty string.  The downstream caller
@@ -298,14 +286,11 @@ class TestResolveTag(unittest.TestCase):
         # Arrange — no tag named v9.99.99 in the fixture.
 
         # Act / Assert
-        with self.assertRaises(
-            subprocess.CalledProcessError,
-            msg="Resolving a missing tag must raise rather than return a sentinel",
-        ):
-            resolve_tag(self._repo, "v9.99.99")
+        with pytest.raises(subprocess.CalledProcessError):
+            resolve_tag(git_fixture.repo, "v9.99.99")
 
 
-class TestReleaseTagGlob(unittest.TestCase):
+class TestReleaseTagGlob:
     """Tests pinning the ``RELEASE_TAG_GLOB`` constant."""
 
     def test_release_tag_glob_is_v_prefix_pattern(self) -> None:
@@ -318,17 +303,9 @@ class TestReleaseTagGlob(unittest.TestCase):
         the new shape.
         """
         # Arrange / Act / Assert
-        self.assertEqual(
-            RELEASE_TAG_GLOB,
-            "v[0-9]*",
-            msg="RELEASE_TAG_GLOB is a public contract with mathlib's tag convention",
+        assert RELEASE_TAG_GLOB == "v[0-9]*", (
+            "RELEASE_TAG_GLOB is a public contract with mathlib's tag convention"
         )
-
-
-# ----------------------------------------------------------------------
-# repo_clone_source — pure function, no git invocation.  Tested as plain
-# pytest functions with parametrize to keep the cases tabular.
-# ----------------------------------------------------------------------
 
 
 class TestRepoCloneSource:
@@ -394,7 +371,3 @@ class TestRepoCloneSource:
             "Existing local paths must be returned in resolved form so callers "
             "can pass them straight to `git clone`"
         )
-
-
-if __name__ == "__main__":
-    unittest.main()

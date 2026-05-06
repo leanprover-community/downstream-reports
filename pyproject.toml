@@ -4,7 +4,9 @@
 # pin keeps that working regardless of how it's launched.
 testpaths = ["scripts"]
 python_files = ["test_*.py"]
-python_classes = ["Test*", "*Tests"]
+# Test classes follow the canonical pytest convention `Test<Unit>`; the
+# legacy `*Tests` pattern is no longer in use anywhere in the suite.
+python_classes = ["Test*"]
 python_functions = ["test_*"]
 
 # Markers must be registered to avoid `PytestUnknownMarkWarning`.  The

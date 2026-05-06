@@ -32,7 +32,6 @@ the report.
 from __future__ import annotations
 
 import sys
-import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -46,7 +45,7 @@ from scripts.select_downstream_regression_window import (
 from scripts.storage import DownstreamStatusRecord
 
 
-class TrySkipAlreadyGoodTests(unittest.TestCase):
+class TestTrySkipAlreadyGood:
     """``try_skip_already_good`` — the select-side skip heuristic."""
 
     def test_returns_none_when_disabled(self) -> None:
@@ -73,7 +72,7 @@ class TrySkipAlreadyGoodTests(unittest.TestCase):
         )
 
         # Assert
-        self.assertIsNone(result)
+        assert result is None
 
     def test_returns_none_when_no_previous(self) -> None:
         """Without a prior status record there is no baseline to compare against.
@@ -92,7 +91,7 @@ class TrySkipAlreadyGoodTests(unittest.TestCase):
         )
 
         # Assert
-        self.assertIsNone(result)
+        assert result is None
 
     def test_returns_none_when_target_differs(self) -> None:
         """A different target commit means upstream advanced — must validate.
@@ -119,7 +118,7 @@ class TrySkipAlreadyGoodTests(unittest.TestCase):
         )
 
         # Assert
-        self.assertIsNone(result)
+        assert result is None
 
     def test_returns_none_when_downstream_changed(self) -> None:
         """A new downstream commit invalidates the prior result.
@@ -146,7 +145,7 @@ class TrySkipAlreadyGoodTests(unittest.TestCase):
         )
 
         # Assert
-        self.assertIsNone(result)
+        assert result is None
 
     def test_returns_passing_result_when_conditions_match(self) -> None:
         """Both guards match: emit a synthetic ``PASSED`` skip result.
@@ -174,18 +173,14 @@ class TrySkipAlreadyGoodTests(unittest.TestCase):
         )
 
         # Assert
-        self.assertIsNotNone(result)
-        self.assertEqual(result.outcome, Outcome.PASSED)
-        self.assertEqual(
-            result.search_mode,
-            "skipped-already-good",
-            msg="search_mode is the report's distinguisher between fresh and skipped passes",
-        )
-        self.assertIn("already verified", selection.decision_reason)
-        self.assertIn("Skip all probes", selection.next_action)
+        assert result is not None
+        assert result.outcome == Outcome.PASSED
+        assert result.search_mode == "skipped-already-good", "search_mode is the report's distinguisher between fresh and skipped passes"
+        assert "already verified" in selection.decision_reason
+        assert "Skip all probes" in selection.next_action
 
 
-class SelectParserSkipAlreadyGoodTests(unittest.TestCase):
+class TestSelectParserSkipAlreadyGood:
     """``select_build_parser()`` — ``--skip-already-good`` flag surface."""
 
     _REQUIRED = ["--workdir", "/tmp", "--output-dir", "/tmp"]
@@ -201,7 +196,7 @@ class SelectParserSkipAlreadyGoodTests(unittest.TestCase):
         args = select_build_parser().parse_args(self._REQUIRED)
 
         # Assert
-        self.assertTrue(args.skip_already_good)
+        assert args.skip_already_good
 
     def test_skip_already_good_can_be_disabled(self) -> None:
         """``--no-skip-already-good`` forces a full validation."""
@@ -211,7 +206,7 @@ class SelectParserSkipAlreadyGoodTests(unittest.TestCase):
         )
 
         # Assert
-        self.assertFalse(args.skip_already_good)
+        assert not args.skip_already_good
 
     def test_skip_already_good_can_be_explicitly_enabled(self) -> None:
         """``--skip-already-good`` is accepted as an explicit confirmation.
@@ -225,8 +220,4 @@ class SelectParserSkipAlreadyGoodTests(unittest.TestCase):
         )
 
         # Assert
-        self.assertTrue(args.skip_already_good)
-
-
-if __name__ == "__main__":
-    unittest.main()
+        assert args.skip_already_good

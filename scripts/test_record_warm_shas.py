@@ -28,7 +28,6 @@ row would be a lie.  These tests are therefore the contract that
 from __future__ import annotations
 
 import sys
-import unittest
 from pathlib import Path
 
 import pytest
@@ -39,7 +38,7 @@ from scripts.conftest import SHA_A, SHA_B, SHA_C, SHA_D, SHA_E
 from scripts.record_warm_shas import WARM_STATUSES, collect_warm_shas
 
 
-class TestCollectWarmShasTerminalFilter(unittest.TestCase):
+class TestCollectWarmShasTerminalFilter:
     """Tests covering which statuses are recorded as terminally warm."""
 
     def test_collect_warm_shas_with_already_warm_and_warmed_records_both(self) -> None:
@@ -93,7 +92,7 @@ class TestCollectWarmShasTerminalFilter(unittest.TestCase):
         )
 
 
-class TestCollectWarmShasDedup(unittest.TestCase):
+class TestCollectWarmShasDedup:
     """Tests for dedup ordering and identity semantics."""
 
     def test_collect_warm_shas_with_duplicate_sha_returns_single_first_occurrence(
@@ -122,14 +121,10 @@ class TestCollectWarmShasDedup(unittest.TestCase):
         )
 
 
-# NOTE: this group uses a bare class (not unittest.TestCase) so that
-# @pytest.mark.parametrize can drive the cases.  The unittest framework
-# does not honour parametrize on TestCase methods; mixing the two styles
-# in one file is fine and keeps the tabular cases legible.
 class TestCollectWarmShasMissingSha:
     """Tests for entries that arrive without a usable SHA field."""
 
-    # NOTE: the production docstring on collect_warm_shas spells out the
+    # The production docstring on collect_warm_shas spells out the
     # silent-skip-on-missing-sha contract; this class is its executable
     # form so any future loosening of that contract fails here first.
 
@@ -184,7 +179,7 @@ class TestCollectWarmShasMissingSha:
         )
 
 
-class TestCollectWarmShasEmptyInput(unittest.TestCase):
+class TestCollectWarmShasEmptyInput:
     """Tests for the edge case where the summary file is empty."""
 
     def test_collect_warm_shas_with_empty_summary_returns_empty_list(self) -> None:
@@ -205,7 +200,7 @@ class TestCollectWarmShasEmptyInput(unittest.TestCase):
         assert result == [], "Empty input must yield empty output"
 
 
-class TestWarmStatusesConstant(unittest.TestCase):
+class TestWarmStatusesConstant:
     """Tests that pin the ``WARM_STATUSES`` constant against accidental drift."""
 
     def test_warm_statuses_contains_exactly_already_warm_and_warmed(self) -> None:
@@ -222,7 +217,3 @@ class TestWarmStatusesConstant(unittest.TestCase):
             "WARM_STATUSES is the contract with warm-mathlib-cache.yml; "
             "any change should be intentional and propagated to the workflow"
         )
-
-
-if __name__ == "__main__":
-    unittest.main()

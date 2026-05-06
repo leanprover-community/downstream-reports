@@ -57,7 +57,6 @@ from __future__ import annotations
 import json
 import os
 import sys
-import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
@@ -183,58 +182,58 @@ def _evaluate(
     return candidate, calls
 
 
-class EvaluateDownstreamTests(unittest.TestCase):
+class TestEvaluateDownstream:
     """Per-downstream skip / dispatch decision logic in `evaluate_downstream`."""
 
     def test_branch_unchanged_short_circuits(self) -> None:
         """Scenario: branch HEAD == status.downstream_commit ⇒ no manifest fetch."""
         candidate, calls = _evaluate(branch_head=_BRANCH_OLD)
-        self.assertIsNone(candidate)
-        self.assertEqual(calls["branch"], [("org/PhysLib", "main")])
-        self.assertEqual(calls["manifest"], [])
-        self.assertEqual(calls["compare"], [])
+        assert candidate is None
+        assert calls["branch"] == [("org/PhysLib", "main")]
+        assert calls["manifest"] == []
+        assert calls["compare"] == []
 
     def test_pin_unchanged_skipped(self) -> None:
         """Scenario: branch moved but manifest still pins the same mathlib SHA."""
         candidate, calls = _evaluate(manifest=_manifest(_OLD_PIN))
-        self.assertIsNone(candidate)
-        self.assertEqual(calls["compare"], [])  # never reached the compare call
+        assert candidate is None
+        assert calls["compare"] == []  # never reached the compare call
 
     def test_no_fkb_skipped_before_compare(self) -> None:
         """Scenario: pin moved but no active regression ⇒ compare API never called."""
         candidate, calls = _evaluate(status=_status(fkb=None))
-        self.assertIsNone(candidate)
-        self.assertEqual(calls["compare"], [])
+        assert candidate is None
+        assert calls["compare"] == []
 
     def test_compare_behind_skipped(self) -> None:
         """Scenario: new pin is in the safe range below FKB ⇒ skip."""
         candidate, _ = _evaluate(compare="behind")
-        self.assertIsNone(candidate)
+        assert candidate is None
 
     def test_compare_diverged_skipped(self) -> None:
         """Scenario: divergent upstream history ⇒ defensive skip."""
         candidate, _ = _evaluate(compare="diverged")
-        self.assertIsNone(candidate)
+        assert candidate is None
 
     def test_compare_identical_dispatches(self) -> None:
         """Scenario: pin landed exactly on FKB ⇒ candidate emitted (active bumping)."""
         candidate, _ = _evaluate(compare="identical")
-        self.assertIsNotNone(candidate)
         assert candidate is not None
-        self.assertEqual(candidate.name, "PhysLib")
+        assert candidate is not None
+        assert candidate.name == "PhysLib"
 
     def test_compare_ahead_dispatches(self) -> None:
         """Scenario: pin moved strictly past FKB, no dedup blockers ⇒ candidate."""
         candidate, _ = _evaluate(compare="ahead")
-        self.assertIsNotNone(candidate)
         assert candidate is not None
-        self.assertEqual(candidate.current_pin, _NEW_PIN)
-        self.assertEqual(candidate.fkb, _FKB)
+        assert candidate is not None
+        assert candidate.current_pin == _NEW_PIN
+        assert candidate.fkb == _FKB
 
     def test_in_flight_blocks_dispatch(self) -> None:
         """Scenario: downstream is already in a queued/in-progress run ⇒ skip."""
         candidate, _ = _evaluate(in_flight={"PhysLib"})
-        self.assertIsNone(candidate)
+        assert candidate is None
 
     def test_fresh_ledger_row_blocks_dispatch(self) -> None:
         """Scenario: ledger has a recent dispatch for the same (name, pin)."""
@@ -244,7 +243,7 @@ class EvaluateDownstreamTests(unittest.TestCase):
             dispatched_at=(_NOW - timedelta(hours=1)).isoformat().replace("+00:00", "Z"),
         )
         candidate, _ = _evaluate(ledger_row=recent)
-        self.assertIsNone(candidate)
+        assert candidate is None
 
     def test_stale_ledger_row_does_not_block(self) -> None:
         """Scenario: ledger row older than TTL ⇒ re-dispatch (recovery path)."""
@@ -254,7 +253,7 @@ class EvaluateDownstreamTests(unittest.TestCase):
             dispatched_at=(_NOW - timedelta(hours=12)).isoformat().replace("+00:00", "Z"),
         )
         candidate, _ = _evaluate(ledger_row=stale)
-        self.assertIsNotNone(candidate)
+        assert candidate is not None
 
     def test_ledger_row_for_different_pin_does_not_block(self) -> None:
         """Scenario: ledger remembers an older pin; the new pin is fresh news."""
@@ -264,32 +263,32 @@ class EvaluateDownstreamTests(unittest.TestCase):
             dispatched_at=_NOW.isoformat().replace("+00:00", "Z"),
         )
         candidate, _ = _evaluate(ledger_row=old)
-        self.assertIsNotNone(candidate)
+        assert candidate is not None
 
     def test_missing_dependency_in_manifest_skipped(self) -> None:
         """Scenario: manifest fetched but `dependency_name` not present ⇒ skip safely."""
         candidate, _ = _evaluate(manifest={"packages": []})
-        self.assertIsNone(candidate)
+        assert candidate is None
 
     def test_manifest_fetch_returned_none_skipped(self) -> None:
         """Scenario: 404 / unparseable manifest ⇒ skip without crash."""
         candidate, _ = _evaluate(manifest=None)
-        self.assertIsNone(candidate)
+        assert candidate is None
 
     def test_branch_head_lookup_failure_skipped(self) -> None:
         """Scenario: GitHub branch ref API failed ⇒ skip without crash."""
         candidate, calls = _evaluate(branch_head=None)  # type: ignore[arg-type]
-        self.assertIsNone(candidate)
-        self.assertEqual(calls["manifest"], [])
+        assert candidate is None
+        assert calls["manifest"] == []
 
     def test_no_status_record_treated_as_no_fkb(self) -> None:
         """Scenario: brand-new downstream, never validated ⇒ skipped (no FKB to compare)."""
         candidate, calls = _evaluate(status=None)
-        self.assertIsNone(candidate)
-        self.assertEqual(calls["compare"], [])
+        assert candidate is None
+        assert calls["compare"] == []
 
 
-class BuildCandidatesTests(unittest.TestCase):
+class TestBuildCandidates:
     """Top-level orchestration in `build_candidates` (inventory filtering, ordering)."""
 
     def test_disabled_downstream_excluded(self) -> None:
@@ -317,7 +316,7 @@ class BuildCandidatesTests(unittest.TestCase):
             fetch_manifest=_boom,
             fetch_compare=_boom,
         )
-        self.assertEqual(out, [])
+        assert out == []
 
     def test_unwatched_downstream_excluded(self) -> None:
         """Scenario: enabled=True but watch_manifest=False ⇒ no HTTP call, no candidate."""
@@ -338,7 +337,7 @@ class BuildCandidatesTests(unittest.TestCase):
             fetch_manifest=_boom,
             fetch_compare=_boom,
         )
-        self.assertEqual(out, [])
+        assert out == []
 
     def test_mixed_inventory_only_watched_evaluated(self) -> None:
         """Scenario: mix of opted-in and opted-out entries — only the opted-in get HTTP calls."""
@@ -365,8 +364,8 @@ class BuildCandidatesTests(unittest.TestCase):
             fetch_manifest=lambda repo, sha: _manifest(_NEW_PIN),
             fetch_compare=lambda upstream, base, head: "ahead",
         )
-        self.assertEqual([c.name for c in out], ["Watched"])
-        self.assertEqual(seen, ["org/Watched"])  # only the opted-in repo touched
+        assert [c.name for c in out] == ["Watched"]
+        assert seen == ["org/Watched"]  # only the opted-in repo touched
 
     def test_no_fkb_excluded_before_http(self) -> None:
         """Scenario: opted-in but no first_known_bad_commit ⇒ no HTTP call (pre-filter)."""
@@ -387,7 +386,7 @@ class BuildCandidatesTests(unittest.TestCase):
             fetch_manifest=_boom,
             fetch_compare=_boom,
         )
-        self.assertEqual(out, [])
+        assert out == []
 
     def test_no_status_record_excluded_before_http(self) -> None:
         """Scenario: opted-in but never validated (no DB row) ⇒ no HTTP call."""
@@ -408,7 +407,7 @@ class BuildCandidatesTests(unittest.TestCase):
             fetch_manifest=_boom,
             fetch_compare=_boom,
         )
-        self.assertEqual(out, [])
+        assert out == []
 
     def test_candidates_returned_in_name_order(self) -> None:
         """Scenario: parallel evaluation completes in arbitrary order; output is sorted."""
@@ -428,10 +427,10 @@ class BuildCandidatesTests(unittest.TestCase):
             fetch_manifest=lambda repo, sha: _manifest(_NEW_PIN),
             fetch_compare=lambda upstream, base, head: "ahead",
         )
-        self.assertEqual([c.name for c in out], ["Alpha", "Bravo", "Charlie"])
+        assert [c.name for c in out] == ["Alpha", "Bravo", "Charlie"]
 
 
-class PinnedFromManifestPayloadTests(unittest.TestCase):
+class TestPinnedFromManifestPayload:
     """Helper shared between the on-disk reader and the watcher."""
 
     def test_dep_present_returns_rev(self) -> None:
@@ -442,29 +441,29 @@ class PinnedFromManifestPayloadTests(unittest.TestCase):
                 {"name": "mathlib", "type": "git", "rev": _NEW_PIN},
             ]
         }
-        self.assertEqual(pinned_from_manifest_payload(payload, "mathlib"), _NEW_PIN)
+        assert pinned_from_manifest_payload(payload, "mathlib") == _NEW_PIN
 
     def test_dep_absent_returns_none(self) -> None:
         """Scenario: target dependency not in packages list."""
         payload = {"packages": [{"name": "other", "type": "git", "rev": "x" * 40}]}
-        self.assertIsNone(pinned_from_manifest_payload(payload, "mathlib"))
+        assert pinned_from_manifest_payload(payload, "mathlib") is None
 
     def test_non_git_dep_returns_none(self) -> None:
         """Scenario: dep present but typed as 'path' rather than 'git'."""
         payload = {"packages": [{"name": "mathlib", "type": "path"}]}
-        self.assertIsNone(pinned_from_manifest_payload(payload, "mathlib"))
+        assert pinned_from_manifest_payload(payload, "mathlib") is None
 
     def test_malformed_payload_returns_none(self) -> None:
         """Scenario: payload is not a dict (parse failure upstream)."""
-        self.assertIsNone(pinned_from_manifest_payload("not a dict", "mathlib"))
+        assert pinned_from_manifest_payload("not a dict", "mathlib") is None
 
     def test_empty_rev_returns_none(self) -> None:
         """Scenario: rev field is empty string."""
         payload = {"packages": [{"name": "mathlib", "type": "git", "rev": ""}]}
-        self.assertIsNone(pinned_from_manifest_payload(payload, "mathlib"))
+        assert pinned_from_manifest_payload(payload, "mathlib") is None
 
 
-class InFlightSetTests(unittest.TestCase):
+class TestInFlightSet:
     """Walks the GitHub Actions API to build the set of live downstream names."""
 
     def _fake_requests(self, responses: dict[str, object]):
@@ -492,7 +491,7 @@ class InFlightSetTests(unittest.TestCase):
         })
         with mock.patch.object(watcher, "_gh_request", fake):
             out = watcher.gh_in_flight_downstreams("org/repo", "report.yml", "tok")
-        self.assertEqual(out, set())
+        assert out == set()
 
     def test_in_progress_run_jobs_collected(self) -> None:
         """Scenario: one in-progress run with select+probe jobs ⇒ names collected."""
@@ -511,7 +510,7 @@ class InFlightSetTests(unittest.TestCase):
         })
         with mock.patch.object(watcher, "_gh_request", fake):
             out = watcher.gh_in_flight_downstreams("org/repo", "report.yml", "tok")
-        self.assertEqual(out, {"A", "B"})
+        assert out == {"A", "B"}
 
     def test_queued_and_in_progress_unioned(self) -> None:
         """Scenario: queued and in-progress runs both contribute jobs."""
@@ -529,7 +528,7 @@ class InFlightSetTests(unittest.TestCase):
 
         with mock.patch.object(watcher, "_gh_request", fake):
             out = watcher.gh_in_flight_downstreams("org/repo", "report.yml", "tok")
-        self.assertEqual(out, {"A", "B"})
+        assert out == {"A", "B"}
 
     def test_non_matrix_jobs_ignored(self) -> None:
         """Scenario: jobs without 'select:'/'probe:' prefix never enter the set."""
@@ -540,10 +539,10 @@ class InFlightSetTests(unittest.TestCase):
         })
         with mock.patch.object(watcher, "_gh_request", fake):
             out = watcher.gh_in_flight_downstreams("org/repo", "report.yml", "tok")
-        self.assertEqual(out, set())
+        assert out == set()
 
 
-class DispatchPayloadTests(unittest.TestCase):
+class TestDispatchPayload:
     """Body and success-handling for gh_dispatch_workflow."""
 
     def test_204_returns_true_with_correct_payload(self) -> None:
@@ -560,11 +559,11 @@ class DispatchPayloadTests(unittest.TestCase):
             ok = watcher.gh_dispatch_workflow(
                 "org/repo", "report.yml", "main", {"downstream": "A,B"}, "tok"
             )
-        self.assertTrue(ok)
-        self.assertEqual(captured["method"], "POST")
-        self.assertIn("workflows/report.yml/dispatches", captured["path"])
+        assert ok
+        assert captured["method"] == "POST"
+        assert "workflows/report.yml/dispatches" in captured["path"]
         decoded = json.loads(captured["body"])
-        self.assertEqual(decoded, {"ref": "main", "inputs": {"downstream": "A,B"}})
+        assert decoded == {"ref": "main", "inputs": {"downstream": "A,B"}}
 
     def test_non_204_returns_false(self) -> None:
         """Scenario: HTTP 422 ⇒ False, error logged, caller will not write the ledger."""
@@ -576,7 +575,7 @@ class DispatchPayloadTests(unittest.TestCase):
             ok = watcher.gh_dispatch_workflow(
                 "org/repo", "report.yml", "main", {"downstream": "A"}, "tok"
             )
-        self.assertFalse(ok)
+        assert not ok
 
 
 class _RecordingBackend:
@@ -608,7 +607,7 @@ class _RecordingBackend:
         self.upserts.append(list(rows))
 
 
-class MainOrchestrationTests(unittest.TestCase):
+class TestMainOrchestration:
     """End-to-end main() — verifies dispatch + ledger only fire on the live path."""
 
     def _run_main(self, *, dry_run: bool) -> _RecordingBackend:
@@ -638,25 +637,21 @@ class MainOrchestrationTests(unittest.TestCase):
              mock.patch.object(watcher, "gh_compare_status", return_value="ahead"), \
              mock.patch.object(watcher, "gh_dispatch_workflow", side_effect=fake_dispatch):
             rc = watcher.main()
-        self.assertEqual(rc, 0)
+        assert rc == 0
         return backend
 
     def test_dry_run_does_not_dispatch_or_write_ledger(self) -> None:
         """Scenario: --dry-run-dispatch ⇒ candidate logged but no API call, no ledger row."""
         backend = self._run_main(dry_run=True)
-        self.assertEqual(backend.dispatched, [])
-        self.assertEqual(backend.upserts, [])
+        assert backend.dispatched == []
+        assert backend.upserts == []
 
     def test_live_path_dispatches_and_writes_ledger(self) -> None:
         """Scenario: live path ⇒ one dispatch with comma-joined names, ledger upserted."""
         backend = self._run_main(dry_run=False)
-        self.assertEqual(len(backend.dispatched), 1)
-        self.assertEqual(backend.dispatched[0]["inputs"], {"downstream": "PhysLib"})
-        self.assertEqual(len(backend.upserts), 1)
+        assert len(backend.dispatched) == 1
+        assert backend.dispatched[0]["inputs"] == {"downstream": "PhysLib"}
+        assert len(backend.upserts) == 1
         [row] = backend.upserts[0]
-        self.assertEqual(row.downstream, "PhysLib")
-        self.assertEqual(row.observed_pin, _NEW_PIN)
-
-
-if __name__ == "__main__":
-    unittest.main()
+        assert row.downstream == "PhysLib"
+        assert row.observed_pin == _NEW_PIN

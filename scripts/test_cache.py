@@ -34,7 +34,6 @@ import os
 import subprocess
 import sys
 import tempfile
-import unittest
 from pathlib import Path
 from unittest.mock import patch
 
@@ -44,7 +43,7 @@ from scripts.cache import cache_env, github_cache_scope, warm_downstream_cache
 from scripts.models import DownstreamConfig
 
 
-class GitHubCacheScopeTests(unittest.TestCase):
+class TestGitHubCacheScope:
     """Resolve the cache scope mathlib-compatible projects use."""
 
     def test_owner_name_shorthand_is_supported(self) -> None:
@@ -58,7 +57,7 @@ class GitHubCacheScopeTests(unittest.TestCase):
         scope = github_cache_scope("leanprover-community/physlib")
 
         # Assert
-        self.assertEqual("leanprover-community/physlib", scope)
+        assert "leanprover-community/physlib" == scope
 
     def test_github_https_url_is_supported(self) -> None:
         """An explicit GitHub HTTPS remote is normalised to ``owner/name``.
@@ -71,7 +70,7 @@ class GitHubCacheScopeTests(unittest.TestCase):
         scope = github_cache_scope("https://github.com/leanprover-community/physlib.git")
 
         # Assert
-        self.assertEqual("leanprover-community/physlib", scope)
+        assert "leanprover-community/physlib" == scope
 
     def test_local_paths_and_non_github_urls_are_skipped(self) -> None:
         """Local paths and non-GitHub URLs do not attempt remote cache fetches.
@@ -86,15 +85,13 @@ class GitHubCacheScopeTests(unittest.TestCase):
             local_repo.mkdir()
 
             # Act / Assert
-            self.assertIsNone(github_cache_scope(str(local_repo)))
+            assert github_cache_scope(str(local_repo)) is None
 
         # Act / Assert — non-GitHub URL
-        self.assertIsNone(
-            github_cache_scope("https://example.com/leanprover-community/physlib.git")
-        )
+        assert github_cache_scope("https://example.com/leanprover-community/physlib.git") is None
 
 
-class CacheEnvTests(unittest.TestCase):
+class TestCacheEnv:
     """Subprocess environment construction for hopscotch / lake."""
 
     def test_cache_env_sets_only_mathlib_cache_dir(self) -> None:
@@ -112,13 +109,9 @@ class CacheEnvTests(unittest.TestCase):
             env = cache_env(cache_dir)
 
             # Assert
-            self.assertNotIn(
-                "LAKE_ARTIFACT_CACHE",
-                env,
-                msg="Lake artifact cache must not be enabled by cache_env",
-            )
-            self.assertNotIn("LAKE_CACHE_DIR", env)
-            self.assertEqual(str(cache_dir / "mathlib"), env["MATHLIB_CACHE_DIR"])
+            assert "LAKE_ARTIFACT_CACHE" not in env, "Lake artifact cache must not be enabled by cache_env"
+            assert "LAKE_CACHE_DIR" not in env
+            assert str(cache_dir / "mathlib") == env["MATHLIB_CACHE_DIR"]
 
     def test_cache_env_strips_ci_secrets(self) -> None:
         """CI secrets in ``os.environ`` do not appear in the returned env.
@@ -143,14 +136,10 @@ class CacheEnvTests(unittest.TestCase):
 
             # Assert
             for key in secret_env:
-                self.assertNotIn(
-                    key,
-                    env,
-                    msg=f"{key} must not reach validation subprocesses",
-                )
+                assert key not in env, f"{key} must not reach validation subprocesses"
 
 
-class WarmDownstreamCacheTests(unittest.TestCase):
+class TestWarmDownstreamCache:
     """Best-effort ``lake cache get`` invocation before validation."""
 
     def test_warm_cache_uses_downstream_toolchain_and_repo_scope(self) -> None:
@@ -202,11 +191,7 @@ class WarmDownstreamCacheTests(unittest.TestCase):
                 env=env,
             )
             log_text = (output_dir / "downstream-cache-get.log").read_text()
-            self.assertIn(
-                "exit_code: 0",
-                log_text,
-                msg="The exit code is recorded so post-mortems can spot a failed warmup",
-            )
+            assert "exit_code: 0" in log_text, "The exit code is recorded so post-mortems can spot a failed warmup"
 
     def test_warm_cache_skips_non_github_repos(self) -> None:
         """Local-path downstreams record a skip note instead of fetching.
@@ -241,12 +226,4 @@ class WarmDownstreamCacheTests(unittest.TestCase):
 
             # Assert
             mock_run.assert_not_called()
-            self.assertIn(
-                "Skipped `lake cache get`",
-                (output_dir / "downstream-cache-get.log").read_text(),
-                msg="Skip reason must be recorded so the workflow log explains the no-op",
-            )
-
-
-if __name__ == "__main__":
-    unittest.main()
+            assert "Skipped `lake cache get`" in (output_dir / "downstream-cache-get.log").read_text(), "Skip reason must be recorded so the workflow log explains the no-op"

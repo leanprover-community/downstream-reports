@@ -36,7 +36,6 @@ is designed to prevent.  See ``docs/internal/cache-warming.md``.
 from __future__ import annotations
 
 import sys
-import unittest
 from pathlib import Path
 
 import pytest
@@ -165,7 +164,7 @@ class TestParseManualShasRejectedInputs:
 # ----------------------------------------------------------------------
 
 
-class TestBuildMatrixManual(unittest.TestCase):
+class TestBuildMatrixManual:
     """Tests for ``build_matrix_manual`` — the bypass path."""
 
     def test_build_matrix_manual_emits_one_entry_per_sha_with_manual_tag(self) -> None:
@@ -183,17 +182,13 @@ class TestBuildMatrixManual(unittest.TestCase):
         matrix = build_matrix_manual(shas)
 
         # Assert
-        self.assertEqual(
-            matrix,
-            [
+        assert matrix == [
                 {"sha": SHA_A, "short_sha": SHA_A[:7], "tag": "manual", "downstreams": []},
                 {"sha": SHA_B, "short_sha": SHA_B[:7], "tag": "manual", "downstreams": []},
-            ],
-            msg=(
+            ], (
                 "Manual matrix entries are the contract with _warm-one-sha.yml; "
                 "the four-field shape and `manual` tag must be stable"
-            ),
-        )
+            )
 
     def test_build_matrix_manual_with_empty_input_yields_empty_matrix(self) -> None:
         """
@@ -206,7 +201,7 @@ class TestBuildMatrixManual(unittest.TestCase):
         matrix = build_matrix_manual([])
 
         # Assert
-        self.assertEqual(matrix, [], msg="Empty input must yield an empty matrix")
+        assert matrix == [], "Empty input must yield an empty matrix"
 
 
 # ----------------------------------------------------------------------
@@ -216,7 +211,7 @@ class TestBuildMatrixManual(unittest.TestCase):
 # ----------------------------------------------------------------------
 
 
-class TestBuildMatrixFromDbOptIn(unittest.TestCase):
+class TestBuildMatrixFromDbOptIn:
     """Tests for the inventory opt-in filter (``warm_cache`` flag)."""
 
     def test_build_matrix_skips_downstreams_without_warm_cache_opt_in(self) -> None:
@@ -239,14 +234,10 @@ class TestBuildMatrixFromDbOptIn(unittest.TestCase):
         include, skipped = build_matrix_from_db(inventory, statuses)
 
         # Assert
-        self.assertEqual(
-            (include, skipped),
-            ([], []),
-            msg="Opted-out downstream contributed entries — the warm_cache flag is broken",
-        )
+        assert (include, skipped) == ([], []), "Opted-out downstream contributed entries — the warm_cache flag is broken"
 
 
-class TestBuildMatrixFromDbRoleTagging(unittest.TestCase):
+class TestBuildMatrixFromDbRoleTagging:
     """Tests for the LKG / FKB / both role tagging on matrix entries."""
 
     def test_build_matrix_with_only_lkg_set_tags_entry_lkg(self) -> None:
@@ -264,12 +255,8 @@ class TestBuildMatrixFromDbRoleTagging(unittest.TestCase):
         include, skipped = build_matrix_from_db(inventory, statuses)
 
         # Assert
-        self.assertEqual(
-            include,
-            [{"sha": SHA_A, "short_sha": SHA_A[:7], "tag": "lkg", "downstreams": ["physlib"]}],
-            msg="LKG-only SHA must be tagged 'lkg'",
-        )
-        self.assertEqual(skipped, [])
+        assert include == [{"sha": SHA_A, "short_sha": SHA_A[:7], "tag": "lkg", "downstreams": ["physlib"]}], "LKG-only SHA must be tagged 'lkg'"
+        assert skipped == []
 
     def test_build_matrix_with_only_fkb_set_tags_entry_fkb(self) -> None:
         """
@@ -287,12 +274,8 @@ class TestBuildMatrixFromDbRoleTagging(unittest.TestCase):
         include, skipped = build_matrix_from_db(inventory, statuses)
 
         # Assert
-        self.assertEqual(
-            include,
-            [{"sha": SHA_A, "short_sha": SHA_A[:7], "tag": "fkb", "downstreams": ["physlib"]}],
-            msg="FKB-only SHA must be tagged 'fkb'",
-        )
-        self.assertEqual(skipped, [])
+        assert include == [{"sha": SHA_A, "short_sha": SHA_A[:7], "tag": "fkb", "downstreams": ["physlib"]}], "FKB-only SHA must be tagged 'fkb'"
+        assert skipped == []
 
     def test_build_matrix_with_sha_as_both_lkg_and_fkb_tags_entry_both(self) -> None:
         """
@@ -317,19 +300,13 @@ class TestBuildMatrixFromDbRoleTagging(unittest.TestCase):
         include, _ = build_matrix_from_db(inventory, statuses)
 
         # Assert
-        self.assertEqual(len(include), 1, msg="A single SHA produces a single entry")
-        self.assertEqual(include[0]["sha"], SHA_A)
-        self.assertEqual(
-            include[0]["tag"], "both", msg="Cross-role SHA must be tagged 'both'"
-        )
-        self.assertEqual(
-            sorted(include[0]["downstreams"]),
-            ["FLT", "physlib"],
-            msg="Both downstreams must appear in the entry's downstreams list",
-        )
+        assert len(include) == 1, "A single SHA produces a single entry"
+        assert include[0]["sha"] == SHA_A
+        assert include[0]["tag"] == "both", "Cross-role SHA must be tagged 'both'"
+        assert sorted(include[0]["downstreams"]) == ["FLT", "physlib"], "Both downstreams must appear in the entry's downstreams list"
 
 
-class TestBuildMatrixFromDbDedupAndOrdering(unittest.TestCase):
+class TestBuildMatrixFromDbDedupAndOrdering:
     """Tests for cross-downstream dedup and deterministic SHA ordering."""
 
     def test_build_matrix_dedups_when_two_downstreams_share_an_lkg(self) -> None:
@@ -353,9 +330,9 @@ class TestBuildMatrixFromDbDedupAndOrdering(unittest.TestCase):
         include, _ = build_matrix_from_db(inventory, statuses)
 
         # Assert
-        self.assertEqual(len(include), 1, msg="Shared LKG must dedup to one entry")
-        self.assertEqual(include[0]["tag"], "lkg")
-        self.assertEqual(sorted(include[0]["downstreams"]), ["FLT", "physlib"])
+        assert len(include) == 1, "Shared LKG must dedup to one entry"
+        assert include[0]["tag"] == "lkg"
+        assert sorted(include[0]["downstreams"]) == ["FLT", "physlib"]
 
     def test_build_matrix_with_distinct_lkg_and_fkb_emits_two_entries(self) -> None:
         """
@@ -378,11 +355,7 @@ class TestBuildMatrixFromDbDedupAndOrdering(unittest.TestCase):
         include, _ = build_matrix_from_db(inventory, statuses)
 
         # Assert
-        self.assertEqual(
-            sorted((entry["sha"], entry["tag"]) for entry in include),
-            [(SHA_A, "lkg"), (SHA_B, "fkb")],
-            msg="Distinct LKG and FKB must produce two correctly-tagged entries",
-        )
+        assert sorted((entry["sha"], entry["tag"]) for entry in include) == [(SHA_A, "lkg"), (SHA_B, "fkb")], "Distinct LKG and FKB must produce two correctly-tagged entries"
 
     def test_build_matrix_emits_entries_sorted_by_sha(self) -> None:
         """
@@ -406,14 +379,10 @@ class TestBuildMatrixFromDbDedupAndOrdering(unittest.TestCase):
         shas = [entry["sha"] for entry in include]
 
         # Assert
-        self.assertEqual(
-            shas,
-            sorted(shas),
-            msg="Matrix must be SHA-sorted for deterministic logs across runs",
-        )
+        assert shas == sorted(shas), "Matrix must be SHA-sorted for deterministic logs across runs"
 
 
-class TestBuildMatrixFromDbEmptyState(unittest.TestCase):
+class TestBuildMatrixFromDbEmptyState:
     """Tests for inputs that contribute no SHAs."""
 
     def test_build_matrix_with_null_lkg_and_fkb_skips_downstream(self) -> None:
@@ -431,9 +400,7 @@ class TestBuildMatrixFromDbEmptyState(unittest.TestCase):
         result = build_matrix_from_db(inventory, statuses)
 
         # Assert
-        self.assertEqual(
-            result, ([], []), msg="Status with both endpoints None contributes nothing"
-        )
+        assert result == ([], []), "Status with both endpoints None contributes nothing"
 
     def test_build_matrix_with_inventory_entry_missing_from_statuses_skips_silently(
         self,
@@ -451,14 +418,10 @@ class TestBuildMatrixFromDbEmptyState(unittest.TestCase):
         result = build_matrix_from_db(inventory, statuses={})
 
         # Assert
-        self.assertEqual(
-            result,
-            ([], []),
-            msg="Missing status row must skip silently, not crash the planner",
-        )
+        assert result == ([], []), "Missing status row must skip silently, not crash the planner"
 
 
-class TestBuildMatrixFromDbKnownWarmFilter(unittest.TestCase):
+class TestBuildMatrixFromDbKnownWarmFilter:
     """Tests for the ``cache_warmth`` table filter (``known_warm_shas``)."""
 
     def test_build_matrix_drops_known_warm_shas_into_skipped_list(self) -> None:
@@ -485,16 +448,8 @@ class TestBuildMatrixFromDbKnownWarmFilter(unittest.TestCase):
         )
 
         # Assert
-        self.assertEqual(
-            [entry["sha"] for entry in include],
-            [SHA_B],
-            msg="Cold SHA stays in include; warm SHA leaves include",
-        )
-        self.assertEqual(
-            [entry["sha"] for entry in skipped],
-            [SHA_A],
-            msg="Warm SHA must appear in skipped so the summary can show it",
-        )
+        assert [entry["sha"] for entry in include] == [SHA_B], "Cold SHA stays in include; warm SHA leaves include"
+        assert [entry["sha"] for entry in skipped] == [SHA_A], "Warm SHA must appear in skipped so the summary can show it"
 
     def test_build_matrix_with_all_shas_known_warm_yields_empty_include(self) -> None:
         """
@@ -519,12 +474,8 @@ class TestBuildMatrixFromDbKnownWarmFilter(unittest.TestCase):
         )
 
         # Assert
-        self.assertEqual(include, [], msg="All SHAs warm: nothing to build")
-        self.assertEqual(
-            sorted(entry["sha"] for entry in skipped),
-            [SHA_A, SHA_B],
-            msg="All SHAs warm: skipped lists every known-warm SHA",
-        )
+        assert include == [], "All SHAs warm: nothing to build"
+        assert sorted(entry["sha"] for entry in skipped) == [SHA_A, SHA_B], "All SHAs warm: skipped lists every known-warm SHA"
 
     def test_build_matrix_warm_filter_is_per_sha_not_per_downstream(self) -> None:
         """
@@ -548,16 +499,8 @@ class TestBuildMatrixFromDbKnownWarmFilter(unittest.TestCase):
         )
 
         # Assert
-        self.assertEqual(
-            [(entry["sha"], entry["tag"]) for entry in include],
-            [(SHA_B, "fkb")],
-            msg="Cold FKB must remain in include even when its sibling LKG is warm",
-        )
-        self.assertEqual(
-            [(entry["sha"], entry["tag"]) for entry in skipped],
-            [(SHA_A, "lkg")],
-            msg="Warm LKG must appear in skipped with its original tag preserved",
-        )
+        assert [(entry["sha"], entry["tag"]) for entry in include] == [(SHA_B, "fkb")], "Cold FKB must remain in include even when its sibling LKG is warm"
+        assert [(entry["sha"], entry["tag"]) for entry in skipped] == [(SHA_A, "lkg")], "Warm LKG must appear in skipped with its original tag preserved"
 
     def test_build_matrix_skipped_entry_preserves_tag_and_downstreams(self) -> None:
         """
@@ -582,15 +525,7 @@ class TestBuildMatrixFromDbKnownWarmFilter(unittest.TestCase):
         )
 
         # Assert
-        self.assertEqual(len(skipped), 1, msg="A single SHA produces a single skipped entry")
-        self.assertEqual(skipped[0]["sha"], SHA_A)
-        self.assertEqual(
-            skipped[0]["tag"],
-            "both",
-            msg="Skipped entry must carry the cross-role tag, not be reduced to 'lkg' or 'fkb'",
-        )
-        self.assertEqual(sorted(skipped[0]["downstreams"]), ["FLT", "physlib"])
-
-
-if __name__ == "__main__":
-    unittest.main()
+        assert len(skipped) == 1, "A single SHA produces a single skipped entry"
+        assert skipped[0]["sha"] == SHA_A
+        assert skipped[0]["tag"] == "both", "Skipped entry must carry the cross-role tag, not be reduced to 'lkg' or 'fkb'"
+        assert sorted(skipped[0]["downstreams"]) == ["FLT", "physlib"]

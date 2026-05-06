@@ -38,7 +38,6 @@ from __future__ import annotations
 import json
 import sys
 import tempfile
-import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -111,7 +110,7 @@ def _make_backend(statuses: dict[str, DownstreamStatusRecord] | None = None) -> 
 # ---------------------------------------------------------------------------
 
 
-class BuildSnapshotSchemaTests(unittest.TestCase):
+class TestBuildSnapshotSchema:
     """Tests for the top-level fields and schema version of build_snapshot()."""
 
     def test_schema_version_is_constant(self) -> None:
@@ -130,54 +129,50 @@ class BuildSnapshotSchemaTests(unittest.TestCase):
         snap = build_snapshot(backend, _INVENTORY, _UPSTREAM)
 
         # Assert
-        self.assertEqual(snap["schema_version"], SCHEMA_VERSION)
-        self.assertEqual(
-            snap["schema_version"],
-            1,
-            msg="Schema bumps must be deliberate; update consumers in lockstep",
-        )
+        assert snap["schema_version"] == SCHEMA_VERSION
+        assert snap["schema_version"] == 1, "Schema bumps must be deliberate; update consumers in lockstep"
 
     def test_upstream_field_matches_argument(self) -> None:
         """Scenario: upstream field reflects the caller-supplied value."""
         snap = build_snapshot(_make_backend(), _INVENTORY, _UPSTREAM)
-        self.assertEqual(snap["upstream"], _UPSTREAM)
+        assert snap["upstream"] == _UPSTREAM
 
     def test_exported_at_present_and_ends_with_z(self) -> None:
         """Scenario: exported_at is a UTC timestamp string ending in 'Z'."""
         snap = build_snapshot(_make_backend(), _INVENTORY, _UPSTREAM)
-        self.assertIn("exported_at", snap)
-        self.assertTrue(snap["exported_at"].endswith("Z"), snap["exported_at"])
+        assert "exported_at" in snap
+        assert snap["exported_at"].endswith("Z"), snap["exported_at"]
 
     def test_source_run_none_when_not_provided(self) -> None:
         """Scenario: source_run is null when not passed to build_snapshot."""
         snap = build_snapshot(_make_backend(), _INVENTORY, _UPSTREAM, source_run=None)
-        self.assertIsNone(snap["source_run"])
+        assert snap["source_run"] is None
 
     def test_source_run_included_when_provided(self) -> None:
         """Scenario: source_run dict is preserved verbatim in snapshot output."""
         source_run = {"run_id": "42", "run_url": "https://example.com/runs/42"}
         snap = build_snapshot(_make_backend(), _INVENTORY, _UPSTREAM, source_run=source_run)
-        self.assertEqual(snap["source_run"], source_run)
+        assert snap["source_run"] == source_run
 
     def test_downstreams_key_is_dict(self) -> None:
         """Scenario: downstreams field is a dict keyed by downstream name."""
         snap = build_snapshot(_make_backend(), _INVENTORY, _UPSTREAM)
-        self.assertIsInstance(snap["downstreams"], dict)
+        assert isinstance(snap["downstreams"], dict)
 
 
-class BuildSnapshotDownstreamFilterTests(unittest.TestCase):
+class TestBuildSnapshotDownstreamFilter:
     """Tests that only inventory-supplied downstreams appear in the snapshot."""
 
     def test_all_inventory_downstreams_present(self) -> None:
         """Scenario: every downstream in the inventory appears in the snapshot."""
         snap = build_snapshot(_make_backend(), _INVENTORY, _UPSTREAM)
-        self.assertIn("physlib", snap["downstreams"])
-        self.assertIn("alglib", snap["downstreams"])
+        assert "physlib" in snap["downstreams"]
+        assert "alglib" in snap["downstreams"]
 
     def test_empty_inventory_produces_empty_downstreams(self) -> None:
         """Scenario: empty inventory results in an empty downstreams dict."""
         snap = build_snapshot(_make_backend(), {}, _UPSTREAM)
-        self.assertEqual(snap["downstreams"], {})
+        assert snap["downstreams"] == {}
 
     def test_backend_called_with_correct_workflow_and_upstream(self) -> None:
         """Scenario: load_all_statuses is called with workflow=regression."""
@@ -186,15 +181,15 @@ class BuildSnapshotDownstreamFilterTests(unittest.TestCase):
         backend.load_all_statuses.assert_called_once_with("regression", _UPSTREAM)
 
 
-class BuildSnapshotCommitFieldTests(unittest.TestCase):
+class TestBuildSnapshotCommitField:
     """Tests for commit field population in individual downstream entries."""
 
     def test_no_status_produces_null_commits(self) -> None:
         """Scenario: downstream with no stored status gets null commit fields."""
         snap = build_snapshot(_make_backend(), _INVENTORY, _UPSTREAM)
         entry = snap["downstreams"]["physlib"]
-        self.assertIsNone(entry["last_known_good_commit"])
-        self.assertIsNone(entry["first_known_bad_commit"])
+        assert entry["last_known_good_commit"] is None
+        assert entry["first_known_bad_commit"] is None
 
     def test_lkg_commit_reflected_from_status(self) -> None:
         """Scenario: stored LKG commit appears in snapshot entry."""
@@ -202,9 +197,7 @@ class BuildSnapshotCommitFieldTests(unittest.TestCase):
             "physlib": DownstreamStatusRecord(last_known_good_commit="abc123def456")
         }
         snap = build_snapshot(_make_backend(statuses), _INVENTORY, _UPSTREAM)
-        self.assertEqual(
-            snap["downstreams"]["physlib"]["last_known_good_commit"], "abc123def456"
-        )
+        assert snap["downstreams"]["physlib"]["last_known_good_commit"] == "abc123def456"
 
     def test_first_known_bad_included_for_active_regression(self) -> None:
         """Scenario: active regression has first_known_bad_commit set in snapshot."""
@@ -215,7 +208,7 @@ class BuildSnapshotCommitFieldTests(unittest.TestCase):
             )
         }
         snap = build_snapshot(_make_backend(statuses), _INVENTORY, _UPSTREAM)
-        self.assertEqual(snap["downstreams"]["physlib"]["first_known_bad_commit"], "bad222")
+        assert snap["downstreams"]["physlib"]["first_known_bad_commit"] == "bad222"
 
     def test_downstream_with_no_lkg_has_null_first_known_bad(self) -> None:
         """Scenario: downstream with only passing state has null first_known_bad_commit."""
@@ -223,24 +216,24 @@ class BuildSnapshotCommitFieldTests(unittest.TestCase):
             "physlib": DownstreamStatusRecord(last_known_good_commit="goodabc")
         }
         snap = build_snapshot(_make_backend(statuses), _INVENTORY, _UPSTREAM)
-        self.assertIsNone(snap["downstreams"]["physlib"]["first_known_bad_commit"])
+        assert snap["downstreams"]["physlib"]["first_known_bad_commit"] is None
 
     def test_status_present_for_only_one_downstream(self) -> None:
         """Scenario: downstream with status gets populated fields; other gets nulls."""
         statuses = {"physlib": DownstreamStatusRecord(last_known_good_commit="abc")}
         snap = build_snapshot(_make_backend(statuses), _INVENTORY, _UPSTREAM)
-        self.assertEqual(snap["downstreams"]["physlib"]["last_known_good_commit"], "abc")
-        self.assertIsNone(snap["downstreams"]["alglib"]["last_known_good_commit"])
+        assert snap["downstreams"]["physlib"]["last_known_good_commit"] == "abc"
+        assert snap["downstreams"]["alglib"]["last_known_good_commit"] is None
 
 
-class BuildSnapshotReleaseFieldTests(unittest.TestCase):
+class TestBuildSnapshotReleaseField:
     """Tests for last_good_release and last_good_release_commit in snapshot entries."""
 
     def test_last_good_release_null_when_no_status(self) -> None:
         """Scenario: downstream with no status gets null last_good_release fields."""
         snap = build_snapshot(_make_backend(), _INVENTORY, _UPSTREAM)
-        self.assertIsNone(snap["downstreams"]["physlib"]["last_good_release"])
-        self.assertIsNone(snap["downstreams"]["physlib"]["last_good_release_commit"])
+        assert snap["downstreams"]["physlib"]["last_good_release"] is None
+        assert snap["downstreams"]["physlib"]["last_good_release_commit"] is None
 
     def test_last_good_release_reflected_from_status(self) -> None:
         """Scenario: stored release tag and SHA appear in snapshot entry."""
@@ -252,8 +245,8 @@ class BuildSnapshotReleaseFieldTests(unittest.TestCase):
             )
         }
         snap = build_snapshot(_make_backend(statuses), _INVENTORY, _UPSTREAM)
-        self.assertEqual(snap["downstreams"]["physlib"]["last_good_release"], "v4.13.0")
-        self.assertEqual(snap["downstreams"]["physlib"]["last_good_release_commit"], "sha_v4_13_0")
+        assert snap["downstreams"]["physlib"]["last_good_release"] == "v4.13.0"
+        assert snap["downstreams"]["physlib"]["last_good_release_commit"] == "sha_v4_13_0"
 
     def test_last_good_release_null_when_status_has_none(self) -> None:
         """Scenario: status present but release fields None produces null in snapshot."""
@@ -265,20 +258,18 @@ class BuildSnapshotReleaseFieldTests(unittest.TestCase):
             )
         }
         snap = build_snapshot(_make_backend(statuses), _INVENTORY, _UPSTREAM)
-        self.assertIsNone(snap["downstreams"]["physlib"]["last_good_release"])
-        self.assertIsNone(snap["downstreams"]["physlib"]["last_good_release_commit"])
+        assert snap["downstreams"]["physlib"]["last_good_release"] is None
+        assert snap["downstreams"]["physlib"]["last_good_release_commit"] is None
 
 
-class BuildSnapshotInventoryEnrichmentTests(unittest.TestCase):
+class TestBuildSnapshotInventoryEnrichment:
     """Tests that repo and dependency_name come from the inventory, not the status table."""
 
     def test_repo_comes_from_inventory(self) -> None:
         """Scenario: repo field in snapshot entry matches DownstreamConfig.repo."""
         snap = build_snapshot(_make_backend(), _INVENTORY, _UPSTREAM)
-        self.assertEqual(
-            snap["downstreams"]["physlib"]["repo"], "leanprover-community/physlib"
-        )
-        self.assertEqual(snap["downstreams"]["alglib"]["repo"], "some-org/alglib")
+        assert snap["downstreams"]["physlib"]["repo"] == "leanprover-community/physlib"
+        assert snap["downstreams"]["alglib"]["repo"] == "some-org/alglib"
 
     def test_dependency_name_comes_from_inventory(self) -> None:
         """Scenario: dependency_name reflects DownstreamConfig.dependency_name."""
@@ -289,7 +280,7 @@ class BuildSnapshotInventoryEnrichmentTests(unittest.TestCase):
             dependency_name="my-lib",
         )
         snap = build_snapshot(_make_backend(), {"custom": custom_dep}, _UPSTREAM)
-        self.assertEqual(snap["downstreams"]["custom"]["dependency_name"], "my-lib")
+        assert snap["downstreams"]["custom"]["dependency_name"] == "my-lib"
 
 
 # ---------------------------------------------------------------------------
@@ -297,7 +288,7 @@ class BuildSnapshotInventoryEnrichmentTests(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 
-class MainCliTests(unittest.TestCase):
+class TestMainCli:
     """Integration tests for the export_lkg_snapshot CLI entry point."""
 
     def _run(
@@ -329,39 +320,39 @@ class MainCliTests(unittest.TestCase):
             ):
                 rc = mod.main()
 
-            self.assertEqual(rc, 0)
+            assert rc == 0
             return json.loads(out_path.read_text())
 
     def test_main_returns_zero_on_success(self) -> None:
         """Scenario: successful export exits with code 0."""
         snap = self._run()
-        self.assertIsNotNone(snap)
+        assert snap is not None
 
     def test_disabled_downstreams_included_in_snapshot(self) -> None:
         """Scenario: export uses include_disabled=True so disabled entries appear in snapshot."""
         snap = self._run()
-        self.assertIn("disabled-project", snap["downstreams"])
+        assert "disabled-project" in snap["downstreams"]
 
     def test_enabled_downstreams_present(self) -> None:
         """Scenario: enabled inventory entries appear in the snapshot output file."""
         snap = self._run()
-        self.assertIn("physlib", snap["downstreams"])
-        self.assertIn("alglib", snap["downstreams"])
+        assert "physlib" in snap["downstreams"]
+        assert "alglib" in snap["downstreams"]
 
     def test_output_is_valid_json(self) -> None:
         """Scenario: output file is parseable JSON."""
         snap = self._run()
-        self.assertIsInstance(snap, dict)
+        assert isinstance(snap, dict)
 
     def test_custom_upstream_reflected(self) -> None:
         """Scenario: --upstream arg is reflected in snapshot output."""
         snap = self._run(extra_argv=["--upstream", "some-org/some-upstream"])
-        self.assertEqual(snap["upstream"], "some-org/some-upstream")
+        assert snap["upstream"] == "some-org/some-upstream"
 
     def test_source_run_null_for_dry_run_backend(self) -> None:
         """Scenario: dry-run backend never triggers SQL queries; source_run is null."""
         snap = self._run()
-        self.assertIsNone(snap["source_run"])
+        assert snap["source_run"] is None
 
     def test_lkg_commit_in_output_from_status(self) -> None:
         """Scenario: non-null LKG status is reflected in the output JSON file."""
@@ -369,9 +360,7 @@ class MainCliTests(unittest.TestCase):
             "physlib": DownstreamStatusRecord(last_known_good_commit="deadbeef")
         }
         snap = self._run(statuses=statuses)
-        self.assertEqual(
-            snap["downstreams"]["physlib"]["last_known_good_commit"], "deadbeef"
-        )
+        assert snap["downstreams"]["physlib"]["last_known_good_commit"] == "deadbeef"
 
 
 # ---------------------------------------------------------------------------
@@ -379,7 +368,7 @@ class MainCliTests(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 
-class FetchSourceRunTests(unittest.TestCase):
+class TestFetchSourceRun:
     """Tests for the _fetch_source_run() helper."""
 
     def test_returns_none_when_no_dsn(self) -> None:
@@ -388,7 +377,7 @@ class FetchSourceRunTests(unittest.TestCase):
 
         with patch.dict("os.environ", {}, clear=True):
             result = _fetch_source_run(None)
-        self.assertIsNone(result)
+        assert result is None
 
     def test_returns_none_when_no_runs_found(self) -> None:
         """Scenario: SQL backend has no regression runs → returns None."""
@@ -399,7 +388,7 @@ class FetchSourceRunTests(unittest.TestCase):
             patch("sqlalchemy.create_engine", return_value=MagicMock()),
         ):
             result = _fetch_source_run("postgresql://fake")
-        self.assertIsNone(result)
+        assert result is None
 
     def test_returns_dict_with_run_id_and_url(self) -> None:
         """Scenario: SQL has a run → returns dict with run_id and run_url."""
@@ -413,10 +402,10 @@ class FetchSourceRunTests(unittest.TestCase):
         ):
             result = _fetch_source_run("postgresql://fake")
 
-        self.assertIsNotNone(result)
-        self.assertEqual(result["run_id"], "99")
-        self.assertIn("owner/repo", result["run_url"])
-        self.assertIn("99", result["run_url"])
+        assert result is not None
+        assert result["run_id"] == "99"
+        assert "owner/repo" in result["run_url"]
+        assert "99" in result["run_url"]
 
     def test_returns_none_on_exception(self) -> None:
         """
@@ -436,14 +425,7 @@ class FetchSourceRunTests(unittest.TestCase):
             result = _fetch_source_run("postgresql://fake")
 
         # Assert
-        self.assertIsNone(
-            result,
-            msg=(
+        assert result is None, (
                 "DB exceptions in _fetch_source_run must not propagate; "
                 "they must degrade to source_run=None so publication continues"
-            ),
-        )
-
-
-if __name__ == "__main__":
-    unittest.main()
+            )

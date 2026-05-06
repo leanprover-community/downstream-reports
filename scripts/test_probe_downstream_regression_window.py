@@ -38,7 +38,6 @@ from __future__ import annotations
 
 import subprocess
 import sys
-import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -54,7 +53,7 @@ from scripts.probe_downstream_regression_window import (
 from scripts.storage import DownstreamStatusRecord
 
 
-class TrySkipKnownBadBisectTests(unittest.TestCase):
+class TestTrySkipKnownBadBisect:
     """``try_skip_known_bad_bisect`` — the probe-side skip heuristic."""
 
     _head_probe_run = subprocess.CompletedProcess(
@@ -122,7 +121,7 @@ class TrySkipKnownBadBisectTests(unittest.TestCase):
         result, _ = self._call(skip_enabled=False, previous=previous)
 
         # Assert
-        self.assertIsNone(result)
+        assert result is None
 
     def test_returns_none_when_no_first_known_bad(self) -> None:
         """Without a prior ``first_known_bad`` there is no culprit to reuse.
@@ -138,7 +137,7 @@ class TrySkipKnownBadBisectTests(unittest.TestCase):
         result, _ = self._call(previous=previous)
 
         # Assert
-        self.assertIsNone(result)
+        assert result is None
 
     def test_returns_none_when_downstream_changed(self) -> None:
         """A new downstream commit invalidates the stored culprit attribution.
@@ -158,7 +157,7 @@ class TrySkipKnownBadBisectTests(unittest.TestCase):
         result, _ = self._call(previous=previous)
 
         # Assert
-        self.assertIsNone(result)
+        assert result is None
 
     def test_returns_none_when_not_ancestor(self) -> None:
         """The stored culprit is no longer an ancestor — must re-bisect.
@@ -178,7 +177,7 @@ class TrySkipKnownBadBisectTests(unittest.TestCase):
         result, _ = self._call(previous=previous, ancestor=False)
 
         # Assert
-        self.assertIsNone(result)
+        assert result is None
 
     def test_returns_failing_result_when_conditions_match(self) -> None:
         """All three guards match: emit a ``head-only-known-bad`` failed result.
@@ -198,18 +197,14 @@ class TrySkipKnownBadBisectTests(unittest.TestCase):
         result, selection = self._call(previous=previous)
 
         # Assert
-        self.assertIsNotNone(result)
-        self.assertEqual(result.outcome, Outcome.FAILED)
-        self.assertEqual(
-            result.search_mode,
-            "head-only-known-bad",
-            msg="search_mode tag distinguishes skipped-bisect from fresh-bisect failures",
-        )
-        self.assertIn("Re-bisecting", selection.decision_reason)
-        self.assertIn("Skip the bisect", selection.next_action)
+        assert result is not None
+        assert result.outcome == Outcome.FAILED
+        assert result.search_mode == "head-only-known-bad", "search_mode tag distinguishes skipped-bisect from fresh-bisect failures"
+        assert "Re-bisecting" in selection.decision_reason
+        assert "Skip the bisect" in selection.next_action
 
 
-class RunCulpritProbeTests(unittest.TestCase):
+class TestRunCulpritProbe:
     """``run_culprit_probe`` — the culprit re-build that follows a known-bad skip."""
 
     def test_runs_validation_attempt_with_culprit_probe_output_dir(self) -> None:
@@ -240,13 +235,9 @@ class RunCulpritProbeTests(unittest.TestCase):
             )
 
         # Assert
-        self.assertTrue(mock_run.called)
+        assert mock_run.called
         call_kwargs = mock_run.call_args[1]
-        self.assertEqual(
-            call_kwargs["output_dir"],
-            Path("/dummy/output/culprit-probe"),
-            msg="Culprit run writes to a dedicated subdir to keep its log linkable",
-        )
+        assert call_kwargs["output_dir"] == Path("/dummy/output/culprit-probe"), "Culprit run writes to a dedicated subdir to keep its log linkable"
 
     def test_does_not_propagate_exception(self) -> None:
         """Any exception inside ``run_validation_attempt`` is swallowed.
@@ -278,7 +269,7 @@ class RunCulpritProbeTests(unittest.TestCase):
             )
 
 
-class ProbeParserTests(unittest.TestCase):
+class TestProbeParser:
     """``probe_build_parser()`` — flag surface for the probe step."""
 
     _REQUIRED = ["--selection", "/tmp/s.json", "--workdir", "/tmp", "--output-dir", "/tmp"]
@@ -289,7 +280,7 @@ class ProbeParserTests(unittest.TestCase):
         args = probe_build_parser().parse_args(self._REQUIRED)
 
         # Assert
-        self.assertTrue(args.skip_known_bad_bisect)
+        assert args.skip_known_bad_bisect
 
     def test_skip_known_bad_bisect_can_be_disabled(self) -> None:
         """``--no-skip-known-bad-bisect`` forces a full bisect.
@@ -303,7 +294,7 @@ class ProbeParserTests(unittest.TestCase):
         )
 
         # Assert
-        self.assertFalse(args.skip_known_bad_bisect)
+        assert not args.skip_known_bad_bisect
 
     def test_skip_known_bad_bisect_can_be_explicitly_enabled(self) -> None:
         """``--skip-known-bad-bisect`` is accepted as an explicit confirmation."""
@@ -313,7 +304,7 @@ class ProbeParserTests(unittest.TestCase):
         )
 
         # Assert
-        self.assertTrue(args.skip_known_bad_bisect)
+        assert args.skip_known_bad_bisect
 
     def test_max_commits_defaults_and_overrides(self) -> None:
         """``--max-commits`` defaults to 100000 and can be lowered for slow downstreams.
@@ -326,14 +317,10 @@ class ProbeParserTests(unittest.TestCase):
         """
         # Arrange / Act / Assert — default
         args = probe_build_parser().parse_args(self._REQUIRED)
-        self.assertEqual(args.max_commits, 100000)
+        assert args.max_commits == 100000
 
         # Act / Assert — override
         args = probe_build_parser().parse_args(
             [*self._REQUIRED, "--max-commits", "50"]
         )
-        self.assertEqual(args.max_commits, 50)
-
-
-if __name__ == "__main__":
-    unittest.main()
+        assert args.max_commits == 50

@@ -33,8 +33,6 @@ from __future__ import annotations
 
 import json
 import sys
-import tempfile
-import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -42,7 +40,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from scripts.models import DownstreamConfig, load_inventory
 
 
-class DownstreamConfigDefaultsTests(unittest.TestCase):
+class TestDownstreamConfigDefaults:
     """Field defaults on ``DownstreamConfig``."""
 
     def test_skip_flags_default_to_true(self) -> None:
@@ -58,20 +56,18 @@ class DownstreamConfigDefaultsTests(unittest.TestCase):
         config = DownstreamConfig(name="foo", repo="owner/foo", default_branch="main")
 
         # Assert
-        self.assertTrue(
-            config.skip_already_good,
-            msg="skip_already_good defaults on; flipping silently disables a major optimisation",
+        assert config.skip_already_good, (
+            "skip_already_good defaults on; flipping silently disables a major optimisation"
         )
-        self.assertTrue(
-            config.skip_known_bad_bisect,
-            msg="skip_known_bad_bisect defaults on; flipping silently disables a major optimisation",
+        assert config.skip_known_bad_bisect, (
+            "skip_known_bad_bisect defaults on; flipping silently disables a major optimisation"
         )
 
 
-class LoadInventorySkipFlagTests(unittest.TestCase):
+class TestLoadInventorySkipFlags:
     """Inventory propagation of the per-downstream skip-flag overrides."""
 
-    def test_inventory_can_disable_skip_already_good_per_downstream(self) -> None:
+    def test_inventory_can_disable_skip_already_good_per_downstream(self, tmp_path: Path) -> None:
         """A JSON inventory entry with ``skip_already_good: false`` propagates.
 
         Some downstreams have unreliable state-tracking (or have known
@@ -94,23 +90,16 @@ class LoadInventorySkipFlagTests(unittest.TestCase):
                 },
             ],
         }
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
-            json.dump(inventory, f)
-            path = Path(f.name)
+        path = tmp_path / "inventory.json"
+        path.write_text(json.dumps(inventory))
 
         # Act
         loaded = load_inventory(path)
 
         # Assert
-        self.assertFalse(
-            loaded["slow-downstream"].skip_already_good,
-            msg="Inventory's `skip_already_good: false` must propagate to DownstreamConfig",
+        assert not loaded["slow-downstream"].skip_already_good, (
+            "Inventory's `skip_already_good: false` must propagate to DownstreamConfig"
         )
-        self.assertTrue(
-            loaded["slow-downstream"].skip_known_bad_bisect,
-            msg="Per-flag overrides are independent — only the flagged one flips",
+        assert loaded["slow-downstream"].skip_known_bad_bisect, (
+            "Per-flag overrides are independent — only the flagged one flips"
         )
-
-
-if __name__ == "__main__":
-    unittest.main()

@@ -41,7 +41,6 @@ from __future__ import annotations
 
 import sys
 import tempfile
-import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -62,7 +61,7 @@ from scripts.validation import (
 )
 
 
-class InvokeToolTests(unittest.TestCase):
+class TestInvokeTool:
     """Choosing how the workflow invokes the validator executable."""
 
     def test_prebuilt_tool_binary_is_used_when_provided(self) -> None:
@@ -108,33 +107,25 @@ class InvokeToolTests(unittest.TestCase):
 
             # Assert
             invoked_command = mock_popen.call_args.args[0]
-            self.assertEqual(
-                str(tool_exe),
-                invoked_command[0],
-                msg="argv[0] is the prebuilt binary, not `lake`",
-            )
-            self.assertNotIn(
-                "lake",
-                invoked_command,
-                msg="The prebuilt path bypasses `lake exe` entirely",
-            )
-            self.assertIn("--from", invoked_command)
-            self.assertIn("--to", invoked_command)
-            self.assertNotIn("--commits-file", invoked_command)
+            assert str(tool_exe) == invoked_command[0], "argv[0] is the prebuilt binary, not `lake`"
+            assert "lake" not in invoked_command, "The prebuilt path bypasses `lake exe` entirely"
+            assert "--from" in invoked_command
+            assert "--to" in invoked_command
+            assert "--commits-file" not in invoked_command
 
 
-class ClassifyExitCodeTests(unittest.TestCase):
+class TestClassifyExitCode:
     """Mapping hopscotch exit codes to ``Outcome``."""
 
     def test_zero_is_passed(self) -> None:
         """Exit 0 maps to ``PASSED``.  Hopscotch's success contract."""
         # Arrange / Act / Assert
-        self.assertEqual(classify_exit_code(0), Outcome.PASSED)
+        assert classify_exit_code(0) == Outcome.PASSED
 
     def test_one_is_failed(self) -> None:
         """Exit 1 maps to ``FAILED``.  This is hopscotch's "build broke" signal."""
         # Arrange / Act / Assert
-        self.assertEqual(classify_exit_code(1), Outcome.FAILED)
+        assert classify_exit_code(1) == Outcome.FAILED
 
     def test_other_codes_are_error(self) -> None:
         """Any non-{0,1} exit is ``ERROR`` — including process-killed signals like 137.
@@ -145,15 +136,11 @@ class ClassifyExitCodeTests(unittest.TestCase):
         on infrastructure failures.
         """
         # Arrange / Act / Assert
-        self.assertEqual(classify_exit_code(2), Outcome.ERROR)
-        self.assertEqual(
-            classify_exit_code(137),
-            Outcome.ERROR,
-            msg="Signal-kill codes (128 + signal) map to ERROR, not FAILED",
-        )
+        assert classify_exit_code(2) == Outcome.ERROR
+        assert classify_exit_code(137) == Outcome.ERROR, "Signal-kill codes (128 + signal) map to ERROR, not FAILED"
 
 
-class BuildSkipResultTests(unittest.TestCase):
+class TestBuildSkipResult:
     """Synthesising a ``ValidationResult`` for skip-heuristic paths."""
 
     def test_skip_result_has_correct_outcome_and_search_mode(self) -> None:
@@ -185,14 +172,14 @@ class BuildSkipResultTests(unittest.TestCase):
         )
 
         # Assert
-        self.assertEqual(result.outcome, Outcome.PASSED)
-        self.assertEqual(result.search_mode, "skipped-already-good")
-        self.assertEqual(result.downstream_commit, "ds_abc")
-        self.assertEqual(result.target_commit, "target_abc")
-        self.assertEqual(result.tested_commits, ["target_abc"])
-        self.assertIsNone(result.error)
-        self.assertIsNone(result.first_failing_commit)
-        self.assertEqual(result.last_successful_commit, "target_abc")
+        assert result.outcome == Outcome.PASSED
+        assert result.search_mode == "skipped-already-good"
+        assert result.downstream_commit == "ds_abc"
+        assert result.target_commit == "target_abc"
+        assert result.tested_commits == ["target_abc"]
+        assert result.error is None
+        assert result.first_failing_commit is None
+        assert result.last_successful_commit == "target_abc"
 
     def test_skip_result_with_no_target_has_empty_tested_commits(self) -> None:
         """Without a target commit, ``tested_commits`` is ``[]`` rather than ``[None]``.
@@ -220,14 +207,10 @@ class BuildSkipResultTests(unittest.TestCase):
         )
 
         # Assert
-        self.assertEqual(
-            result.tested_commits,
-            [],
-            msg="No target ⇒ empty list, not [None] — keeps first_bad_position honest",
-        )
+        assert result.tested_commits == [], "No target ⇒ empty list, not [None] — keeps first_bad_position honest"
 
 
-class CommitPlanArtifactTests(unittest.TestCase):
+class TestCommitPlanArtifact:
     """Runner-side commit-plan logging and artifacts."""
 
     def test_commit_plan_artifact_keeps_full_list_while_stdout_stays_brief(self) -> None:
@@ -258,9 +241,9 @@ class CommitPlanArtifactTests(unittest.TestCase):
             # Assert — artifact contains both commits with full SHAs and titles
             artifact_path = commit_plan_artifact_path(output_dir)
             artifact_text = artifact_path.read_text()
-            self.assertIn("bisect window (oldest to newest)", artifact_text)
-            self.assertIn(f"- {'a' * 40} first title", artifact_text)
-            self.assertIn(f"- {'b' * 40} second title", artifact_text)
+            assert "bisect window (oldest to newest)" in artifact_text
+            assert f"- {'a' * 40} first title" in artifact_text
+            assert f"- {'b' * 40} second title" in artifact_text
 
             # Act — print the brief summary
             with patch("builtins.print") as mock_print:
@@ -278,7 +261,7 @@ class CommitPlanArtifactTests(unittest.TestCase):
             )
 
 
-class WindowSelectionArtifactTests(unittest.TestCase):
+class TestWindowSelectionArtifact:
     """Round-trip serialisation of the select-to-probe handoff artifact."""
 
     def test_selection_artifact_round_trip_preserves_probe_metadata(self) -> None:
@@ -324,14 +307,14 @@ class WindowSelectionArtifactTests(unittest.TestCase):
             loaded = load_selection(artifact_path)
 
             # Assert
-            self.assertTrue(loaded.has_bisect_window)
-            self.assertEqual(loaded.search_mode, "bisect")
-            self.assertEqual(loaded.tested_commits, ["good" * 10, "bad" * 10])
-            self.assertEqual(loaded.tested_commit_details[0].title, "good title")
-            self.assertEqual(loaded.head_probe_failure_stage, "build")
-            self.assertEqual(loaded.selected_lower_bound_commit, "good" * 10)
-            self.assertEqual(loaded.decision_reason, "A usable window exists.")
-            self.assertEqual(loaded.next_action, "Run the probe task.")
+            assert loaded.has_bisect_window
+            assert loaded.search_mode == "bisect"
+            assert loaded.tested_commits == ["good" * 10, "bad" * 10]
+            assert loaded.tested_commit_details[0].title == "good title"
+            assert loaded.head_probe_failure_stage == "build"
+            assert loaded.selected_lower_bound_commit == "good" * 10
+            assert loaded.decision_reason == "A usable window exists."
+            assert loaded.next_action == "Run the probe task."
 
     def test_selection_round_trip_preserves_previous_episode_state(self) -> None:
         """Prior-episode fields (LKG, FKB, downstream_commit) survive serialisation.
@@ -363,9 +346,9 @@ class WindowSelectionArtifactTests(unittest.TestCase):
             loaded = load_selection(artifact_path)
 
             # Assert
-            self.assertEqual(loaded.previous_first_known_bad_commit, "f" * 40)
-            self.assertEqual(loaded.previous_downstream_commit, "d" * 40)
-            self.assertEqual(loaded.previous_last_known_good_commit, "g" * 40)
+            assert loaded.previous_first_known_bad_commit == "f" * 40
+            assert loaded.previous_downstream_commit == "d" * 40
+            assert loaded.previous_last_known_good_commit == "g" * 40
 
     def test_selection_round_trip_preserves_skip_known_bad_bisect(self) -> None:
         """A per-downstream ``skip_known_bad_bisect=False`` opt-out survives the trip.
@@ -394,10 +377,10 @@ class WindowSelectionArtifactTests(unittest.TestCase):
             loaded = load_selection(artifact_path)
 
             # Assert
-            self.assertFalse(loaded.skip_known_bad_bisect)
+            assert not loaded.skip_known_bad_bisect
 
 
-class RenderSelectionSummaryTests(unittest.TestCase):
+class TestRenderSelectionSummary:
     """Markdown summary emitted by the select job."""
 
     def test_selection_summary_explains_skipped_probe(self) -> None:
@@ -423,12 +406,8 @@ class RenderSelectionSummaryTests(unittest.TestCase):
         summary = render_selection_summary(selection)
 
         # Assert
-        self.assertIn("Window Selection Summary", summary)
-        self.assertIn("Head probe outcome: `passed`", summary)
-        self.assertIn("Decision:", summary)
-        self.assertIn("there is no failing window to bisect", summary)
-        self.assertIn("Skip the probe task", summary)
-
-
-if __name__ == "__main__":
-    unittest.main()
+        assert "Window Selection Summary" in summary
+        assert "Head probe outcome: `passed`" in summary
+        assert "Decision:" in summary
+        assert "there is no failing window to bisect" in summary
+        assert "Skip the probe task" in summary

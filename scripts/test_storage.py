@@ -40,7 +40,6 @@ import json
 import os
 import sys
 import tempfile
-import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -52,6 +51,7 @@ from scripts.storage import (
     create_backend,
     result_to_row,
 )
+import pytest
 
 
 # ----------------------------------------------------------------------
@@ -119,7 +119,7 @@ def _make_run_result(
 # ----------------------------------------------------------------------
 
 
-class TestResultToRow(unittest.TestCase):
+class TestResultToRow:
     """Tests for ``result_to_row``."""
 
     def test_result_to_row_preserves_every_dataclass_field(self) -> None:
@@ -164,22 +164,15 @@ class TestResultToRow(unittest.TestCase):
         row = result_to_row(record)
 
         # Assert (spot-check a handful of representative fields)
-        self.assertEqual(row["downstream"], "TestDownstream")
-        self.assertEqual(row["outcome"], "passed")
-        self.assertEqual(row["pinned_commit"], "pin_abc")
-        self.assertIsNone(row["error"], msg="None must serialise as None, not 'None' string")
-        self.assertFalse(
-            row["commit_window_truncated"],
-            msg="False must serialise as False, not 0 or 'false'",
-        )
+        assert row["downstream"] == "TestDownstream"
+        assert row["outcome"] == "passed"
+        assert row["pinned_commit"] == "pin_abc"
+        assert row["error"] is None, "None must serialise as None, not 'None' string"
+        assert not row["commit_window_truncated"], "False must serialise as False, not 0 or 'false'"
         # Assert (full coverage via field introspection — guards against
         # any future field being silently dropped from the serialiser).
         for field in dataclasses.fields(record):
-            self.assertIn(
-                field.name,
-                row,
-                msg=f"result_to_row must include every dataclass field; missing {field.name!r}",
-            )
+            assert field.name in row, f"result_to_row must include every dataclass field; missing {field.name!r}"
 
 
 # ----------------------------------------------------------------------
@@ -187,7 +180,7 @@ class TestResultToRow(unittest.TestCase):
 # ----------------------------------------------------------------------
 
 
-class TestCreateBackendFactory(unittest.TestCase):
+class TestCreateBackendFactory:
     """Tests for ``create_backend`` selection logic."""
 
     def test_create_backend_filesystem_with_state_root_returns_filesystem_backend(
@@ -205,11 +198,7 @@ class TestCreateBackendFactory(unittest.TestCase):
             backend = create_backend("filesystem", state_root=Path(tmp))
 
             # Assert
-            self.assertIsInstance(
-                backend,
-                FilesystemBackend,
-                msg="`--backend filesystem` must return a FilesystemBackend instance",
-            )
+            assert isinstance(backend, FilesystemBackend), "`--backend filesystem` must return a FilesystemBackend instance"
 
     def test_create_backend_filesystem_without_state_root_raises_system_exit(self) -> None:
         """
@@ -220,7 +209,7 @@ class TestCreateBackendFactory(unittest.TestCase):
         flag.
         """
         # Arrange / Act / Assert
-        with self.assertRaises(SystemExit):
+        with pytest.raises(SystemExit):
             create_backend("filesystem")
 
     def test_create_backend_sql_without_postgres_dsn_raises_system_exit(self) -> None:
@@ -236,7 +225,7 @@ class TestCreateBackendFactory(unittest.TestCase):
         old_dsn = os.environ.pop("POSTGRES_DSN", None)
         try:
             # Act / Assert
-            with self.assertRaises(SystemExit):
+            with pytest.raises(SystemExit):
                 create_backend("sql")
         finally:
             # Restore so subsequent tests see the original environment.
@@ -251,7 +240,7 @@ class TestCreateBackendFactory(unittest.TestCase):
 # ----------------------------------------------------------------------
 
 
-class TestFilesystemBackendStatusRoundTrip(unittest.TestCase):
+class TestFilesystemBackendStatusRoundTrip:
     """Tests for FilesystemBackend's ``save_run`` / ``load_all_statuses`` round trip."""
 
     def test_load_all_statuses_with_no_status_file_returns_empty_dict(self) -> None:
@@ -264,11 +253,7 @@ class TestFilesystemBackendStatusRoundTrip(unittest.TestCase):
         # Arrange / Act / Assert
         with tempfile.TemporaryDirectory() as tmp:
             backend = FilesystemBackend(Path(tmp))
-            self.assertEqual(
-                backend.load_all_statuses("regression", _UPSTREAM),
-                {},
-                msg="Missing status file must read as an empty mapping",
-            )
+            assert backend.load_all_statuses("regression", _UPSTREAM) == {}, "Missing status file must read as an empty mapping"
 
     def test_save_run_then_load_round_trips_lkg_and_pinned_commit(self) -> None:
         """
@@ -325,9 +310,9 @@ class TestFilesystemBackendStatusRoundTrip(unittest.TestCase):
             loaded = backend.load_all_statuses("regression", _UPSTREAM)
 
             # Assert
-            self.assertIn("TestDownstream", loaded)
-            self.assertEqual(loaded["TestDownstream"].last_known_good_commit, "target_abc")
-            self.assertEqual(loaded["TestDownstream"].pinned_commit, "pin_abc")
+            assert "TestDownstream" in loaded
+            assert loaded["TestDownstream"].last_known_good_commit == "target_abc"
+            assert loaded["TestDownstream"].pinned_commit == "pin_abc"
 
     def test_save_run_round_trips_downstream_commit(self) -> None:
         """
@@ -361,11 +346,7 @@ class TestFilesystemBackendStatusRoundTrip(unittest.TestCase):
             loaded = backend.load_all_statuses("regression", _UPSTREAM)
 
             # Assert
-            self.assertEqual(
-                loaded["TestDownstream"].downstream_commit,
-                "ds_commit_abc",
-                msg="downstream_commit round-trip is required for skip heuristics to work",
-            )
+            assert loaded["TestDownstream"].downstream_commit == "ds_commit_abc", "downstream_commit round-trip is required for skip heuristics to work"
 
     def test_save_run_round_trips_last_good_release_fields(self) -> None:
         """
@@ -400,11 +381,11 @@ class TestFilesystemBackendStatusRoundTrip(unittest.TestCase):
             loaded = backend.load_all_statuses("regression", _UPSTREAM)
 
             # Assert
-            self.assertEqual(loaded["TestDownstream"].last_good_release, "v4.13.0")
-            self.assertEqual(loaded["TestDownstream"].last_good_release_commit, "sha_v4_13_0")
+            assert loaded["TestDownstream"].last_good_release == "v4.13.0"
+            assert loaded["TestDownstream"].last_good_release_commit == "sha_v4_13_0"
 
 
-class TestFilesystemBackendBackwardsCompatibility(unittest.TestCase):
+class TestFilesystemBackendBackwardsCompatibility:
     """Tests for reading status files that pre-date newer fields."""
 
     def test_load_all_statuses_with_pre_release_schema_loads_release_fields_as_none(
@@ -443,14 +424,8 @@ class TestFilesystemBackendBackwardsCompatibility(unittest.TestCase):
             loaded = backend.load_all_statuses("regression", _UPSTREAM)
 
             # Assert
-            self.assertIsNone(
-                loaded["OldDownstream"].last_good_release,
-                msg="Pre-release schema files must load with None for new fields",
-            )
-            self.assertIsNone(
-                loaded["OldDownstream"].last_good_release_commit,
-                msg="Pre-release schema files must load with None for new fields",
-            )
+            assert loaded["OldDownstream"].last_good_release is None, "Pre-release schema files must load with None for new fields"
+            assert loaded["OldDownstream"].last_good_release_commit is None, "Pre-release schema files must load with None for new fields"
 
     def test_load_all_statuses_with_pre_downstream_commit_schema_loads_field_as_none(
         self,
@@ -486,13 +461,10 @@ class TestFilesystemBackendBackwardsCompatibility(unittest.TestCase):
             loaded = backend.load_all_statuses("regression", _UPSTREAM)
 
             # Assert
-            self.assertIsNone(
-                loaded["OldDownstream"].downstream_commit,
-                msg="Pre-downstream_commit schema files must load with None",
-            )
+            assert loaded["OldDownstream"].downstream_commit is None, "Pre-downstream_commit schema files must load with None"
 
 
-class TestFilesystemBackendLoadTestedDownstreamCommits(unittest.TestCase):
+class TestFilesystemBackendLoadTestedDownstreamCommits:
     """Tests for ``load_tested_downstream_commits`` (ondemand dedup helper)."""
 
     def test_load_tested_downstream_commits_with_no_runs_returns_empty_set(self) -> None:
@@ -504,11 +476,7 @@ class TestFilesystemBackendLoadTestedDownstreamCommits(unittest.TestCase):
         # Arrange / Act / Assert
         with tempfile.TemporaryDirectory() as tmp:
             backend = FilesystemBackend(Path(tmp))
-            self.assertEqual(
-                backend.load_tested_downstream_commits("ondemand"),
-                set(),
-                msg="No saved runs ⇒ empty tested-pairs set",
-            )
+            assert backend.load_tested_downstream_commits("ondemand") == set(), "No saved runs ⇒ empty tested-pairs set"
 
     def test_load_tested_downstream_commits_returns_passed_and_failed_but_not_error(
         self,
@@ -549,13 +517,9 @@ class TestFilesystemBackendLoadTestedDownstreamCommits(unittest.TestCase):
             seen = backend.load_tested_downstream_commits("ondemand")
 
             # Assert
-            self.assertIn(("ProjectA", "commit_aaa"), seen, msg="passed must be deduped")
-            self.assertIn(("ProjectB", "commit_bbb"), seen, msg="failed must be deduped")
-            self.assertNotIn(
-                ("ProjectC", "commit_ccc"),
-                seen,
-                msg="error outcomes must NOT be deduped — retry on next run",
-            )
+            assert ("ProjectA", "commit_aaa") in seen, "passed must be deduped"
+            assert ("ProjectB", "commit_bbb") in seen, "failed must be deduped"
+            assert ("ProjectC", "commit_ccc") not in seen, "error outcomes must NOT be deduped — retry on next run"
 
     def test_load_tested_downstream_commits_is_scoped_by_workflow(self) -> None:
         """
@@ -583,14 +547,10 @@ class TestFilesystemBackendLoadTestedDownstreamCommits(unittest.TestCase):
             ondemand_pairs = backend.load_tested_downstream_commits("ondemand")
 
             # Assert
-            self.assertEqual(
-                ondemand_pairs,
-                set(),
-                msg="Regression-workflow run must not appear in ondemand dedup set",
-            )
+            assert ondemand_pairs == set(), "Regression-workflow run must not appear in ondemand dedup set"
 
 
-class TestFilesystemBackendLoadPriorResults(unittest.TestCase):
+class TestFilesystemBackendLoadPriorResults:
     """Tests for ``load_prior_results`` — richer view of historical runs."""
 
     def test_load_prior_results_with_empty_pairs_returns_empty_dict(self) -> None:
@@ -602,11 +562,7 @@ class TestFilesystemBackendLoadPriorResults(unittest.TestCase):
         # Arrange / Act / Assert
         with tempfile.TemporaryDirectory() as tmp:
             backend = FilesystemBackend(Path(tmp))
-            self.assertEqual(
-                backend.load_prior_results("ondemand", set()),
-                {},
-                msg="Empty pairs ⇒ empty dict (no I/O required)",
-            )
+            assert backend.load_prior_results("ondemand", set()) == {}, "Empty pairs ⇒ empty dict (no I/O required)"
 
     def test_load_prior_results_returns_record_dicts_for_matching_pairs(self) -> None:
         """
@@ -638,10 +594,10 @@ class TestFilesystemBackendLoadPriorResults(unittest.TestCase):
             prior = backend.load_prior_results("ondemand", pairs)
 
             # Assert
-            self.assertIn(("ProjectA", "commit_aaa"), prior)
-            self.assertIn(("ProjectB", "commit_bbb"), prior)
-            self.assertEqual(prior[("ProjectA", "commit_aaa")]["outcome"], "passed")
-            self.assertEqual(prior[("ProjectB", "commit_bbb")]["outcome"], "failed")
+            assert ("ProjectA", "commit_aaa") in prior
+            assert ("ProjectB", "commit_bbb") in prior
+            assert prior[("ProjectA", "commit_aaa")]["outcome"] == "passed"
+            assert prior[("ProjectB", "commit_bbb")]["outcome"] == "failed"
 
     def test_load_prior_results_excludes_error_outcomes(self) -> None:
         """
@@ -669,11 +625,7 @@ class TestFilesystemBackendLoadPriorResults(unittest.TestCase):
             prior = backend.load_prior_results("ondemand", pairs)
 
             # Assert
-            self.assertEqual(
-                prior,
-                {},
-                msg="Error outcomes must not appear in load_prior_results output",
-            )
+            assert prior == {}, "Error outcomes must not appear in load_prior_results output"
 
     def test_load_prior_results_returns_only_pairs_that_were_requested(self) -> None:
         """
@@ -704,12 +656,8 @@ class TestFilesystemBackendLoadPriorResults(unittest.TestCase):
             prior = backend.load_prior_results("ondemand", pairs)
 
             # Assert
-            self.assertIn(("ProjectA", "commit_aaa"), prior)
-            self.assertNotIn(
-                ("ProjectB", "commit_bbb"),
-                prior,
-                msg="Unrequested pair must not appear in result",
-            )
+            assert ("ProjectA", "commit_aaa") in prior
+            assert ("ProjectB", "commit_bbb") not in prior, "Unrequested pair must not appear in result"
 
     def test_load_prior_results_returns_newest_when_a_pair_has_multiple_runs(self) -> None:
         """
@@ -752,12 +700,4 @@ class TestFilesystemBackendLoadPriorResults(unittest.TestCase):
             prior = backend.load_prior_results("ondemand", pairs)
 
             # Assert
-            self.assertEqual(
-                prior[("ProjectA", "commit_aaa")]["outcome"],
-                "passed",
-                msg="Newer run's outcome wins over older run's outcome",
-            )
-
-
-if __name__ == "__main__":
-    unittest.main()
+            assert prior[("ProjectA", "commit_aaa")]["outcome"] == "passed", "Newer run's outcome wins over older run's outcome"
