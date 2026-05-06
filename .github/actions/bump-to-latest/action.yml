@@ -175,14 +175,25 @@ runs:
           MANIFEST_PATH="${rel%/}/lake-manifest.json"
         fi
 
+        # All failure paths in this step emit no-match and exit 0 — the
+        # contract is "any unexpected condition → run the bump as normal,"
+        # so that a transient API blip / unfamiliar response shape /
+        # malformed manifest can never silently skip a legitimate bump.
+        emit_no_match() {
+          echo "match=false" >> "$GITHUB_OUTPUT"
+          echo "ref_pin="    >> "$GITHUB_OUTPUT"
+        }
+
         # Capture stderr so we can distinguish "branch doesn't exist" (a
         # 404, which is normal — first run, or branch deleted after merge)
-        # from a genuine API failure (which we still treat as no-match for
-        # safety, but want surfaced in the run logs).
+        # from a genuine API failure (still treated as no-match, but
+        # surfaced via a ::warning:: annotation).
+        # `// empty` makes a literal null .content (unexpected schema)
+        # come back as the empty string rather than the string "null".
         api_err=$(mktemp)
         if encoded=$(gh api \
             "repos/${GITHUB_REPOSITORY}/contents/${MANIFEST_PATH}?ref=${REF}" \
-            --jq '.content' 2>"$api_err"); then
+            --jq '.content // empty' 2>"$api_err"); then
           rm -f "$api_err"
         else
           err=$(cat "$api_err" 2>/dev/null || true)
@@ -190,31 +201,46 @@ runs:
           if printf '%s' "$err" | grep -q -i 'not found\|404'; then
             echo "Ref '${REF}' has no '${MANIFEST_PATH}' (404 — branch may not exist yet, or was just merged)."
           else
-            # Annotate so the failure surfaces in the run summary; bump
-            # still proceeds (better to spend a build than to silently
-            # skip a legitimate one).
             echo "::warning::Probe of '${REF}:${MANIFEST_PATH}' failed unexpectedly; treating as no-match. Underlying error: ${err}"
           fi
-          echo "match=false" >> "$GITHUB_OUTPUT"
-          echo "ref_pin="    >> "$GITHUB_OUTPUT"
+          emit_no_match
           exit 0
         fi
 
+        # Empty: either the response was missing .content (directory
+        # listing, error envelope, or some other unexpected schema) or
+        # .content was null. We can't distinguish, but we don't need to —
+        # both fall through to no-match.
         if [ -z "$encoded" ]; then
-          echo "::warning::Empty response when probing '${REF}:${MANIFEST_PATH}'; treating as no-match."
-          echo "match=false" >> "$GITHUB_OUTPUT"
-          echo "ref_pin="    >> "$GITHUB_OUTPUT"
+          echo "::warning::Probe of '${REF}:${MANIFEST_PATH}' returned no .content (unexpected response shape); treating as no-match."
+          emit_no_match
           exit 0
         fi
 
-        ref_pin=$(printf '%s' "$encoded" | base64 -d \
-          | jq -r --arg dep "$DEPENDENCY_NAME" \
-              '.packages[] | select(.name == $dep) | .rev // empty')
+        # base64 decode and JSON parse are split into separate steps so
+        # each can fail independently to no-match. Without this, a non-
+        # base64 .content or a manifest that isn't valid JSON would trip
+        # set -e / pipefail and crash the whole step.
+        if ! manifest=$(printf '%s' "$encoded" | base64 -d 2>/dev/null); then
+          echo "::warning::Failed to base64-decode .content from '${REF}:${MANIFEST_PATH}'; treating as no-match."
+          emit_no_match
+          exit 0
+        fi
+
+        # `.packages[]?` and `.rev // empty` keep jq from erroring when
+        # the schema isn't what we expect (no .packages array, no .rev
+        # field on the matching entry, etc.) — those all yield empty
+        # ref_pin and fall through to "dependency not present."
+        if ! ref_pin=$(printf '%s' "$manifest" | jq -r --arg dep "$DEPENDENCY_NAME" \
+            '.packages[]? | select(.name == $dep) | .rev // empty' 2>/dev/null); then
+          echo "::warning::Failed to parse manifest at '${REF}:${MANIFEST_PATH}' as JSON; treating as no-match."
+          emit_no_match
+          exit 0
+        fi
 
         if [ -z "$ref_pin" ]; then
           echo "Dependency '${DEPENDENCY_NAME}' not present in '${REF}:${MANIFEST_PATH}'."
-          echo "match=false" >> "$GITHUB_OUTPUT"
-          echo "ref_pin="    >> "$GITHUB_OUTPUT"
+          emit_no_match
           exit 0
         fi
 
