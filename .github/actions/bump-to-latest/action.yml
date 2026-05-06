@@ -65,7 +65,11 @@ outputs:
     description: '"true" if hopscotch successfully bumped the project'
     value: ${{ steps.resolve-outputs.outputs.updated }}
   skipped:
-    description: '"true" if the project was already at the target commit'
+    description: >
+      "true" if no bump was performed — either because the project's manifest
+      is already at the target commit, or because an open bump PR's branch
+      already pins the dependency at it (Step 1.5 probe). When "true", the
+      working tree is unmodified.
     value: ${{ steps.resolve-outputs.outputs.skipped }}
   build-failed:
     description: '"true" if hopscotch ran but the build failed'
@@ -97,6 +101,123 @@ runs:
         DOWNSTREAM: ${{ inputs.downstream }}
         QUERY_TYPE: ${{ inputs.query-type }}
       run: bash "${{ github.action_path }}/../../scripts/fetch-latest.sh"
+
+    # ------------------------------------------------------------------
+    # Step 1.5: If an open PR on the LKG bump branch already pins the
+    # dependency at the target, short-circuit the bump (Compare pins
+    # below). Avoids redundant lake builds on sub-daily reruns while a
+    # bump PR awaits merge.
+    #
+    # Skipped for query-type=first-known-bad — FKB lives on per-SHA
+    # branches handled by track-incompatibility, and probing the LKG
+    # branch against an FKB target could spuriously match a leftover
+    # branch and suppress a real fix PR.
+    #
+    # Any failure (no open PR, 404, malformed manifest, etc.) falls
+    # through to no-match so the bump runs — better to spend a build
+    # than silently skip a legitimate one.
+    # ------------------------------------------------------------------
+    - name: Probe bump-PR branch for an existing bump
+      id: probe-ref
+      if: >-
+        inputs.query-type != 'first-known-bad'
+        && steps.fetch-snapshot.outputs.commit != ''
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        # Must match open-bump-pr's default `branch`.
+        REF: 'hopscotch/lkg-bump'
+        TARGET_COMMIT: ${{ steps.fetch-snapshot.outputs.commit }}
+        DEPENDENCY_NAME: ${{ inputs.dependency-name }}
+        PROJECT_DIR: ${{ inputs.project-dir }}
+      run: |
+        set -euo pipefail
+
+        if [ -z "$PROJECT_DIR" ] || [ "$PROJECT_DIR" = "." ]; then
+          MANIFEST_PATH="lake-manifest.json"
+        else
+          rel="${PROJECT_DIR#./}"
+          MANIFEST_PATH="${rel%/}/lake-manifest.json"
+        fi
+
+        emit_no_match() {
+          echo "match=false" >> "$GITHUB_OUTPUT"
+        }
+
+        # Gate on open PR. A leftover branch (auto-delete-on-merge isn't
+        # always on) could pin the target without surfacing it as a PR;
+        # gating only on the manifest would silently skip in that case.
+        pr_err=$(mktemp)
+        if open_pr=$(gh pr list \
+            --head "${REF}" --state open \
+            --json number --jq '.[0].number // empty' 2>"$pr_err"); then
+          rm -f "$pr_err"
+        else
+          err=$(cat "$pr_err" 2>/dev/null || true)
+          rm -f "$pr_err"
+          echo "::warning::Failed to list open PRs on '${REF}': ${err}"
+          emit_no_match
+          exit 0
+        fi
+        if [ -z "$open_pr" ]; then
+          echo "No open PR on '${REF}' — running bump."
+          emit_no_match
+          exit 0
+        fi
+
+        # `// empty` collapses null .content to an empty string.
+        api_err=$(mktemp)
+        if encoded=$(gh api \
+            "repos/${GITHUB_REPOSITORY}/contents/${MANIFEST_PATH}?ref=${REF}" \
+            --jq '.content // empty' 2>"$api_err"); then
+          rm -f "$api_err"
+        else
+          err=$(cat "$api_err" 2>/dev/null || true)
+          rm -f "$api_err"
+          if printf '%s' "$err" | grep -q -i 'not found\|404'; then
+            echo "Branch '${REF}' has no '${MANIFEST_PATH}' (404 — unexpected after PR check)."
+          else
+            echo "::warning::Probe of '${REF}:${MANIFEST_PATH}' failed: ${err}"
+          fi
+          emit_no_match
+          exit 0
+        fi
+
+        if [ -z "$encoded" ]; then
+          echo "::warning::Probe of '${REF}:${MANIFEST_PATH}' returned no .content."
+          emit_no_match
+          exit 0
+        fi
+
+        # Decode and parse split so each can fail independently to
+        # no-match (without this, set -e / pipefail would crash on
+        # non-base64 input or non-JSON payload).
+        if ! manifest=$(printf '%s' "$encoded" | base64 -d 2>/dev/null); then
+          echo "::warning::Failed to base64-decode '${REF}:${MANIFEST_PATH}'."
+          emit_no_match
+          exit 0
+        fi
+
+        # `[]?` and `// empty` swallow unexpected schema shapes.
+        if ! ref_pin=$(printf '%s' "$manifest" | jq -r --arg dep "$DEPENDENCY_NAME" \
+            '.packages[]? | select(.name == $dep) | .rev // empty' 2>/dev/null); then
+          echo "::warning::Failed to parse '${REF}:${MANIFEST_PATH}' as JSON."
+          emit_no_match
+          exit 0
+        fi
+
+        if [ -z "$ref_pin" ]; then
+          echo "'${DEPENDENCY_NAME}' not present in '${REF}:${MANIFEST_PATH}'."
+          emit_no_match
+          exit 0
+        fi
+
+        echo "Branch '${REF}' pins '${DEPENDENCY_NAME}' at ${ref_pin} (target ${TARGET_COMMIT})."
+        if [ "$ref_pin" = "$TARGET_COMMIT" ]; then
+          echo "match=true"  >> "$GITHUB_OUTPUT"
+        else
+          echo "match=false" >> "$GITHUB_OUTPUT"
+        fi
 
     # ------------------------------------------------------------------
     # Step 2: Read the current mathlib pin from lake-manifest.json.
@@ -131,7 +252,9 @@ runs:
         echo "current_pin=$CURRENT_PIN" >> "$GITHUB_OUTPUT"
 
     # ------------------------------------------------------------------
-    # Step 3: Compare pins. If already at target, skip the build steps.
+    # Step 3: Compare pins. Skip the build steps when the bump is already
+    # done — either because project-dir's manifest is at the target, or
+    # because the bump-PR branch's manifest is (per the step 1.5 probe).
     # ------------------------------------------------------------------
     - name: Compare pins
       id: compare
@@ -140,11 +263,15 @@ runs:
         TARGET_REV: ${{ steps.fetch-snapshot.outputs.rev }}
         TARGET_COMMIT: ${{ steps.fetch-snapshot.outputs.commit }}
         CURRENT_PIN: ${{ steps.read-manifest.outputs.current_pin }}
+        REF_MATCH: ${{ steps.probe-ref.outputs.match }}
       run: |
         # Use TARGET_COMMIT (SHA) for the equality check so that tag names
         # compare correctly against the SHA stored in lake-manifest.json.
         if [ -z "$TARGET_REV" ]; then
           echo "Target commit is empty (no active entry for this query-type) — nothing to do."
+          echo "skipped=true" >> "$GITHUB_OUTPUT"
+        elif [ "${REF_MATCH:-}" = "true" ]; then
+          echo "Bump-PR branch already pins the dependency at target $TARGET_REV — nothing to do."
           echo "skipped=true" >> "$GITHUB_OUTPUT"
         elif [ "$CURRENT_PIN" = "$TARGET_COMMIT" ]; then
           echo "Already at target $TARGET_REV — nothing to do."
