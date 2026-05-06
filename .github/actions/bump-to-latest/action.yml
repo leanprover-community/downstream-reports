@@ -65,7 +65,11 @@ outputs:
     description: '"true" if hopscotch successfully bumped the project'
     value: ${{ steps.resolve-outputs.outputs.updated }}
   skipped:
-    description: '"true" if the project was already at the target commit'
+    description: >
+      "true" if no bump was performed — either because the project's manifest
+      is already at the target commit, or because an open bump PR's branch
+      already pins the dependency at it (Step 1.5 probe). When "true", the
+      working tree is unmodified.
     value: ${{ steps.resolve-outputs.outputs.skipped }}
   build-failed:
     description: '"true" if hopscotch ran but the build failed'
@@ -156,7 +160,6 @@ runs:
 
         emit_no_match() {
           echo "match=false" >> "$GITHUB_OUTPUT"
-          echo "ref_pin="    >> "$GITHUB_OUTPUT"
         }
 
         # Capture stderr so we can distinguish "branch doesn't exist" (a
@@ -218,7 +221,6 @@ runs:
         fi
 
         echo "Branch '${REF}' pins '${DEPENDENCY_NAME}' at ${ref_pin} (target ${TARGET_COMMIT})."
-        echo "ref_pin=${ref_pin}" >> "$GITHUB_OUTPUT"
         if [ "$ref_pin" = "$TARGET_COMMIT" ]; then
           echo "match=true"  >> "$GITHUB_OUTPUT"
         else

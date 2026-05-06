@@ -93,9 +93,13 @@ jobs:
         uses: leanprover-community/downstream-reports/.github/actions/track-incompatibility@main
 
       # When an FKB fix PR is open, close any leftover LKG bump PR so
-      # only one bump PR is open at a time.
+      # only one bump PR is open at a time. `pr-number` is populated
+      # exactly when track-incompatibility opened or recognised an open
+      # fix PR (pr-action ∈ {created, noop-existing}); checking it
+      # rather than enumerating pr-action values keeps this step
+      # forward-compatible if track-incompatibility grows new states.
       - name: Close LKG bump PR when an FKB fix PR is open
-        if: steps.track.outputs.pr-action == 'created' || steps.track.outputs.pr-action == 'noop-existing'
+        if: steps.track.outputs.pr-number != ''
         env:
           GH_TOKEN: ${{ github.token }}
           FKB_PR: ${{ steps.track.outputs.pr-number }}
