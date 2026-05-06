@@ -309,6 +309,10 @@ def evaluate_downstream(
 
     if prev_downstream_commit and branch_head == prev_downstream_commit:
         # Branch tip unchanged ⇒ manifest cannot have moved.  No further calls.
+        print(
+            f"[watcher] [skip] {name}: branch tip unchanged at {_short(branch_head)} "
+            f"since last validation; manifest cannot have moved"
+        )
         return None
 
     manifest_payload = fetch_manifest(config.repo, branch_head)
@@ -318,6 +322,10 @@ def evaluate_downstream(
         return None
 
     if prev_pinned and current_pin == prev_pinned:
+        print(
+            f"[watcher] [skip] {name}: branch tip moved {_short(prev_downstream_commit)}→"
+            f"{_short(branch_head)} but '{config.dependency_name}' pin still {_short(current_pin)}"
+        )
         return None
 
     if fkb is None:
@@ -476,20 +484,32 @@ def main() -> int:
     statuses = backend.load_all_statuses("regression", args.upstream)
     ledger = backend.load_manifest_watcher_ledger(args.upstream)
 
-    watched = sum(1 for c in inventory.values() if c.enabled and c.watch_manifest)
-    active = sum(
-        1
+    watched_names = sorted(c.name for c in inventory.values() if c.enabled and c.watch_manifest)
+    active_names = sorted(
+        c.name
         for c in inventory.values()
         if c.enabled and c.watch_manifest
         and (statuses.get(c.name) is not None
              and statuses[c.name].first_known_bad_commit is not None)
     )
+    inactive_names = sorted(set(watched_names) - set(active_names))
     print(
-        f"[watcher] inventory: {active} active (FKB set) / {watched} watched / "
-        f"{len(inventory)} enabled downstream(s)"
+        f"[watcher] inventory: {len(active_names)} active (FKB set) / "
+        f"{len(watched_names)} watched / {len(inventory)} enabled downstream(s)"
     )
     print(f"[watcher] statuses : {len(statuses)} record(s) loaded")
     print(f"[watcher] ledger   : {len(ledger)} row(s) loaded")
+    if watched_names:
+        print(f"[watcher] watched  : {', '.join(watched_names)}")
+    if active_names:
+        print(f"[watcher] active   : {', '.join(active_names)}  (will be evaluated)")
+    if inactive_names:
+        # Surface watched-but-no-FKB downstreams so the operator can see why
+        # they aren't being evaluated this tick.
+        print(
+            f"[watcher] inactive : {', '.join(inactive_names)}  "
+            f"(watched but no FKB; skipping pre-HTTP — scheduled run will handle good bumps)"
+        )
 
     in_flight = gh_in_flight_downstreams(gh_repo, args.workflow_file, token)
     if in_flight:
@@ -497,6 +517,7 @@ def main() -> int:
     else:
         print("[watcher] in-flight: (none)")
 
+    print(f"[watcher] evaluating {len(active_names)} active downstream(s)...")
     candidates = build_candidates(
         inventory,
         statuses,
@@ -508,6 +529,13 @@ def main() -> int:
         fetch_branch_head=lambda repo, branch: gh_get_branch_head(repo, branch, token),
         fetch_manifest=lambda repo, sha: gh_get_raw_manifest(repo, sha, token),
         fetch_compare=lambda upstream, base, head: gh_compare_status(upstream, base, head, token),
+    )
+
+    candidate_names = {c.name for c in candidates}
+    skipped_names = [n for n in active_names if n not in candidate_names]
+    print(
+        f"[watcher] summary  : {len(candidates)} dispatch / {len(skipped_names)} skip "
+        f"out of {len(active_names)} evaluated"
     )
 
     if not candidates:
