@@ -39,7 +39,7 @@ name: Update Dependencies
 
 on:
   schedule:
-    - cron: "0 */2 * * *"   # see "Sub-daily cron cadence" below
+    - cron: "0 */6 * * *"   # Check for updates every six hours 
   workflow_dispatch:
 
 jobs:
@@ -72,7 +72,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - name: Open or update incompatibility issue (and fix PR)
+      - name: Open or update incompatibility issue and PR
         uses: leanprover-community/downstream-reports/.github/actions/track-incompatibility@main
 ```
 
