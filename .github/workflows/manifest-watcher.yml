@@ -20,6 +20,7 @@ on:
 permissions:
   contents: read
   actions: write   # workflow_dispatch of mathlib-downstream-report
+  id-token: write  # mint App token via Azure Key Vault federation
 
 # `cancel-in-progress: false` so a slow tick (e.g. waiting on a slow
 # in-flight job listing) blocks the next scheduled tick rather than
@@ -31,6 +32,17 @@ concurrency:
 jobs:
   watch:
     runs-on: ubuntu-latest
+    # Bind to an environment so the OIDC subject is
+    #   repo:leanprover-community/downstream-reports:environment:pr-validation-token
+    # rather than a per-branch ref.  Reuses the federated credential already
+    # configured for `mathlib-pr-validation.yml`'s App-token mint — no new
+    # Azure config needed.  The minted token's `Actions: Read & Write` is what
+    # makes the dispatched `mathlib-downstream-report` run propagate through
+    # `workflow_run` to `warm-mathlib-cache` (and thence to `publish-lkg` /
+    # `generate-pages`); the default `GITHUB_TOKEN` would dispatch fine but
+    # GitHub suppresses downstream `workflow_run` events when the upstream's
+    # actor is `github-actions[bot]`.
+    environment: pr-validation-token
     steps:
       - uses: actions/checkout@v6
 
@@ -55,9 +67,21 @@ jobs:
             echo "value=dry-run" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Mint App token (for workflow_dispatch)
+        id: app_token
+        uses: leanprover-community/mathlib-ci/.github/actions/azure-create-github-app-token@3bb576208589a435eeaeac9b144a1b7c3e948760
+        with:
+          app-id: ${{ secrets.DOWNSTREAM_REPORTS_AUTOMATION_APP_ID }}
+          key-vault-name: ${{ vars.MATHLIB_AZ_KEY_VAULT_NAME }}
+          key-name: downstream-reports-automation-app-pk
+          azure-client-id: ${{ vars.GH_APP_AZURE_CLIENT_ID_DOWNSTREAM_REPORTS_AUTOMATION }}
+          azure-tenant-id: ${{ secrets.LPC_AZ_TENANT_ID }}
+          owner: leanprover-community
+          repositories: downstream-reports
+
       - name: Run watcher
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ steps.app_token.outputs.token }}
           GH_REPO: ${{ github.repository }}
           POSTGRES_DSN: ${{ steps.backend.outputs.value == 'sql' && secrets.POSTGRES_DSN || '' }}
           PYTHONUNBUFFERED: "1"
