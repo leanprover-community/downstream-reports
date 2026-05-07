@@ -138,6 +138,15 @@
       "default_branch": "master",
       "dependency_name": "mathlib",
       "enabled": true
+    },
+    {
+      "name": "flt-regular",
+      "repo": "leanprover-community/flt-regular",
+      "default_branch": "master",
+      "dependency_name": "mathlib",
+      "enabled": true,
+      "warm_cache": true,
+      "watch_manifest": true
     }
   ]
 }
