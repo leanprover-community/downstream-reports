@@ -39,7 +39,7 @@
 #         mode, lkg_commit? }
 #       status ∈ { pass, fail, infra_failure }
 #   $OUTPUT_DIR/build.log
-#       Combined log of every subprocess.
+#       Combined log of every subprocess (mirrors the live workflow log).
 #
 # Exit code is 0 in all cases except a script-level error: a build failure
 # is the meaningful answer, not an infra failure.
@@ -79,9 +79,33 @@ RESULT="$OUTPUT_DIR/result.json"
 LOG="$OUTPUT_DIR/build.log"
 : > "$LOG"
 
+# Mirror every byte we emit — including all subprocess output — to the live
+# workflow console AND to $LOG. Without this, the user sees the step "running"
+# for tens of minutes with no idea where it is. With it, the GH log streams
+# clone / cherry-pick / lake-build progress in real time, and $LOG still
+# contains the full transcript for the build.log artifact and the failure tail
+# rendered into PR comments by post_results.py / log_filter.read_log_tail.
+exec > >(tee -a "$LOG") 2>&1
+
 DOWNSTREAM_SHA=""
 
-emit() {  # status, stage, message
+# -----------------------------------------------------------------------------
+# Helpers
+# -----------------------------------------------------------------------------
+
+# GH Actions log-grouping. `::group::` opens a collapsible section in the
+# live log; `::endgroup::` closes it. Use them around every phase so the
+# step-log skim from the workflow run page is readable.
+section()    { echo "::group::$1"; }
+endsection() { echo "::endgroup::"; }
+
+# Workflow annotations show up at the top of the workflow run page so the
+# verdict is visible without expanding the validate step.
+notice()  { echo "::notice title=$1::$2"; }
+warn()    { echo "::warning title=$1::$2"; }
+err_ann() { echo "::error title=$1::$2"; }
+
+emit() {  # status, stage, message  -- writes result.json
   python3 - "$1" "$2" "$3" "$DOWNSTREAM_SHA" "$MODE" "$LKG_COMMIT" <<'PY'
 import json, os, sys
 status, stage, message, downstream_sha, mode, lkg_commit = sys.argv[1:7]
@@ -102,118 +126,202 @@ PY
 }
 export RESULT
 
-# ---- 1. Clone mathlib4 -------------------------------------------------------
+# -----------------------------------------------------------------------------
+# Header
+# -----------------------------------------------------------------------------
+section "Validation parameters"
+echo "  PR:         #$PR_NUMBER"
+echo "  Mode:       $MODE"
+echo "  Upstream:   $UPSTREAM_REPO"
+echo "  Merge SHA:  $MERGE_SHA"
+[ "$MODE" = "lkg" ] && echo "  LKG commit: $LKG_COMMIT"
+echo "  Downstream: $DOWNSTREAM"
+echo "    repo:     $DOWNSTREAM_REPO"
+echo "    branch:   $DEFAULT_BRANCH"
+echo "    dep:      $DEPENDENCY_NAME"
+endsection
+
+# -----------------------------------------------------------------------------
+# 1. Clone mathlib4
+# -----------------------------------------------------------------------------
 ML="$WORKDIR/mathlib4"
 rm -rf "$ML"
-if ! git clone --no-checkout "https://github.com/$UPSTREAM_REPO.git" "$ML" \
-      >> "$LOG" 2>&1; then
+section "Clone $UPSTREAM_REPO"
+if ! git clone --no-checkout "https://github.com/$UPSTREAM_REPO.git" "$ML"; then
+  endsection
+  err_ann "Clone failed" "could not clone $UPSTREAM_REPO"
   emit infra_failure clone "could not clone $UPSTREAM_REPO"
   exit 0
 fi
+endsection
 
-# ---- 2. Resolve mathlib working tree ----------------------------------------
-# In `merge` mode we just check out the merge SHA. In `lkg` mode we additionally
-# fetch the LKG commit, check it out, then cherry-pick the PR's commits on top
-# (computed from the merge SHA's two parents).
+# -----------------------------------------------------------------------------
+# 2. Resolve mathlib working tree
+# -----------------------------------------------------------------------------
 if [ "$MODE" = "merge" ]; then
-  if ! git -C "$ML" fetch origin "$MERGE_SHA" >> "$LOG" 2>&1; then
+  section "Fetch merge SHA $MERGE_SHA"
+  if ! git -C "$ML" fetch origin "$MERGE_SHA"; then
+    endsection
+    err_ann "Fetch failed" "merge SHA $MERGE_SHA not fetchable; PR may have conflicts"
     emit infra_failure fetch \
       "merge SHA $MERGE_SHA not fetchable; PR may have conflicts"
     exit 0
   fi
-  if ! git -C "$ML" checkout --detach "$MERGE_SHA" >> "$LOG" 2>&1; then
+  endsection
+
+  section "Check out merge SHA"
+  if ! git -C "$ML" checkout --detach "$MERGE_SHA"; then
+    endsection
+    err_ann "Checkout failed" "could not check out $MERGE_SHA"
     emit infra_failure checkout "could not check out $MERGE_SHA"
     exit 0
   fi
+  endsection
 else
-  # Need both the merge ref (to read its parents) and the LKG commit (to
-  # check out). One fetch round-trip pulling both refs.
-  if ! git -C "$ML" fetch origin "$MERGE_SHA" "$LKG_COMMIT" >> "$LOG" 2>&1; then
+  section "Fetch merge SHA + LKG commit"
+  if ! git -C "$ML" fetch origin "$MERGE_SHA" "$LKG_COMMIT"; then
+    endsection
+    err_ann "Fetch failed" "could not fetch MERGE_SHA $MERGE_SHA / LKG_COMMIT $LKG_COMMIT"
     emit infra_failure fetch \
       "could not fetch MERGE_SHA $MERGE_SHA / LKG_COMMIT $LKG_COMMIT"
     exit 0
   fi
+  endsection
 
   # `refs/pull/N/merge` (and the merge_commit_sha mirror used by the dispatcher)
   # is `merge(base, head)` — its first parent is the base ref tip, the second
   # is the PR head. If GitHub fast-forwarded the merge (single parent), the PR
   # tree IS the merge SHA, so there's nothing to cherry-pick on top of LKG.
-  if ! PR_BASE=$(git -C "$ML" rev-parse "$MERGE_SHA^1" 2>>"$LOG"); then
+  section "Resolve PR endpoints from merge commit"
+  if ! PR_BASE=$(git -C "$ML" rev-parse "$MERGE_SHA^1"); then
+    endsection
+    err_ann "rev-parse failed" "could not resolve $MERGE_SHA^1 (PR base)"
     emit infra_failure rev_parse \
       "could not resolve $MERGE_SHA^1 (PR base)"
     exit 0
   fi
   PR_HEAD=$(git -C "$ML" rev-parse "$MERGE_SHA^2" 2>/dev/null || echo "")
+  echo "  PR base: $PR_BASE"
+  echo "  PR head: ${PR_HEAD:-(fast-forward; same as merge SHA)}"
+  endsection
 
-  if ! git -C "$ML" checkout --detach "$LKG_COMMIT" >> "$LOG" 2>&1; then
+  section "Check out LKG $LKG_COMMIT"
+  if ! git -C "$ML" checkout --detach "$LKG_COMMIT"; then
+    endsection
+    err_ann "Checkout failed" "could not check out LKG $LKG_COMMIT"
     emit infra_failure checkout "could not check out LKG $LKG_COMMIT"
     exit 0
   fi
+  endsection
 
   if [ -n "$PR_HEAD" ] && [ "$PR_BASE" != "$PR_HEAD" ]; then
-    echo "Cherry-picking PR commits $PR_BASE..$PR_HEAD onto LKG $LKG_COMMIT" \
-      >> "$LOG"
+    n_commits=$(git -C "$ML" rev-list --count "$PR_BASE..$PR_HEAD")
+    section "Cherry-pick $n_commits PR commit(s) onto LKG"
+    notice "Cherry-pick" \
+      "Replaying $n_commits PR commit(s) ($PR_BASE..$PR_HEAD) onto LKG ${LKG_COMMIT:0:7}"
     if ! git -C "$ML" \
            -c user.email=ci@downstream-reports.invalid -c user.name=ci \
-           cherry-pick "$PR_BASE..$PR_HEAD" >> "$LOG" 2>&1; then
-      git -C "$ML" cherry-pick --abort >> "$LOG" 2>&1 || true
+           cherry-pick "$PR_BASE..$PR_HEAD"; then
+      git -C "$ML" cherry-pick --abort || true
+      endsection
+      warn "Rebase conflict" \
+        "PR commits do not apply on top of LKG ${LKG_COMMIT:0:7}; this PR likely depends on post-LKG mathlib changes"
       emit infra_failure rebase_conflict \
         "PR commits do not apply on top of LKG $LKG_COMMIT; this PR likely depends on post-LKG mathlib changes"
       exit 0
     fi
+    endsection
   else
-    echo "merge SHA $MERGE_SHA is fast-forward; no commits to cherry-pick" \
-      >> "$LOG"
+    notice "Cherry-pick" "merge SHA is fast-forward; no commits to cherry-pick"
   fi
 fi
 
-# ---- 3. Warm the olean cache --------------------------------------------------
-( cd "$ML" && lake exe cache get ) >> "$LOG" 2>&1 || true   # best-effort
+# -----------------------------------------------------------------------------
+# 3. Warm olean cache
+# -----------------------------------------------------------------------------
+section "lake exe cache get"
+if ! ( cd "$ML" && lake exe cache get ); then
+  echo "  (best-effort cache get failed; continuing — uncached files will be rebuilt)"
+fi
+endsection
 
-# ---- 4. (LKG only) sanity-build mathlib's library ---------------------------
+# -----------------------------------------------------------------------------
+# 4. (LKG only) Sanity-build mathlib's library
+# -----------------------------------------------------------------------------
 # The downstream's `lake build` will only pull in the mathlib targets it
 # imports, so failures inside mathlib code can read as a downstream
 # incompatibility. Building `Mathlib` (the top-level library target) first
 # distinguishes "PR depends on post-LKG mathlib changes" from a genuine
 # downstream break.
 if [ "$MODE" = "lkg" ]; then
-  if ! ( cd "$ML" && lake build Mathlib ) >> "$LOG" 2>&1; then
+  section "Sanity-build mathlib library (lake build Mathlib)"
+  if ! ( cd "$ML" && lake build Mathlib ); then
+    endsection
+    warn "Mathlib build failed at LKG" \
+      "PR rebased onto LKG ${LKG_COMMIT:0:7} does not compile; the PR likely depends on post-LKG mathlib changes"
     emit infra_failure mathlib_build_at_lkg \
       "mathlib failed to build with this PR rebased onto LKG $LKG_COMMIT; the PR likely depends on post-LKG mathlib changes"
     exit 0
   fi
+  endsection
 fi
 
-# ---- 5. Clone the downstream --------------------------------------------------
+# -----------------------------------------------------------------------------
+# 5. Clone downstream
+# -----------------------------------------------------------------------------
 DS="$WORKDIR/downstream"
 rm -rf "$DS"
+section "Clone downstream $DOWNSTREAM_REPO@$DEFAULT_BRANCH"
 if ! git clone --depth=1 --branch "$DEFAULT_BRANCH" \
-      "https://github.com/$DOWNSTREAM_REPO.git" "$DS" >> "$LOG" 2>&1; then
+      "https://github.com/$DOWNSTREAM_REPO.git" "$DS"; then
+  endsection
+  err_ann "Clone failed" "could not clone $DOWNSTREAM_REPO"
   emit infra_failure clone_downstream "could not clone $DOWNSTREAM_REPO"
   exit 0
 fi
 DOWNSTREAM_SHA=$(git -C "$DS" rev-parse HEAD 2>/dev/null || true)
+echo "  downstream HEAD: $DOWNSTREAM_SHA"
+endsection
 
-# ---- 6. lakedit set <dep> --path ---------------------------------------------
+# -----------------------------------------------------------------------------
+# 6. lakedit set
+# -----------------------------------------------------------------------------
+section "lakedit set $DEPENDENCY_NAME --path \$ML"
 if ! "$TOOL_BIN/lakedit" set "$DEPENDENCY_NAME" --path "$ML" \
-       --project-dir "$DS" >> "$LOG" 2>&1; then
+       --project-dir "$DS"; then
+  endsection
+  err_ann "lakedit failed" "lakedit set failed; see log"
   emit infra_failure lakedit "lakedit failed; see log"
   exit 0
 fi
+endsection
 
-# ---- 7. lake update + lake build ---------------------------------------------
-if ! ( cd "$DS" && lake update "$DEPENDENCY_NAME" ) >> "$LOG" 2>&1; then
+# -----------------------------------------------------------------------------
+# 7. lake update + lake build (downstream)
+# -----------------------------------------------------------------------------
+section "lake update $DEPENDENCY_NAME"
+if ! ( cd "$DS" && lake update "$DEPENDENCY_NAME" ); then
+  endsection
+  err_ann "lake update failed" "lake update failed; see log"
   emit infra_failure lake_update "lake update failed; see log"
   exit 0
 fi
+endsection
 
-if ( cd "$DS" && lake build ) >> "$LOG" 2>&1; then
+section "lake build (downstream)"
+if ( cd "$DS" && lake build ); then
+  endsection
   if [ "$MODE" = "lkg" ]; then
+    notice "PASS" \
+      "$DOWNSTREAM builds against this PR rebased onto LKG ${LKG_COMMIT:0:7}"
     emit pass build "downstream builds against PR rebased onto LKG"
   else
+    notice "PASS" "$DOWNSTREAM builds against this PR (merge ref)"
     emit pass build "downstream builds against PR merge ref"
   fi
 else
+  endsection
+  warn "FAIL" "$DOWNSTREAM failed to build against this PR (mode=$MODE)"
   emit fail build "lake build failed; see log"
 fi
 
