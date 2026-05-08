@@ -80,10 +80,13 @@ jobs:
     if: ${{ needs.plan.outputs.has_downstreams == 'true' }}
     needs: plan
     name: "validate: ${{ matrix.name }}"
-    # Self-hosted runner without CI secrets in scope: the validate job clones
-    # arbitrary fork code (the PR head) and runs `lake build`, so it must not
-    # see POSTGRES_DSN or other regression-side secrets.
-    runs-on: ubuntu-latest # [self-hosted, pr]
+    # Self-hosted runner without CI secrets in scope: the validate job
+    # builds arbitrary mathlib4 trees (the PR's would-be-merged commit, or
+    # the PR's commits cherry-picked onto a downstream's LKG) and runs
+    # `lake build` on a downstream, so it must not see POSTGRES_DSN or any
+    # other regression-side secrets. The `pr` label gates this off the
+    # main regression-runner pool.
+    runs-on: [self-hosted, pr]
     strategy:
       fail-fast: false
       max-parallel: 2
