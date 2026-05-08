@@ -14,7 +14,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
-_DROP_PREFIXES = ("✔", "trace: .>")
+_DROP_PREFIXES = (
+    "✔",        # successful build targets
+    "trace: .>",  # lake trace lines
+    "info: ",   # lake update / elan progress (cloning, toolchain updates, etc.)
+)
 
 
 def is_noise_line(line: str) -> bool:

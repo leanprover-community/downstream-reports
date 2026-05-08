@@ -27,6 +27,13 @@ ICONS = {
     "infra_failure": "⚠️",
 }
 
+# Friendly headlines for non-generic infra-failure stages. Anything not in
+# this map falls through to the generic "infra_failure (<stage>)" form.
+_STAGE_HEADLINES = {
+    "rebase_conflict": "PR conflicts with LKG (cannot validate)",
+    "mathlib_build_at_lkg": "mathlib build failed at LKG (cannot validate)",
+}
+
 
 def main() -> int:
     downstream = os.environ["DOWNSTREAM"]
@@ -49,13 +56,16 @@ def main() -> int:
     status = result.get("status", "infra_failure")
     stage = result.get("stage", "unknown")
     message = result.get("message", "")
+    mode = result.get("mode") or "merge"
     icon = ICONS.get(status, "❓")
 
-    print(f"{icon} {downstream}: {status} ({stage})")
+    headline = _STAGE_HEADLINES.get(stage, status)
+    mode_suffix = " [@lkg]" if mode == "lkg" else ""
+    print(f"{icon} {downstream}{mode_suffix}: {headline} ({stage})")
     print(f"    {message}")
 
     summary_lines = [
-        f"## {icon} `{downstream}` — {status}",
+        f"## {icon} `{downstream}{mode_suffix}` — {headline}",
         "",
         f"**Stage:** `{stage}`",
         "",

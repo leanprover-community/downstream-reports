@@ -527,15 +527,64 @@ only for the App private key.
 Single line, first line of the comment:
 
 ```
-/check-downstream <name>[, <name>...]
+/check-downstream <name>[@lkg][, <name>[@lkg]...]
 /check-downstream all
+/check-downstream all@lkg
 ```
 
 - Names are matched case-sensitively against `inventory.downstreams[*].name`.
-- `all` expands to all `enabled: true` entries; gated to OWNER/MEMBER.
+- An optional `@lkg` suffix selects rebase-onto-LKG mode for that entry —
+  see "Rebase-onto-LKG mode" below.
+- `all` expands to all `enabled: true` entries in merge mode; `all@lkg`
+  applies LKG mode to every enabled entry. Both are gated to OWNER/MEMBER.
 - Empty argument list errors with usage hint.
 - Anything else on the comment is ignored — the comment can carry context
   text after the directive line.
+
+## Rebase-onto-LKG mode
+
+Default validation tests the downstream against the PR's would-be-merged
+tree, which contains whatever mathlib master happens to be at dispatch
+time. When master is already incompatible with the downstream, every PR
+validation against that downstream produces a noisy `❌ fails` verdict
+that has nothing to do with the PR.
+
+LKG mode (`<name>@lkg`) takes the downstream's `last_known_good_commit`
+from the published `lkg/latest.json` snapshot, cherry-picks the PR's
+commits onto it, and validates the downstream against that synthetic
+tree. The verdict is independent of current master health.
+
+### Pipeline (per matrix job, when `mode=lkg`)
+
+1. Fetch `MERGE_SHA` and `LKG_COMMIT` into the mathlib4 clone.
+2. Resolve `PR_BASE = MERGE_SHA^1` and `PR_HEAD = MERGE_SHA^2` — the merge
+   ref's two parents are the base ref tip when GitHub built the merge and
+   the PR head, respectively. (Fast-forward merges have only one parent;
+   we treat that as "nothing to cherry-pick".)
+3. Check out `LKG_COMMIT` and `git cherry-pick PR_BASE..PR_HEAD`.
+4. `lake exe cache get` (best-effort; PR-touched files miss).
+5. `lake build Mathlib` — sanity-build the library target. If this fails,
+   we report `mathlib_build_at_lkg` because mathlib's own compilation
+   must succeed before a downstream verdict means anything.
+6. Existing downstream stages: clone, `lakedit set`, `lake update`,
+   `lake build`.
+
+### Failure modes specific to LKG mode
+
+| `stage` | What it means | What the PR author should do |
+|---------|---------------|------------------------------|
+| `rebase_conflict` | Cherry-pick of the PR's commits onto LKG produced a conflict. | The PR likely depends on post-LKG mathlib changes; re-run without `@lkg` (and live with the master noise) or wait for a fresh LKG. |
+| `mathlib_build_at_lkg` | Cherry-pick succeeded but `lake build Mathlib` failed at LKG. | Same conclusion as `rebase_conflict` — the PR does not stand alone at LKG. |
+| `lkg_missing` (raised in `build_matrix.py`) | The downstream has no recorded LKG yet (e.g. recently enabled). | Drop the `@lkg` suffix; LKG mode requires a successful regression run on record. |
+
+### Cost
+
+`lake exe cache get` is content-keyed, so files the PR did *not* touch
+still hit the upstream olean cache after the rebase. Only PR-modified
+files (and their dependents) are rebuilt. The mathlib library build
+(`lake build Mathlib`) plus the downstream's build is the slow part
+relative to the merge-mode path; in practice it adds minutes, not the
+hour-plus a full mathlib rebuild would take.
 
 ## Rollout plan
 
@@ -552,9 +601,14 @@ Single line, first line of the comment:
 
 ## Future work / TODOs
 
-- **Master baseline.** Run a parallel build of the same downstream against
-  current master and surface a clear "this PR is responsible" / "master is
-  also broken" verdict in the comment. Largest open item.
+- **Per-downstream LKG baseline.** *Implemented* via the `@lkg` suffix; see
+  "Rebase-onto-LKG mode" above. This is *not* a true master baseline —
+  there is no parallel build of master to compare against — but it is
+  often the more actionable signal: the verdict is whether the PR breaks
+  the downstream *in isolation*, regardless of master health.
+- **True master baseline.** Run a parallel build of the same downstream
+  against current master and surface a "this PR is responsible" / "master
+  is also broken" verdict alongside the per-downstream LKG result.
 - **Hopscotch / lakedit binary release.** Replace `install_lakedit.sh`'s
   build-from-source path with a release-asset download, mirroring how the
   hopscotch binary is fetched in the existing workflows.

@@ -20,7 +20,10 @@ on:
         required: true
         type: string
       downstreams:
-        description: "Comma-separated downstream names."
+        description: >-
+          Comma-separated downstream names. Each name may carry an optional
+          `@lkg` suffix (e.g. `FLT@lkg, Toric`) selecting LKG mode for that
+          downstream — see docs/internal/pr-validation-workflow.md.
         required: true
         type: string
       post_results:
@@ -109,6 +112,11 @@ jobs:
           DOWNSTREAM_REPO: ${{ matrix.repo }}
           DEFAULT_BRANCH:  ${{ matrix.default_branch }}
           DEPENDENCY_NAME: ${{ matrix.dependency_name }}
+          # `mode` is always set by build_matrix.py ("merge" or "lkg");
+          # `lkg_commit` is only set when mode=lkg. The empty fallback keeps
+          # the env var unset cleanly when mode=merge.
+          MODE:            ${{ matrix.mode }}
+          LKG_COMMIT:      ${{ matrix.lkg_commit || '' }}
           WORKDIR:         ${{ runner.temp }}/pr-validation
           OUTPUT_DIR:      ${{ runner.temp }}/artifacts/result-${{ matrix.name }}
           TOOL_BIN:        ${{ runner.temp }}/tool-bin

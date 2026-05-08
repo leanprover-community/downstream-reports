@@ -86,7 +86,6 @@ def post_comment(pr_number: str, body: str) -> None:
     )
 
 
-
 def get_pr_head_sha(merge_sha: str) -> str | None:
     """Return the PR head SHA from the merge commit's second parent, or None on failure."""
     try:
@@ -140,13 +139,19 @@ def make_history_entry(
     status: str,
     run_url: str,
     downstream_sha: str | None,
+    mode: str = "merge",
+    lkg_commit: str | None = None,
 ) -> dict[str, Any]:
-    return {
+    entry: dict[str, Any] = {
         "head_sha": head_sha or merge_sha,
         "status": status,
         "run_url": run_url,
         "downstream_sha": downstream_sha or None,
+        "mode": mode,
     }
+    if mode == "lkg" and lkg_commit:
+        entry["lkg_commit"] = lkg_commit
+    return entry
 
 
 def render_history_line(entry: dict[str, Any], repo_slug: str, branch: str) -> str:
@@ -154,6 +159,7 @@ def render_history_line(entry: dict[str, Any], repo_slug: str, branch: str) -> s
     status = entry.get("status", "")
     run_url = entry.get("run_url", "")
     ds_sha = entry.get("downstream_sha") or ""
+    mode = entry.get("mode") or "merge"
 
     icon = "✅" if status == "pass" else "❌" if status == "fail" else "⚠️"
     verb = "passed" if status == "pass" else "failed" if status == "fail" else "infra failure"
@@ -164,9 +170,16 @@ def render_history_line(entry: dict[str, Any], repo_slug: str, branch: str) -> s
         else "`(unknown)`"
     )
     ds_part = f" [`{short_sha(ds_sha)}`]" if ds_sha else ""
+    mode_part = ""
+    if mode == "lkg":
+        lkg_commit = entry.get("lkg_commit") or ""
+        if lkg_commit:
+            mode_part = f" (rebased onto LKG `{short_sha(lkg_commit)}`)"
+        else:
+            mode_part = " (rebased onto LKG)"
     return (
         f"- {sha_link} {icon} {verb} against"
-        f" `{repo_slug}@{branch}`{ds_part} — [run]({run_url})"
+        f" `{repo_slug}@{branch}`{ds_part}{mode_part} — [run]({run_url})"
     )
 
 
@@ -186,6 +199,9 @@ def render_body(
     history: list[dict[str, Any]],
 ) -> str:
     status = result.get("status", "infra_failure")
+    stage = result.get("stage", "unknown")
+    mode = result.get("mode") or "merge"
+    lkg_commit = result.get("lkg_commit")
     marker = f"{MARKER_PREFIX}{name} -->"
     repo_slug = repo or "(unknown)"
     branch = default_branch or "(unknown)"
@@ -198,20 +214,40 @@ def render_body(
     else:
         tested_ref = f"`{short_sha(merge_sha)}`"
 
+    if mode == "lkg":
+        rebased_suffix = " rebased onto LKG"
+    else:
+        rebased_suffix = ""
+
     if status == "pass":
-        header = f"### ✅ {name} — builds against this PR"
+        header = f"### ✅ {name} — builds against this PR{rebased_suffix}"
     elif status == "fail":
-        header = f"### ❌ {name} — fails against this PR"
-    else:  # infra_failure
-        stage = result.get("stage", "unknown")
+        header = f"### ❌ {name} — fails against this PR{rebased_suffix}"
+    elif mode == "lkg" and stage == "rebase_conflict":
+        header = f"### ⚠️ {name} — could not validate (PR conflicts with LKG)"
+    elif mode == "lkg" and stage == "mathlib_build_at_lkg":
+        header = (
+            f"### ⚠️ {name} — could not validate (mathlib build failed at LKG)"
+        )
+    else:  # generic infra_failure
         header = f"### ⚠️ {name} — could not validate (infra: {stage})"
 
-    parts = [
-        header,
-        "",
-        f"Tested {tested_ref} against `{repo_slug}@{branch}`. [run]({run_url})",
-        "",
-    ]
+    if mode == "lkg" and lkg_commit:
+        lkg_link = (
+            f"[`{short_sha(lkg_commit)}`]"
+            f"(https://github.com/{REPO}/commit/{lkg_commit})"
+        )
+        tested_line = (
+            f"Tested PR commits cherry-picked onto LKG {lkg_link},"
+            f" against `{repo_slug}@{branch}`. [run]({run_url})"
+        )
+    else:
+        tested_line = (
+            f"Tested {tested_ref} against `{repo_slug}@{branch}`."
+            f" [run]({run_url})"
+        )
+
+    parts = [header, "", tested_line, ""]
 
     if status == "fail" and log_tail:
         parts.extend(
@@ -228,26 +264,73 @@ def render_body(
         )
     elif status == "infra_failure":
         message = result.get("message")
-        if message:
-            parts.extend([f"_{message}_", ""])
-        parts.extend(
-            [
-                "This is an infrastructure failure; it does not imply anything"
-                " about the PR.",
-                "",
-            ]
-        )
+        if mode == "lkg" and stage == "rebase_conflict":
+            parts.extend(
+                [
+                    "The PR's commits do not apply cleanly on top of"
+                    f" {name}'s last-known-good mathlib commit. The changes"
+                    " in this PR likely depend on later mathlib commits, so"
+                    " we cannot test them in isolation against an older"
+                    " mathlib.",
+                    "",
+                ]
+            )
+        elif mode == "lkg" and stage == "mathlib_build_at_lkg":
+            parts.extend(
+                [
+                    "Mathlib failed to build with this PR's commits"
+                    f" cherry-picked onto {name}'s last-known-good mathlib"
+                    " commit. The PR likely relies on post-LKG mathlib"
+                    " changes; we cannot validate it against an older"
+                    " mathlib.",
+                    "",
+                ]
+            )
+            if log_tail:
+                parts.extend(
+                    [
+                        "<details><summary>mathlib build log</summary>",
+                        "",
+                        "```",
+                        log_tail,
+                        "```",
+                        "",
+                        "</details>",
+                        "",
+                    ]
+                )
+        else:
+            if message:
+                parts.extend([f"_{message}_", ""])
+            parts.extend(
+                [
+                    "This is an infrastructure failure; it does not imply"
+                    " anything about the PR.",
+                    "",
+                ]
+            )
 
     if status in {"pass", "fail"}:
-        parts.extend(
-            [
-                "> ⚠️ This run did not baseline against master. If master is"
-                " currently broken for this downstream, the failure may not be"
-                " attributable to this PR. See the latest downstream report"
-                " for downstream health.",
-                "",
-            ]
-        )
+        if mode == "lkg":
+            parts.extend(
+                [
+                    "> This run rebased the PR's commits onto"
+                    f" {name}'s last-known-good mathlib commit, so the"
+                    " verdict is independent of current mathlib master"
+                    " health.",
+                    "",
+                ]
+            )
+        else:
+            parts.extend(
+                [
+                    "> ⚠️ This run did not baseline against master. If master"
+                    " is currently broken for this downstream, the failure"
+                    " may not be attributable to this PR. See the latest"
+                    " downstream report for downstream health.",
+                    "",
+                ]
+            )
 
     # Previous runs (history[0] is the current run; history[1:] are older ones)
     previous = history[1:]
@@ -332,6 +415,8 @@ def main() -> int:
                 status=result.get("status", "infra_failure"),
                 run_url=run_url,
                 downstream_sha=result.get("downstream_sha"),
+                mode=result.get("mode") or "merge",
+                lkg_commit=result.get("lkg_commit"),
             ),
             *history,
         ]
