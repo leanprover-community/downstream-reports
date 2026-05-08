@@ -20,8 +20,13 @@
 #
 # Inputs (env, all required unless noted):
 #   MODE            — "merge" (default if empty) or "lkg".
-#   PR_NUMBER, HEAD_REPO, MERGE_SHA — identifies the PR and its merge ref.
+#   PR_NUMBER, MERGE_SHA — identifies the PR and its merge ref.
 #   LKG_COMMIT      — required when MODE=lkg; mathlib SHA to rebase onto.
+#   UPSTREAM_REPO   — owner/repo of the upstream we clone (default
+#                     leanprover-community/mathlib4). The merge SHA and the
+#                     PR's commits both live here as virtual refs even when
+#                     the PR was opened from a fork, so we never need to
+#                     clone the fork directly.
 #   DOWNSTREAM, DOWNSTREAM_REPO, DEFAULT_BRANCH, DEPENDENCY_NAME
 #                   — identifies the downstream to test.
 #   WORKDIR         — scratch directory for clones.
@@ -42,7 +47,6 @@
 set -euo pipefail
 
 : "${PR_NUMBER:?}"
-: "${HEAD_REPO:?}"
 : "${MERGE_SHA:?}"
 : "${DOWNSTREAM:?}"
 : "${DOWNSTREAM_REPO:?}"
@@ -51,6 +55,8 @@ set -euo pipefail
 : "${WORKDIR:?}"
 : "${OUTPUT_DIR:?}"
 : "${TOOL_BIN:?}"
+
+UPSTREAM_REPO="${UPSTREAM_REPO:-leanprover-community/mathlib4}"
 
 MODE="${MODE:-merge}"
 LKG_COMMIT="${LKG_COMMIT:-}"
@@ -99,9 +105,9 @@ export RESULT
 # ---- 1. Clone mathlib4 -------------------------------------------------------
 ML="$WORKDIR/mathlib4"
 rm -rf "$ML"
-if ! git clone --no-checkout "https://github.com/$HEAD_REPO.git" "$ML" \
+if ! git clone --no-checkout "https://github.com/$UPSTREAM_REPO.git" "$ML" \
       >> "$LOG" 2>&1; then
-  emit infra_failure clone "could not clone $HEAD_REPO"
+  emit infra_failure clone "could not clone $UPSTREAM_REPO"
   exit 0
 fi
 

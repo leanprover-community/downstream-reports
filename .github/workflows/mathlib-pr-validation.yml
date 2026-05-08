@@ -11,12 +11,13 @@ on:
         description: "mathlib4 PR number."
         required: true
         type: string
-      head_repo:
-        description: "owner/repo that the PR head lives in (supports forks)."
-        required: true
-        type: string
       merge_sha:
-        description: "Resolved SHA of refs/pull/N/merge."
+        description: >-
+          Resolved SHA of refs/pull/N/merge (a.k.a. the PR API's
+          merge_commit_sha). The ref lives on leanprover-community/mathlib4
+          even when the PR was opened from a fork, so no head-repo input
+          is needed; the merge commit's two parents identify the PR's
+          base and head.
         required: true
         type: string
       downstreams:
@@ -106,7 +107,6 @@ jobs:
       - name: Run validation
         env:
           PR_NUMBER:       ${{ inputs.pr_number }}
-          HEAD_REPO:       ${{ inputs.head_repo }}
           MERGE_SHA:       ${{ inputs.merge_sha }}
           DOWNSTREAM:      ${{ matrix.name }}
           DOWNSTREAM_REPO: ${{ matrix.repo }}

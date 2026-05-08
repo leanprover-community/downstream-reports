@@ -208,8 +208,9 @@ jobs:
             --names "$DS" \
             --author-association "$ASSOC" \
             --output "$GITHUB_OUTPUT"
-          # Sets: resolved_names (final comma list), head_repo, head_sha,
-          #       merge_sha (resolved from refs/pull/N/merge).
+          # Sets: resolved_names (final comma list), merge_sha (resolved
+          # from refs/pull/N/merge — lives on the base repo even for fork
+          # PRs, so no head-repo plumbing is needed).
 
       - name: Mint App token (for hopscotch-reports)
         id: app_token
@@ -224,14 +225,12 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.app_token.outputs.token }}
           PR_NUMBER: ${{ github.event.issue.number || inputs.pr_number }}
-          HEAD_REPO: ${{ steps.validate.outputs.head_repo }}
           MERGE_SHA: ${{ steps.validate.outputs.merge_sha }}
           DOWNSTREAMS: ${{ steps.validate.outputs.resolved_names }}
         run: |
           gh workflow run mathlib-pr-validation.yml \
             -R leanprover-community/hopscotch-reports \
             -f pr_number="$PR_NUMBER" \
-            -f head_repo="$HEAD_REPO" \
             -f merge_sha="$MERGE_SHA" \
             -f downstreams="$DOWNSTREAMS"
 
@@ -284,16 +283,16 @@ on:
       pr_number:
         required: true
         type: string
-      head_repo:
-        description: "owner/repo that the PR head lives in (supports forks)"
-        required: true
-        type: string
       merge_sha:
-        description: "Resolved SHA of refs/pull/N/merge."
+        description: >-
+          Resolved SHA of refs/pull/N/merge (a.k.a. the PR API's
+          merge_commit_sha). The ref lives on the base repo even for fork
+          PRs, and the merge commit's two parents identify the PR's base
+          and head — so no head-repo input is needed.
         required: true
         type: string
       downstreams:
-        description: "Comma-separated downstream names."
+        description: "Comma-separated downstream names; each may carry an optional @lkg suffix."
         required: true
         type: string
 
@@ -356,7 +355,6 @@ jobs:
         id: run
         env:
           PR_NUMBER:    ${{ inputs.pr_number }}
-          HEAD_REPO:    ${{ inputs.head_repo }}
           MERGE_SHA:    ${{ inputs.merge_sha }}
           DOWNSTREAM:   ${{ matrix.name }}
           DOWNSTREAM_REPO: ${{ matrix.repo }}
@@ -441,10 +439,15 @@ json.dump({"status": sys.argv[1], "stage": sys.argv[2], "message": sys.argv[3],
 }
 
 # ---- 1. Clone mathlib4 at the merge SHA --------------------------------------
+# We always clone leanprover-community/mathlib4 (the base repo). The merge
+# SHA is the GitHub-managed `refs/pull/N/merge` ref, which lives on the
+# base even when the PR was opened from a fork; the merge commit's two
+# parents are the PR's base and head, so the fork is never needed.
 ML="$WORKDIR/mathlib4"
+UPSTREAM_REPO="${UPSTREAM_REPO:-leanprover-community/mathlib4}"
 rm -rf "$ML"
-git clone --no-checkout "https://github.com/$HEAD_REPO.git" "$ML" \
-  || { emit infra_failure clone "could not clone $HEAD_REPO"; exit 1; }
+git clone --no-checkout "https://github.com/$UPSTREAM_REPO.git" "$ML" \
+  || { emit infra_failure clone "could not clone $UPSTREAM_REPO"; exit 1; }
 git -C "$ML" fetch origin "$MERGE_SHA" \
   || { emit infra_failure fetch "merge SHA $MERGE_SHA not fetchable; PR may have conflicts"; exit 1; }
 git -C "$ML" checkout --detach "$MERGE_SHA"
