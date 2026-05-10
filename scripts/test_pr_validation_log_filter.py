@@ -71,11 +71,18 @@ class IsNoiseLineTests(unittest.TestCase):
         self.assert_noise("Decompressing 359 already-cached file(s)")
 
     def test_drops_cache_warning_paragraph(self) -> None:
-        """Scenario: the predictable 'some files were not found in the cache' header is noise."""
+        """Scenario: the predictable 'some files were not found in the cache' header + bullets are noise."""
         self.assert_noise("Warning: some files were not found in the cache.")
         self.assert_noise(
             "This usually means that your local checkout of mathlib4 has diverged from upstream."
         )
+        # Lake renders the paragraph as bullets; both the bullet line and
+        # the indented continuation line of each bullet are predictable noise.
+        self.assert_noise("  * If you push your commits to a PR to the mathlib4 repository")
+        self.assert_noise("    (use a draft PR if it is not ready for review),")
+        self.assert_noise("    then CI will build the oleans and they will be available later.")
+        self.assert_noise("  * If you have already opened a PR, this may mean")
+        self.assert_noise("    the CI build has failed part-way through building.")
 
     def test_keeps_lean_errors_and_failure_marks(self) -> None:
         """Scenario: actual Lean errors and ✖ failure marks are signal."""

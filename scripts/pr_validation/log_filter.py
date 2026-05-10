@@ -37,9 +37,15 @@ _DROP_PREFIXES = (
     "Decompressing",
     # The cache-warning paragraph that always prints when not every olean
     # is in the upstream cache (which is the norm during PR validation,
-    # since we test commits CI hasn't built yet).
+    # since we test commits CI hasn't built yet).  Lake formats this as a
+    # header + two bullet items, each spanning two indented lines.
     "Warning: some files were not found in the cache.",
     "This usually means that your local checkout",
+    "* If you push your commits",
+    "* If you have already opened a PR",
+    "(use a draft PR",
+    "then CI will build",
+    "the CI build has failed",
 )
 
 
