@@ -83,7 +83,9 @@ jobs:
   validate:
     if: ${{ needs.plan.outputs.has_downstreams == 'true' }}
     needs: plan
-    name: "validate: ${{ matrix.name }}"
+    # Include `mode` in the display name so the same downstream tested in
+    # both modes shows up as two distinct rows in the workflow UI.
+    name: "validate: ${{ matrix.name }} [${{ matrix.mode }}]"
     # Self-hosted runner without CI secrets in scope: the validate job
     # builds arbitrary mathlib4 trees (the PR's would-be-merged commit, or
     # the PR's commits cherry-picked onto a downstream's LKG) and runs
@@ -140,8 +142,12 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7.0.0
         with:
-          name: result-${{ matrix.name }}
-          path: ${{ runner.temp }}/artifacts
+          # Both `name` (so two modes against the same downstream don't
+          # collide) and `path` (point at the per-matrix directory rather
+          # than the parent so the artifact contains result.json/build.log
+          # at its root, not nested under result-<name>/) are deliberate.
+          name: result-${{ matrix.name }}-${{ matrix.mode }}
+          path: ${{ runner.temp }}/artifacts/result-${{ matrix.name }}
           if-no-files-found: error
 
   report:

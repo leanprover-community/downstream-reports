@@ -34,8 +34,15 @@ from typing import Any
 from log_filter import read_log_tail
 
 REPO = "leanprover-community/mathlib4"
+# Each comment is keyed by (downstream-name, mode) so the same downstream
+# validated in both merge and lkg mode produces two distinct comments side
+# by side rather than overwriting each other.
 MARKER_PREFIX = "<!-- pr-check-downstream:result:"
 HISTORY_KEY = "pr-check-downstream:history-data"
+
+
+def comment_marker(name: str, mode: str) -> str:
+    return f"{MARKER_PREFIX}{name}:{mode} -->"
 LOG_MAX_CHARS = 60_000  # GitHub comment limit is 65,536; leave room for wrapper text
 
 
@@ -299,7 +306,7 @@ def render_body(
     status = result.get("status", "infra_failure")
     stage = result.get("stage", "unknown")
     mode = result.get("mode") or "merge"
-    marker = f"{MARKER_PREFIX}{name} -->"
+    marker = comment_marker(name, mode)
     repo_slug = repo or "(unknown)"
     branch = default_branch or "(unknown)"
     rebased_suffix = " rebased onto LKG" if mode == "lkg" else ""
@@ -476,10 +483,14 @@ def main() -> int:
             result = json.load(handle)
 
         name = result.get("downstream") or entry.name[len("result-"):]
+        mode = result.get("mode") or "merge"
         meta = inventory.get(name, {})
-        marker = f"{MARKER_PREFIX}{name} -->"
+        marker = comment_marker(name, mode)
 
         existing = find_existing_comment(pr_number, marker)
+        # parse_history is keyed only on `name` because the history block lives
+        # inside the per-mode comment body (the marker we just matched), so
+        # there's no risk of cross-mode bleed-in.
         history = parse_history(name, existing[1] if existing else "")
         history = [
             make_history_entry(

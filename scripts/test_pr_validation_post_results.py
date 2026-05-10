@@ -283,6 +283,24 @@ class TestTreeRecipeTests(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 
+class CommentMarkerTests(unittest.TestCase):
+    """The hidden marker that keys an existing comment includes the mode."""
+
+    def test_marker_includes_mode_so_modes_do_not_collide(self) -> None:
+        """Scenario: same downstream tested in both modes → two distinct markers → two comments."""
+        merge_marker = post_results.comment_marker("Toric", "merge")
+        lkg_marker = post_results.comment_marker("Toric", "lkg")
+        self.assertNotEqual(merge_marker, lkg_marker)
+        self.assertIn(":Toric:merge", merge_marker)
+        self.assertIn(":Toric:lkg", lkg_marker)
+
+    def test_rendered_body_contains_mode_keyed_marker(self) -> None:
+        """Scenario: render_body emits the per-mode marker so find_existing_comment matches it."""
+        body = _render(_make_result(status="pass", mode="lkg", lkg_commit=_LKG_SHA))
+        self.assertIn("<!-- pr-check-downstream:result:FLT:lkg -->", body)
+        self.assertNotIn("<!-- pr-check-downstream:result:FLT -->", body)
+
+
 class HistoryLineTests(unittest.TestCase):
     """render_history_line should annotate lkg-mode entries with the LKG SHA."""
 
