@@ -88,6 +88,10 @@ LOG="$OUTPUT_DIR/build.log"
 exec > >(tee -a "$LOG") 2>&1
 
 DOWNSTREAM_SHA=""
+PR_BASE=""
+PR_HEAD=""
+N_COMMITS=""
+REPLAYED_TREE_SHA=""
 
 # -----------------------------------------------------------------------------
 # Helpers
@@ -106,6 +110,10 @@ warn()    { echo "::warning title=$1::$2"; }
 err_ann() { echo "::error title=$1::$2"; }
 
 emit() {  # status, stage, message  -- writes result.json
+  PR_BASE_SHA="$PR_BASE" \
+  PR_HEAD_SHA="$PR_HEAD" \
+  COMMITS_REPLAYED="$N_COMMITS" \
+  REPLAYED_TREE_SHA="$REPLAYED_TREE_SHA" \
   python3 - "$1" "$2" "$3" "$DOWNSTREAM_SHA" "$MODE" "$LKG_COMMIT" <<'PY'
 import json, os, sys
 status, stage, message, downstream_sha, mode, lkg_commit = sys.argv[1:7]
@@ -120,6 +128,25 @@ record = {
 }
 if mode == "lkg":
     record["lkg_commit"] = lkg_commit or None
+# PR endpoints (resolved from MERGE_SHA's two parents). Both modes capture
+# them once we've fetched the merge SHA: post_results.py uses them to render
+# an explicit "what was tested" recipe and to skip the GitHub-API round-trip
+# that the merge-mode comment used to make for head_sha.
+pr_base = os.environ.get("PR_BASE_SHA") or None
+pr_head = os.environ.get("PR_HEAD_SHA") or None
+if pr_base:
+    record["pr_base_sha"] = pr_base
+if pr_head:
+    record["pr_head_sha"] = pr_head
+# LKG-only extras: how many PR commit(s) were cherry-picked, and the SHA of
+# the resulting (synthetic) tree we built mathlib + downstream against.
+if mode == "lkg":
+    n = os.environ.get("COMMITS_REPLAYED")
+    if n:
+        record["commits_replayed"] = int(n)
+    rep = os.environ.get("REPLAYED_TREE_SHA") or None
+    if rep:
+        record["replayed_tree_sha"] = rep
 with open(os.environ["RESULT"], "w") as f:
     json.dump(record, f)
 PY
@@ -169,6 +196,15 @@ if [ "$MODE" = "merge" ]; then
   fi
   endsection
 
+  # Resolve PR endpoints from the merge commit so result.json carries them
+  # for the comment renderer. Best-effort: a fast-forward merge has only one
+  # parent, in which case PR_HEAD stays empty.
+  PR_BASE=$(git -C "$ML" rev-parse "$MERGE_SHA^1" 2>/dev/null || echo "")
+  PR_HEAD=$(git -C "$ML" rev-parse "$MERGE_SHA^2" 2>/dev/null || echo "")
+  if [ -n "$PR_BASE" ] && [ -n "$PR_HEAD" ] && [ "$PR_BASE" != "$PR_HEAD" ]; then
+    N_COMMITS=$(git -C "$ML" rev-list --count "$PR_BASE..$PR_HEAD" 2>/dev/null || echo "")
+  fi
+
   section "Check out merge SHA"
   if ! git -C "$ML" checkout --detach "$MERGE_SHA"; then
     endsection
@@ -215,10 +251,10 @@ else
   endsection
 
   if [ -n "$PR_HEAD" ] && [ "$PR_BASE" != "$PR_HEAD" ]; then
-    n_commits=$(git -C "$ML" rev-list --count "$PR_BASE..$PR_HEAD")
-    section "Cherry-pick $n_commits PR commit(s) onto LKG"
+    N_COMMITS=$(git -C "$ML" rev-list --count "$PR_BASE..$PR_HEAD")
+    section "Cherry-pick $N_COMMITS PR commit(s) onto LKG"
     notice "Cherry-pick" \
-      "Replaying $n_commits PR commit(s) ($PR_BASE..$PR_HEAD) onto LKG ${LKG_COMMIT:0:7}"
+      "Replaying $N_COMMITS PR commit(s) ($PR_BASE..$PR_HEAD) onto LKG ${LKG_COMMIT:0:7}"
     if ! git -C "$ML" \
            -c user.email=ci@downstream-reports.invalid -c user.name=ci \
            cherry-pick "$PR_BASE..$PR_HEAD"; then
@@ -230,8 +266,12 @@ else
         "PR commits do not apply on top of LKG $LKG_COMMIT; this PR likely depends on post-LKG mathlib changes"
       exit 0
     fi
+    REPLAYED_TREE_SHA=$(git -C "$ML" rev-parse HEAD)
+    echo "  resulting tree: $REPLAYED_TREE_SHA"
     endsection
   else
+    N_COMMITS=0
+    REPLAYED_TREE_SHA=$LKG_COMMIT
     notice "Cherry-pick" "merge SHA is fast-forward; no commits to cherry-pick"
   fi
 fi

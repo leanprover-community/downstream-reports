@@ -186,6 +186,99 @@ class LkgModeRenderingTests(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# Test-tree paragraph (the explicit recipe)
+# ---------------------------------------------------------------------------
+
+
+_PR_BASE = "1" * 40
+_PR_HEAD = "2" * 40
+_REPLAYED = "3" * 40
+
+
+class TestTreeRecipeTests(unittest.TestCase):
+    """The 'What this run tested' paragraph spells out the rebase recipe."""
+
+    def test_lkg_recipe_includes_count_compare_link_and_replayed_tree(self) -> None:
+        """Scenario: lkg pass renders commit count, compare URL, LKG link, replayed-tree link."""
+        body = _render(
+            _make_result(
+                status="pass",
+                mode="lkg",
+                lkg_commit=_LKG_SHA,
+                pr_base_sha=_PR_BASE,
+                pr_head_sha=_PR_HEAD,
+                commits_replayed=4,
+                replayed_tree_sha=_REPLAYED,
+            )
+        )
+        # The literal "What this run tested" header is the anchor users skim for.
+        self.assertIn("**What this run tested:**", body)
+        # Commit count is named explicitly.
+        self.assertIn("4 PR commit(s)", body)
+        # Compare URL with both endpoints' SHAs in the path.
+        self.assertIn(f"/compare/{_PR_BASE}..{_PR_HEAD}", body)
+        # LKG commit link.
+        self.assertIn(f"/commit/{_LKG_SHA}", body)
+        # Resulting tree SHA appears explicitly so the run is reproducible.
+        self.assertIn("resulting tree", body)
+        self.assertIn(_REPLAYED[:7], body)
+
+    def test_lkg_recipe_omits_compare_link_when_endpoints_unknown(self) -> None:
+        """Scenario: a pre-cherry-pick infra failure still surfaces the LKG anchor without compare URL."""
+        body = _render(
+            _make_result(
+                status="infra_failure",
+                stage="fetch",
+                mode="lkg",
+                lkg_commit=_LKG_SHA,
+                # No pr_base_sha / pr_head_sha — fetch failed before resolution.
+            )
+        )
+        self.assertIn("**What this run tested:**", body)
+        self.assertIn(f"/commit/{_LKG_SHA}", body)
+        self.assertNotIn("/compare/", body)
+
+    def test_merge_recipe_includes_head_base_and_count(self) -> None:
+        """Scenario: merge mode shows the merge tree's head + base + commit count."""
+        body = _render(
+            _make_result(
+                status="pass",
+                mode="merge",
+                pr_base_sha=_PR_BASE,
+                pr_head_sha=_PR_HEAD,
+                commits_replayed=4,
+            )
+        )
+        self.assertIn("**What this run tested:**", body)
+        self.assertIn("the PR's merge tree", body)
+        self.assertIn(f"/commit/{_PR_HEAD}", body)
+        self.assertIn(f"/commit/{_PR_BASE}", body)
+        self.assertIn("4 commit(s) over base", body)
+
+    def test_explainer_appears_above_failure_log(self) -> None:
+        """Scenario: the 'rebased onto LKG' explainer reads before the failure log, not after it."""
+        body = _render(
+            _make_result(
+                status="fail",
+                mode="lkg",
+                lkg_commit=_LKG_SHA,
+                pr_base_sha=_PR_BASE,
+                pr_head_sha=_PR_HEAD,
+                commits_replayed=2,
+            )
+        )
+        explainer_idx = body.find("rebased the PR's commits onto")
+        log_idx = body.find("<details><summary>failure log")
+        self.assertGreater(explainer_idx, 0)
+        self.assertGreater(log_idx, 0)
+        self.assertLess(
+            explainer_idx,
+            log_idx,
+            "Explainer should appear before the failure log so it's not missed.",
+        )
+
+
+# ---------------------------------------------------------------------------
 # History line rendering
 # ---------------------------------------------------------------------------
 

@@ -18,6 +18,28 @@ _DROP_PREFIXES = (
     "✔",        # successful build targets
     "trace: .>",  # lake trace lines
     "info: ",   # lake update / elan progress (cloning, toolchain updates, etc.)
+    # GitHub Actions log directives emitted by validate.sh's section /
+    # endsection / annotation helpers. These are workflow-UI markers; in a
+    # Markdown PR comment they show up as literal text and add nothing.
+    "::group::",
+    "::endgroup::",
+    "::notice",
+    "::warning",
+    "::error",
+    # `lake exe cache get` progress noise. Each download tick of the form
+    # `Downloaded: N file(s) [attempted N/M = X%, K KB/s], Decompressed: M`
+    # gets emitted dozens of times during a cache get and dominates the
+    # failure log otherwise. The trailing summary `Decompressed N file(s)`
+    # / `Already decompressed N file(s)` lines are also progress noise.
+    "Downloaded: ",
+    "Decompressed",
+    "Already decompressed",
+    "Decompressing",
+    # The cache-warning paragraph that always prints when not every olean
+    # is in the upstream cache (which is the norm during PR validation,
+    # since we test commits CI hasn't built yet).
+    "Warning: some files were not found in the cache.",
+    "This usually means that your local checkout",
 )
 
 

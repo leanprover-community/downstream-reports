@@ -87,7 +87,13 @@ def post_comment(pr_number: str, body: str) -> None:
 
 
 def get_pr_head_sha(merge_sha: str) -> str | None:
-    """Return the PR head SHA from the merge commit's second parent, or None on failure."""
+    """Fallback: fetch the PR head SHA from the merge commit's second parent.
+
+    Newer result.json files include ``pr_head_sha`` directly (validate.sh
+    resolves it from the local clone) so this API call is rarely needed; we
+    keep it for forward-compat with older result artifacts that pre-date the
+    field.
+    """
     try:
         result = gh_api(
             [
@@ -106,6 +112,98 @@ def get_pr_head_sha(merge_sha: str) -> str | None:
 
 def short_sha(sha: str) -> str:
     return sha[:7] if sha else "(unknown)"
+
+
+# ---------------------------------------------------------------------------
+# Link / recipe rendering helpers
+# ---------------------------------------------------------------------------
+
+def commit_link(sha: str | None, repo: str = REPO) -> str:
+    """Render a commit SHA as a backticked + linked Markdown reference."""
+    if not sha:
+        return "`(unknown)`"
+    return f"[`{short_sha(sha)}`](https://github.com/{repo}/commit/{sha})"
+
+
+def compare_link(base: str, head: str, repo: str = REPO) -> str:
+    """Render a `base..head` commit-range link to GitHub's compare view."""
+    return (
+        f"[`{short_sha(base)}..{short_sha(head)}`]"
+        f"(https://github.com/{repo}/compare/{base}..{head})"
+    )
+
+
+def downstream_link(repo_slug: str, sha: str | None) -> str:
+    """Render `repo@<short>` linked to that commit on the downstream repo."""
+    if not sha:
+        return f"`{repo_slug}`"
+    return f"[`{repo_slug}@{short_sha(sha)}`](https://github.com/{repo_slug}/commit/{sha})"
+
+
+def render_test_tree_paragraph(
+    *,
+    name: str,
+    repo_slug: str,
+    branch: str,
+    result: dict[str, Any],
+    merge_sha: str,
+    run_url: str,
+) -> str:
+    """One-paragraph recipe of what this run actually built and tested.
+
+    The output reads as a single sentence so a PR author skimming the
+    comment understands the test tree without expanding any sections.
+    """
+    mode = result.get("mode") or "merge"
+    pr_base = result.get("pr_base_sha")
+    pr_head = result.get("pr_head_sha")
+    n_commits = result.get("commits_replayed")
+    replayed = result.get("replayed_tree_sha")
+    lkg = result.get("lkg_commit")
+    ds_sha = result.get("downstream_sha")
+
+    if ds_sha:
+        ds_phrase = f"built against {downstream_link(repo_slug, ds_sha)}"
+    else:
+        ds_phrase = f"built against `{repo_slug}@{branch}`"
+
+    if mode == "lkg":
+        if lkg and pr_base and pr_head and pr_base != pr_head:
+            count = n_commits if n_commits is not None else "?"
+            recipe = (
+                f"{count} PR commit(s) ({compare_link(pr_base, pr_head)})"
+                f" cherry-picked onto {name}'s last-known-good mathlib"
+                f" commit {commit_link(lkg)}"
+            )
+            if replayed and replayed != lkg:
+                recipe += f" → resulting tree {commit_link(replayed)}"
+        elif lkg:
+            # Fast-forward merge or pre-cherry-pick infra failure: still
+            # surface the LKG anchor.
+            recipe = (
+                f"the PR's tree on top of {name}'s last-known-good mathlib"
+                f" commit {commit_link(lkg)}"
+            )
+        else:
+            # Should not happen for LKG mode (build_matrix.py rejects), but
+            # render gracefully if it does.
+            recipe = "(LKG commit not recorded)"
+    else:
+        # Merge mode: the PR's would-be-merged tree.
+        if pr_base and pr_head and pr_base != pr_head:
+            count = n_commits if n_commits is not None else "?"
+            recipe = (
+                f"the PR's merge tree {commit_link(merge_sha)}"
+                f" (head {commit_link(pr_head)}, {count} commit(s) over base"
+                f" {commit_link(pr_base)})"
+            )
+        else:
+            recipe = f"the PR's merge tree {commit_link(merge_sha)}"
+
+    return (
+        f"**What this run tested:** {recipe}, {ds_phrase}."
+        f" [run]({run_url})"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -201,23 +299,10 @@ def render_body(
     status = result.get("status", "infra_failure")
     stage = result.get("stage", "unknown")
     mode = result.get("mode") or "merge"
-    lkg_commit = result.get("lkg_commit")
     marker = f"{MARKER_PREFIX}{name} -->"
     repo_slug = repo or "(unknown)"
     branch = default_branch or "(unknown)"
-
-    if head_sha:
-        tested_ref = (
-            f"[`{short_sha(head_sha)}`]"
-            f"(https://github.com/{REPO}/commit/{head_sha})"
-        )
-    else:
-        tested_ref = f"`{short_sha(merge_sha)}`"
-
-    if mode == "lkg":
-        rebased_suffix = " rebased onto LKG"
-    else:
-        rebased_suffix = ""
+    rebased_suffix = " rebased onto LKG" if mode == "lkg" else ""
 
     if status == "pass":
         header = f"### ✅ {name} — builds against this PR{rebased_suffix}"
@@ -232,22 +317,32 @@ def render_body(
     else:  # generic infra_failure
         header = f"### ⚠️ {name} — could not validate (infra: {stage})"
 
-    if mode == "lkg" and lkg_commit:
-        lkg_link = (
-            f"[`{short_sha(lkg_commit)}`]"
-            f"(https://github.com/{REPO}/commit/{lkg_commit})"
-        )
-        tested_line = (
-            f"Tested PR commits cherry-picked onto LKG {lkg_link},"
-            f" against `{repo_slug}@{branch}`. [run]({run_url})"
+    test_tree = render_test_tree_paragraph(
+        name=name,
+        repo_slug=repo_slug,
+        branch=branch,
+        result=result,
+        merge_sha=merge_sha,
+        run_url=run_url,
+    )
+
+    # The framing/explainer paragraph goes immediately after the recipe so a
+    # skimmer reads "what was tested" → "what this verdict means" → details.
+    if mode == "lkg":
+        framing = (
+            "> This run rebased the PR's commits onto"
+            f" {name}'s last-known-good mathlib commit, so the verdict is"
+            " independent of current mathlib master health."
         )
     else:
-        tested_line = (
-            f"Tested {tested_ref} against `{repo_slug}@{branch}`."
-            f" [run]({run_url})"
+        framing = (
+            "> ⚠️ This run did not baseline against master. If master is"
+            " currently broken for this downstream, the failure may not be"
+            " attributable to this PR. See the latest downstream report for"
+            " downstream health."
         )
 
-    parts = [header, "", tested_line, ""]
+    parts = [header, "", test_tree, "", framing, ""]
 
     if status == "fail" and log_tail:
         parts.extend(
@@ -306,28 +401,6 @@ def render_body(
                 [
                     "This is an infrastructure failure; it does not imply"
                     " anything about the PR.",
-                    "",
-                ]
-            )
-
-    if status in {"pass", "fail"}:
-        if mode == "lkg":
-            parts.extend(
-                [
-                    "> This run rebased the PR's commits onto"
-                    f" {name}'s last-known-good mathlib commit, so the"
-                    " verdict is independent of current mathlib master"
-                    " health.",
-                    "",
-                ]
-            )
-        else:
-            parts.extend(
-                [
-                    "> ⚠️ This run did not baseline against master. If master"
-                    " is currently broken for this downstream, the failure"
-                    " may not be attributable to this PR. See the latest"
-                    " downstream report for downstream health.",
                     "",
                 ]
             )
