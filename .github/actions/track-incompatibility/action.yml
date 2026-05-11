@@ -8,7 +8,13 @@ description: >
   the FKB advances.  When the regression clears, the tracking issue and any
   open fix PRs are closed with resolution comments.
 
-  Set open-pr to false to avoid opening a bumping PR.
+  Set open-pr to false to avoid opening a bumping PR (issue-only mode).
+  Set open-issue to false to avoid opening a tracking issue (PR-only mode);
+  useful when you only want to track longer-lasting problems with issues.
+  Setting both to false puts the action in read-only mode: it still fetches
+  and logs the current FKB/LKG and last-run metadata to the workflow run,
+  but opens or closes nothing.  Useful for temporarily pausing side effects
+  without removing the job.
 
 inputs:
   downstream:
@@ -66,6 +72,17 @@ inputs:
       is not subject to the kind of repo-wide overrides that affect PR
       creation.  Override only if you specifically need issues to be
       authored by a different identity.
+
+  open-issue:
+    required: false
+    default: 'true'
+    description: >
+      Master switch for the tracking-issue side.  When true (the default), the
+      action opens or maintains a persistent issue describing the current
+      incompatibility and closes it when the regression resolves.  Set to
+      false for a PR-only mode that skips all issue lifecycle steps — useful
+      when you reserve issues for longer-lasting problems and prefer to
+      surface incompatibilities as fix PRs only.
 
   # --- New inputs: PR side ---
   open-pr:
@@ -137,7 +154,7 @@ outputs:
     description: 'Issue URL (empty when action=noop)'
     value: ${{ steps.resolve-outputs.outputs.issue_url }}
   action:
-    description: '"created", "updated", "closed", or "noop" — describes the issue lifecycle'
+    description: '"created", "updated", "closed", "noop", or "disabled" (when open-issue: false) — describes the issue lifecycle'
     value: ${{ steps.resolve-outputs.outputs.action }}
   pr-number:
     description: 'Fix PR number (empty when pr-action is non-creating)'
@@ -190,9 +207,11 @@ runs:
     # ------------------------------------------------------------------
     # Step 4: Ensure the tracking issue label exists in the consuming repo.
     # Skip when the incompatibility is resolved AND close-on-resolve is
-    # false (no issue will be touched, so no label needed).
+    # false (no issue will be touched, so no label needed), or when
+    # open-issue is false (issue side disabled entirely).
     # ------------------------------------------------------------------
     - name: Ensure tracking label exists
+      if: inputs.open-issue == 'true'
       shell: bash
       env:
         GH_TOKEN: ${{ inputs.issue-token }}
@@ -236,7 +255,7 @@ runs:
     # ------------------------------------------------------------------
     - name: Handle resolved incompatibility
       id: resolve
-      if: steps.fkb.outputs.commit == ''
+      if: inputs.open-issue == 'true' && steps.fkb.outputs.commit == ''
       shell: bash
       env:
         GH_TOKEN: ${{ inputs.issue-token }}
@@ -308,7 +327,7 @@ runs:
     # ------------------------------------------------------------------
     - name: Fetch commit metadata
       id: meta
-      if: steps.fkb.outputs.commit != ''
+      if: inputs.open-issue == 'true' && steps.fkb.outputs.commit != ''
       shell: bash
       env:
         GH_TOKEN: ${{ inputs.issue-token }}
@@ -377,7 +396,7 @@ runs:
     # ------------------------------------------------------------------
     - name: Compose issue content
       id: compose
-      if: steps.fkb.outputs.commit != ''
+      if: inputs.open-issue == 'true' && steps.fkb.outputs.commit != ''
       shell: bash
       env:
         UPSTREAM: ${{ inputs.upstream }}
@@ -501,7 +520,7 @@ runs:
     # ------------------------------------------------------------------
     - name: Create or update issue
       id: upsert
-      if: steps.fkb.outputs.commit != ''
+      if: inputs.open-issue == 'true' && steps.fkb.outputs.commit != ''
       shell: bash
       env:
         GH_TOKEN: ${{ inputs.issue-token }}
@@ -863,6 +882,7 @@ runs:
       if: always()
       shell: bash
       env:
+        OPEN_ISSUE: ${{ inputs.open-issue }}
         OPEN_PR: ${{ inputs.open-pr }}
         FKB_COMMIT: ${{ steps.fkb.outputs.commit }}
         RESOLVE_ACTION: ${{ steps.resolve.outputs.action }}
@@ -880,7 +900,11 @@ runs:
         set -euo pipefail
 
         # --- Issue outputs ---
-        if [ -n "${UPSERT_ACTION:-}" ]; then
+        if [ "$OPEN_ISSUE" != "true" ]; then
+          echo "action=disabled"                    >> "$GITHUB_OUTPUT"
+          echo "issue_number="                      >> "$GITHUB_OUTPUT"
+          echo "issue_url="                         >> "$GITHUB_OUTPUT"
+        elif [ -n "${UPSERT_ACTION:-}" ]; then
           echo "action=${UPSERT_ACTION}"            >> "$GITHUB_OUTPUT"
           echo "issue_number=${UPSERT_NUMBER:-}"    >> "$GITHUB_OUTPUT"
           echo "issue_url=${UPSERT_URL:-}"          >> "$GITHUB_OUTPUT"

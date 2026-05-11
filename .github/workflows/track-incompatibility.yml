@@ -33,6 +33,17 @@ name: track-incompatibility
 #         issues: write
 #       with:
 #         open-pr: 'false'
+#
+# To get a fix PR without any tracking issue (PR-only, no issue):
+#
+#   jobs:
+#     track:
+#       uses: leanprover-community/downstream-reports/.github/workflows/track-incompatibility.yml@main
+#       permissions:
+#         contents: write
+#         pull-requests: write
+#       with:
+#         open-issue: 'false'
 
 on:
   workflow_call:
@@ -70,6 +81,14 @@ on:
         description: >
           When the snapshot clears the first-known-bad, close the open
           tracking issue (if any) with a resolution comment.
+        default: 'true'
+        required: false
+        type: string
+      open-issue:
+        description: >
+          Master switch for the tracking-issue side.  Set to "false" to skip
+          all issue lifecycle steps (PR-only mode), e.g. when you reserve
+          issues for longer-lasting problems.
         default: 'true'
         required: false
         type: string
@@ -141,7 +160,7 @@ on:
         description: 'Issue URL (empty when action=noop).'
         value: ${{ jobs.track.outputs.issue-url }}
       action:
-        description: '"created", "updated", "closed", or "noop" — describes the issue lifecycle.'
+        description: '"created", "updated", "closed", "noop", or "disabled" (when open-issue: false) — describes the issue lifecycle.'
         value: ${{ jobs.track.outputs.action }}
       pr-number:
         description: 'Fix PR number (empty when pr-action is non-creating).'
@@ -179,6 +198,7 @@ jobs:
           label:              ${{ inputs.label }}
           title:              ${{ inputs.title }}
           close-on-resolve:   ${{ inputs.close-on-resolve }}
+          open-issue:         ${{ inputs.open-issue }}
           open-pr:            ${{ inputs.open-pr }}
           pr-label:           ${{ inputs.pr-label }}
           branch-prefix:      ${{ inputs.branch-prefix }}

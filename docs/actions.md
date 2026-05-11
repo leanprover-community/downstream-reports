@@ -207,7 +207,13 @@ ready starting point for investigation.  When the FKB advances, stale fix PRs
 are closed automatically.  When the regression clears, both the issue and any
 open fix PRs are closed with resolution comments.
 
-Set `open-pr: false` to run in issue-only mode, where no PR is opened.
+Set `open-pr: false` to run in issue-only mode, where no PR is opened. Set
+`open-issue: false` for the symmetric PR-only mode — useful when you reserve
+issues for longer-lasting problems and want incompatibilities surfaced only
+as fix PRs. Setting both to `false` puts the action in read-only mode: it
+still fetches and logs the current FKB/LKG and last-run metadata, but opens
+or closes nothing — handy for temporarily pausing side effects without
+removing the job.
 
 ### Inputs
 
@@ -219,7 +225,8 @@ Set `open-pr: false` to run in issue-only mode, where no PR is opened.
 | `title` | no | auto | Full issue title; auto-generated when empty. |
 | `close-on-resolve` | no | `true` | Close the tracking issue with a resolution comment when FKB clears. |
 | `token` | no | `github.token` | Token for PR-side operations (push, fix-PR open/close). Needs `contents: write` and `pull-requests: write` when `open-pr: true`. Typically a GitHub App token, since pushes by the default `GITHUB_TOKEN` do not trigger downstream CI and PR creation can be disabled repo-wide. Ignored when `open-pr: false`. |
-| `issue-token` | no | `github.token` | Token for issue-side operations (label, list, create, edit, comment, close). Defaults to `GITHUB_TOKEN`, which is reliable here because `issues: write` granted via the workflow's `permissions:` block isn't subject to repo-wide overrides. Override only to change the issue author. |
+| `issue-token` | no | `github.token` | Token for issue-side operations (label, list, create, edit, comment, close). Defaults to `GITHUB_TOKEN`, which is reliable here because `issues: write` granted via the workflow's `permissions:` block isn't subject to repo-wide overrides. Override only to change the issue author. Ignored when `open-issue: false`. |
+| `open-issue` | no | `true` | Master switch for the tracking-issue side. Set `false` for PR-only mode (no issue is opened or closed). |
 | `open-pr` | no | `true` | Master switch for the fix-PR side. Set `false` for issue-only mode. |
 | `pr-label` | no | `dependency-incompatibility-fix` | Label applied to fix PRs; primary key for stale-PR detection. Created automatically. |
 | `branch-prefix` | no | `bump-<dependency-name>/fix` | Prefix for the fix-PR branch. Final branch: `<prefix>-<fkb-short7>` (e.g. `bump-mathlib/fix-abc1234`). Stable per FKB SHA. |
@@ -237,7 +244,7 @@ Set `open-pr: false` to run in issue-only mode, where no PR is opened.
 |--------|-------------|
 | `issue-number` | Issue number (empty when `action=noop`) |
 | `issue-url` | Issue URL |
-| `action` | `"created"`, `"updated"`, `"closed"`, or `"noop"` — describes the **issue** lifecycle |
+| `action` | `"created"`, `"updated"`, `"closed"`, `"noop"`, or `"disabled"` (when `open-issue: false`) — describes the **issue** lifecycle |
 | `pr-number` | Fix PR number (empty when `pr-action` is non-creating) |
 | `pr-url` | Fix PR URL |
 | `pr-action` | `"created"`, `"noop-existing"`, `"noop-no-changes"`, `"noop-resolved"`, or `"disabled"` (when `open-pr: false`) |
@@ -275,6 +282,19 @@ jobs:
       issues: write
     with:
       open-pr: 'false'
+```
+
+PR-only mode (no tracking issue — reserve issues for longer-lasting problems):
+
+```yaml
+jobs:
+  track:
+    uses: leanprover-community/downstream-reports/.github/workflows/track-incompatibility.yml@main
+    permissions:
+      contents: write
+      pull-requests: write
+    with:
+      open-issue: 'false'
 ```
 
 Accepts the same inputs as the composite action and forwards them through.
