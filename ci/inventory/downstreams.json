@@ -84,13 +84,6 @@
       "enabled": true
     },
     {
-      "name": "mean-fourier",
-      "repo": "YaelDillies/mean-fourier",
-      "default_branch": "master",
-      "dependency_name": "mathlib",
-      "enabled": true
-    },
-    {
       "name": "forbidden-matrix",
       "repo": "YaelDillies/forbidden-matrix",
       "default_branch": "master",
