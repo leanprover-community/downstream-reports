@@ -138,12 +138,14 @@ if pr_base:
     record["pr_base_sha"] = pr_base
 if pr_head:
     record["pr_head_sha"] = pr_head
-# LKG-only extras: how many PR commit(s) were cherry-picked, and the SHA of
-# the resulting (synthetic) tree we built mathlib + downstream against.
+# commits_replayed is the number of commits in MERGE_SHA^1..MERGE_SHA^2 and
+# applies to both modes — it's the PR's own commit count, independent of
+# whether we actually cherry-picked them or just checked out the merge tree.
+# replayed_tree_sha is LKG-only: it's the SHA produced by the cherry-pick.
+n = os.environ.get("COMMITS_REPLAYED")
+if n:
+    record["commits_replayed"] = int(n)
 if mode == "lkg":
-    n = os.environ.get("COMMITS_REPLAYED")
-    if n:
-        record["commits_replayed"] = int(n)
     rep = os.environ.get("REPLAYED_TREE_SHA") or None
     if rep:
         record["replayed_tree_sha"] = rep
