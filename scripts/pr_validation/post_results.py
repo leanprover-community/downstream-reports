@@ -2,11 +2,10 @@
 """Post per-entry result comments on a mathlib4 PR.
 
 For each ``result-*/result.json`` produced by the validate matrix, render
-a self-contained Markdown comment and POST it to the PR. Each dispatch
-appends a fresh set of comments — there is no edit-in-place; if you want
-"the latest verdict" you read the most recent one. The trade-off is
-simplicity (no marker plumbing, no history accumulation) at the cost of
-a longer PR comment list when a directive is re-triggered.
+a self-contained Markdown comment and POST it to the PR. Each comment
+body carries the full verdict (header + subtitle + Tested recipe +
+optional failure log), so the most recent comment for a given matrix
+entry is always the authoritative one for that dispatch.
 
 Inputs (env):
     GH_TOKEN  — token with issues:write on leanprover-community/mathlib4

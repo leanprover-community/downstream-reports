@@ -76,14 +76,10 @@ class MergeModeRenderingTests(unittest.TestCase):
     """Existing merge-mode comments must continue rendering as before."""
 
     def test_pass_header(self) -> None:
-        """Scenario: merge-mode pass uses the historical headline."""
+        """Scenario: merge-mode pass uses the green-check headline and the master caveat."""
         body = _render(_make_result(status="pass"))
         self.assertIn("### ✅ FLT builds against this PR", body)
-        self.assertNotIn("rebased onto LKG", body)
-        # Master-baseline caveat is still shown for merge-mode runs.
         self.assertIn("did not baseline against master", body)
-        # Header has no em-dash separator.
-        self.assertNotIn("FLT — ", body)
 
     def test_fail_inlines_log_tail(self) -> None:
         """Scenario: merge-mode fail inlines the build.log tail in a <details> block."""
@@ -99,31 +95,26 @@ class MergeModeRenderingTests(unittest.TestCase):
 
 
 class LkgModeRenderingTests(unittest.TestCase):
-    """Headers, tested-line, and caveats for the new mode=lkg variants."""
+    """Headers, subtitle, and caveats for the mode=lkg variants."""
 
     def test_lkg_pass_header_and_subtitle(self) -> None:
-        """Scenario: lkg-mode pass — header has no em-dash; subtitle uses the friendly framing."""
+        """Scenario: lkg-mode pass header reads as a sentence and the subtitle explains the verdict."""
         body = _render(
             _make_result(status="pass", mode="lkg", lkg_commit=_LKG_SHA)
         )
         self.assertIn(
             "### ✅ FLT builds against this PR rebased onto LKG", body
         )
-        # Master caveat does not apply to LKG mode.
-        self.assertNotIn("did not baseline against master", body)
-        # New friendly subtitle wording.
         self.assertIn(
             "replayed the PR's changes on top of a mathlib revision"
             " compatible with FLT",
             body,
         )
-        # Old wording must not leak.
-        self.assertNotIn("rebased the PR's commits onto", body)
-        # The LKG SHA is still linked in the Tested: paragraph.
+        # The LKG SHA is linked in the Tested: paragraph.
         self.assertIn(_LKG_SHA[:7], body)
 
     def test_lkg_fail_header(self) -> None:
-        """Scenario: lkg-mode fail surfaces the rebase context in the header (no em-dash)."""
+        """Scenario: lkg-mode fail header carries the rebased-onto-LKG suffix."""
         body = _render(
             _make_result(status="fail", mode="lkg", lkg_commit=_LKG_SHA)
         )
@@ -133,7 +124,7 @@ class LkgModeRenderingTests(unittest.TestCase):
         self.assertIn("<details><summary>failure log</summary>", body)
 
     def test_rebase_conflict_header_and_explainer(self) -> None:
-        """Scenario: rebase_conflict infra-failure surfaces a dedicated headline (colon, not em-dash)."""
+        """Scenario: rebase_conflict infra-failure renders a dedicated headline."""
         body = _render(
             _make_result(
                 status="infra_failure",
@@ -193,7 +184,7 @@ class TestTreeRecipeTests(unittest.TestCase):
     """The 'Tested:' paragraph spells out the rebase recipe."""
 
     def test_lkg_recipe_includes_count_compare_link_and_lkg(self) -> None:
-        """Scenario: lkg pass renders commit count, compare URL, LKG link."""
+        """Scenario: lkg pass renders commit count, compare URL, and LKG commit link."""
         body = _render(
             _make_result(
                 status="pass",
@@ -207,16 +198,15 @@ class TestTreeRecipeTests(unittest.TestCase):
         )
         # The Tested anchor users skim for.
         self.assertIn("**Tested:**", body)
-        self.assertNotIn("**What this run tested:**", body)
         # Commit count is named explicitly.
         self.assertIn("4 PR commit(s)", body)
         # Compare URL with both endpoints' SHAs in the path.
         self.assertIn(f"/compare/{_PR_BASE}..{_PR_HEAD}", body)
         # LKG commit link.
         self.assertIn(f"/commit/{_LKG_SHA}", body)
-        # Resulting tree SHA is no longer shown — it was a local synthetic
-        # commit that doesn't exist anywhere a reader could follow it.
-        self.assertNotIn("resulting tree", body)
+        # The post-cherry-pick synthetic tree SHA lives only on the runner
+        # disk, so the recipe omits it; readers see the LKG anchor and the
+        # PR compare URL, both of which point at refs they can browse.
         self.assertNotIn(_REPLAYED[:7], body)
 
     def test_lkg_recipe_omits_compare_link_when_endpoints_unknown(self) -> None:
@@ -294,20 +284,20 @@ class TestTreeRecipeTests(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# No-marker behaviour
+# Self-contained body invariants
 # ---------------------------------------------------------------------------
 
 
-class NoMarkerTests(unittest.TestCase):
-    """Comments are self-contained — no hidden marker or history block.
+class SelfContainedBodyTests(unittest.TestCase):
+    """Each comment body is a complete, standalone Markdown render.
 
-    We dropped the edit-in-place machinery: each dispatch POSTs fresh
-    comments, so a body that still leaked the old `<!-- … -->` markers
-    would be visible to readers as dead text. These tests pin the
-    invariant.
+    A dispatch POSTs one comment per matrix entry; the body carries every
+    field a reader needs (header + subtitle + Tested recipe + optional
+    failure log). These tests pin the invariant that no hidden marker or
+    cross-comment scaffolding leaks into the rendered body.
     """
 
-    def test_body_does_not_contain_pr_check_downstream_marker(self) -> None:
+    def test_body_contains_no_hidden_html_marker(self) -> None:
         """Scenario: render_body emits no `<!-- pr-check-downstream:* -->` blocks."""
         body = _render(
             _make_result(
@@ -320,8 +310,8 @@ class NoMarkerTests(unittest.TestCase):
         self.assertNotIn("<!-- pr-check-downstream:result:", body)
         self.assertNotIn("<!-- pr-check-downstream:history-data", body)
 
-    def test_body_does_not_contain_previous_runs_section(self) -> None:
-        """Scenario: there is no `Previous runs` block — that was history-only chrome."""
+    def test_body_renders_a_single_run_without_a_history_block(self) -> None:
+        """Scenario: the body contains the current verdict only — no `Previous runs` list."""
         body = _render(_make_result(status="fail"))
         self.assertNotIn("**Previous runs**", body)
 

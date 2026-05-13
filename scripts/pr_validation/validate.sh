@@ -1,22 +1,22 @@
 #!/usr/bin/env bash
 # Validate a single downstream against a mathlib4 PR.
 #
-# Two modes, selected by $MODE:
-#
-#   MODE=merge  — clone mathlib4 at $MERGE_SHA (the would-be-merged tree
-#                 GitHub computed) and build the downstream against it.
-#                 This is the default: it is the historical behaviour and the
-#                 cheapest path because `lake exe cache get` for the merge
-#                 commit is mostly a cache hit.
+# Two modes, selected by $MODE (default lkg):
 #
 #   MODE=lkg    — check out $LKG_COMMIT (the downstream's last-known-good
 #                 mathlib commit, supplied by build_matrix.py from the
-#                 published lkg/latest.json snapshot), cherry-pick the PR's
-#                 commits onto it, build mathlib's library target as a
-#                 sanity check, then build the downstream. Yields a verdict
-#                 that's independent of current mathlib master health.
-#                 Slower because PR-touched source files miss the upstream
-#                 olean cache and have to be rebuilt.
+#                 published lkg/latest.json snapshot), cherry-pick the
+#                 PR's commits onto it, build mathlib's library target as
+#                 a sanity check, then build the downstream. Yields a
+#                 verdict independent of current mathlib master health.
+#                 PR-touched source files miss the upstream olean cache
+#                 and rebuild on every run.
+#
+#   MODE=merge  — clone mathlib4 at $MERGE_SHA (the would-be-merged tree
+#                 GitHub computed) and build the downstream against it.
+#                 Faster because `lake exe cache get` for the merge
+#                 commit is mostly a cache hit; the verdict is sensitive
+#                 to current master health.
 #
 # Inputs (env, all required unless noted):
 #   MODE            — "lkg" (default if empty) or "merge".
