@@ -417,6 +417,36 @@ class FkbAwareFramingTests(unittest.TestCase):
         self.assertNotIn("Current mathlib master is incompatible", body)
 
 
+class TriggeredByTests(unittest.TestCase):
+    """`triggered_by` adds a `_Requested by @<user>._` line above the header."""
+
+    def _render_with(self, triggered_by: str) -> str:
+        return post_results.render_body(
+            name="FLT",
+            repo="leanprover-community/FLT",
+            default_branch="main",
+            result=_make_result(status="pass"),
+            merge_sha=_MERGE_SHA,
+            run_url=_RUN_URL,
+            log_tail="",
+            triggered_by=triggered_by,
+        )
+
+    def test_mention_renders_above_the_header(self) -> None:
+        """Scenario: a non-empty triggered_by leads with an italic @-mention before the verdict."""
+        body = self._render_with("marcelolynch")
+        mention_idx = body.find("_Requested by @marcelolynch._")
+        header_idx = body.find("### ✅")
+        self.assertGreaterEqual(mention_idx, 0)
+        self.assertGreater(header_idx, mention_idx)
+
+    def test_empty_triggered_by_omits_the_mention_line(self) -> None:
+        """Scenario: no triggered_by → body starts with the header, no `Requested by` line."""
+        body = self._render_with("")
+        self.assertFalse(body.startswith("_Requested by"))
+        self.assertTrue(body.startswith("### ✅"))
+
+
 class SelfContainedBodyTests(unittest.TestCase):
     """Each comment body is a complete, standalone Markdown render.
 

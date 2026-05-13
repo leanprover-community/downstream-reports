@@ -278,6 +278,7 @@ def render_body(
     merge_sha: str,
     run_url: str,
     log_tail: str,
+    triggered_by: str = "",
 ) -> str:
     status = result.get("status", "infra_failure")
     stage = result.get("stage", "unknown")
@@ -315,7 +316,12 @@ def render_body(
     # regression on master for this downstream.
     fkb = result.get("fkb_commit")
     framing = _framing_for(name, mode, status, fkb)
-    parts = [header, ""]
+    parts: list[str] = []
+    if triggered_by:
+        # Italic line above the header so the requester gets notified
+        # without crowding the verdict visually.
+        parts.extend([f"_Requested by @{triggered_by}._", ""])
+    parts.extend([header, ""])
     if framing:
         parts.extend([framing, ""])
     parts.extend([test_tree, ""])
@@ -410,6 +416,12 @@ def main() -> int:
     pr_number = os.environ["PR_NUMBER"]
     merge_sha = os.environ["MERGE_SHA"]
     run_url = os.environ["RUN_URL"]
+    # Optional: the GitHub login of whoever dispatched this validation.
+    # When the trigger is a `!downstream-check` comment, this is the
+    # commenter; when the trigger is a manual `gh workflow run`, the
+    # caller can pass `-f triggered_by=<login>` to opt in. Falsy when
+    # unset, in which case render_body skips the mention line.
+    triggered_by = os.environ.get("TRIGGERED_BY", "").strip()
 
     inventory = load_inventory_lookup()
 
@@ -444,6 +456,7 @@ def main() -> int:
             merge_sha=merge_sha,
             run_url=run_url,
             log_tail=read_log_tail(entry / "build.log", LOG_MAX_CHARS),
+            triggered_by=triggered_by,
         )
 
         post_comment(pr_number, body)

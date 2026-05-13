@@ -32,6 +32,14 @@ on:
         required: false
         default: true
         type: boolean
+      triggered_by:
+        description: >-
+          GitHub login of the user who dispatched this validation. When
+          set, the per-entry result comments lead with `_Requested by
+          @<user>._` so they get a notification.
+        required: false
+        default: ''
+        type: string
 
 permissions:
   contents: read
@@ -207,8 +215,9 @@ jobs:
 
       - name: Post / update result comments
         env:
-          GH_TOKEN:  ${{ steps.app_token.outputs.token }}
-          PR_NUMBER: ${{ inputs.pr_number }}
-          MERGE_SHA: ${{ inputs.merge_sha }}
-          RUN_URL:   ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          GH_TOKEN:      ${{ steps.app_token.outputs.token }}
+          PR_NUMBER:     ${{ inputs.pr_number }}
+          MERGE_SHA:     ${{ inputs.merge_sha }}
+          RUN_URL:       ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          TRIGGERED_BY:  ${{ inputs.triggered_by }}
         run: python3 scripts/pr_validation/post_results.py --results-dir results
