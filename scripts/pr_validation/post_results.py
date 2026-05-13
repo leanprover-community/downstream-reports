@@ -113,16 +113,23 @@ def render_test_tree_paragraph(
     merge_sha: str,
     run_url: str,
 ) -> str:
-    """One-paragraph recipe of what this run actually built and tested.
+    """One-paragraph recipe of what this run built (pass / fail) or attempted (infra failure).
 
-    Reads as a single sentence so a PR author skimming the comment
-    understands the test tree without expanding any sections.
+    Pass / fail bodies describe what was tested in the past tense:
+
+        **Tested:** N PR commit(s) cherry-picked onto …, built against …
+
+    Infra-failure bodies describe what the run was doing when it stopped,
+    in gerund form, so the reader knows the build did not complete:
+
+        **Attempted:** cherry-picking N PR commit(s) onto … and building
+        against …
     """
+    status = result.get("status", "infra_failure")
     mode = result.get("mode") or "merge"
     pr_base = result.get("pr_base_sha")
     pr_head = result.get("pr_head_sha")
     n_commits = result.get("commits_replayed")
-    replayed = result.get("replayed_tree_sha")
     lkg = result.get("lkg_commit")
     ds_sha = result.get("downstream_sha")
     # `downstream_rev` is set only when the user requested a specific rev
@@ -131,48 +138,71 @@ def render_test_tree_paragraph(
     # resolved SHA, so the reader sees what was asked for.
     ds_rev = result.get("downstream_rev")
 
+    attempted = status not in {"pass", "fail"}
+    label = "Attempted" if attempted else "Tested"
+
+    # Downstream-side link / label. The link form is reachable only when
+    # the clone+checkout step actually populated downstream_sha; on early
+    # infra failures we fall back to a backticked rev (or default branch).
     if ds_sha:
-        ds_phrase = f"built against {downstream_link(repo_slug, ds_sha, ds_rev)}"
+        ds = downstream_link(repo_slug, ds_sha, ds_rev)
     elif ds_rev:
-        ds_phrase = f"built against `{repo_slug}@{ds_rev}`"
+        ds = f"`{repo_slug}@{ds_rev}`"
     else:
-        ds_phrase = f"built against `{repo_slug}@{branch}`"
+        ds = f"`{repo_slug}@{branch}`"
 
     if mode == "lkg":
         if lkg and pr_base and pr_head and pr_base != pr_head:
             count = n_commits if n_commits is not None else "?"
-            recipe = (
-                f"{count} PR commit(s) ({compare_link(pr_base, pr_head)})"
-                f" cherry-picked onto {name}'s last-known-good mathlib"
-                f" commit {commit_link(lkg)}"
+            commits = f"{count} PR commit(s) ({compare_link(pr_base, pr_head)})"
+            lkg_phrase = (
+                f"{name}'s last-known-good mathlib commit {commit_link(lkg)}"
             )
+            if attempted:
+                recipe = (
+                    f"cherry-picking {commits} onto {lkg_phrase}"
+                    f" and building against {ds}"
+                )
+            else:
+                recipe = (
+                    f"{commits} cherry-picked onto {lkg_phrase},"
+                    f" built against {ds}"
+                )
         elif lkg:
             # Fast-forward merge or pre-cherry-pick infra failure: still
             # surface the LKG anchor.
-            recipe = (
-                f"the PR's tree on top of {name}'s last-known-good mathlib"
-                f" commit {commit_link(lkg)}"
+            lkg_phrase = (
+                f"{name}'s last-known-good mathlib commit {commit_link(lkg)}"
             )
+            if attempted:
+                recipe = (
+                    f"putting the PR's tree on top of {lkg_phrase}"
+                    f" and building against {ds}"
+                )
+            else:
+                recipe = (
+                    f"the PR's tree on top of {lkg_phrase},"
+                    f" built against {ds}"
+                )
         else:
-            # Should not happen for LKG mode (build_matrix.py rejects), but
-            # render gracefully if it does.
             recipe = "(LKG commit not recorded)"
     else:
         # Merge mode: the PR's would-be-merged tree.
         if pr_base and pr_head and pr_base != pr_head:
             count = n_commits if n_commits is not None else "?"
-            recipe = (
+            tree = (
                 f"the PR's merge tree {commit_link(merge_sha)}"
                 f" (head {commit_link(pr_head)}, {count} commit(s) over base"
                 f" {commit_link(pr_base)})"
             )
         else:
-            recipe = f"the PR's merge tree {commit_link(merge_sha)}"
+            tree = f"the PR's merge tree {commit_link(merge_sha)}"
+        if attempted:
+            recipe = f"building {ds} against {tree}"
+        else:
+            recipe = f"{tree}, built against {ds}"
 
-    return (
-        f"**Tested:** {recipe}, {ds_phrase}."
-        f" [run]({run_url})"
-    )
+    return f"**{label}:** {recipe}. [run]({run_url})"
 
 
 # ---------------------------------------------------------------------------

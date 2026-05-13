@@ -210,7 +210,7 @@ class TestTreeRecipeTests(unittest.TestCase):
         self.assertNotIn(_REPLAYED[:7], body)
 
     def test_lkg_recipe_omits_compare_link_when_endpoints_unknown(self) -> None:
-        """Scenario: a pre-cherry-pick infra failure still surfaces the LKG anchor without compare URL."""
+        """Scenario: a pre-cherry-pick infra failure surfaces the LKG anchor under an `Attempted:` label."""
         body = _render(
             _make_result(
                 status="infra_failure",
@@ -220,7 +220,9 @@ class TestTreeRecipeTests(unittest.TestCase):
                 # No pr_base_sha / pr_head_sha — fetch failed before resolution.
             )
         )
-        self.assertIn("**Tested:**", body)
+        # The run stopped before any build happened; the recipe describes
+        # the intent rather than claiming success.
+        self.assertIn("**Attempted:**", body)
         self.assertIn(f"/commit/{_LKG_SHA}", body)
         self.assertNotIn("/compare/", body)
 
@@ -240,6 +242,48 @@ class TestTreeRecipeTests(unittest.TestCase):
         self.assertIn(f"/commit/{_PR_HEAD}", body)
         self.assertIn(f"/commit/{_PR_BASE}", body)
         self.assertIn("4 commit(s) over base", body)
+
+    def test_lkg_infra_failure_uses_attempted_label_and_gerunds(self) -> None:
+        """Scenario: lkg-mode infra failure renders the recipe in gerund form under Attempted:."""
+        body = _render(
+            _make_result(
+                status="infra_failure",
+                stage="rebase_conflict",
+                mode="lkg",
+                lkg_commit=_LKG_SHA,
+                pr_base_sha=_PR_BASE,
+                pr_head_sha=_PR_HEAD,
+                commits_replayed=2,
+            )
+        )
+        self.assertIn("**Attempted:**", body)
+        self.assertIn("cherry-picking 2 PR commit(s)", body)
+        self.assertIn("and building against", body)
+        # The past-tense forms describe a completed build and must not
+        # appear when the build did not complete.
+        self.assertNotIn("**Tested:**", body)
+        self.assertNotIn("cherry-picked onto", body)
+
+    def test_merge_infra_failure_uses_attempted_label(self) -> None:
+        """Scenario: merge-mode infra failure renders the recipe in gerund form."""
+        body = _render(
+            _make_result(
+                status="infra_failure",
+                stage="clone_downstream",
+                mode="merge",
+                pr_base_sha=_PR_BASE,
+                pr_head_sha=_PR_HEAD,
+                commits_replayed=1,
+                # No downstream_sha — the clone step never produced one.
+                downstream_sha=None,
+            )
+        )
+        self.assertIn("**Attempted:**", body)
+        # Subject-verb order in merge mode flips: we lead with `building <ds>`
+        # because the downstream is the target of the action.
+        self.assertRegex(body, r"\bbuilding\b.*\bagainst the PR's merge tree\b")
+        self.assertNotIn("**Tested:**", body)
+        self.assertNotIn("built against", body)
 
     def test_subtitle_appears_above_tested_line(self) -> None:
         """Scenario: the 'replayed the PR's changes' subtitle reads before the Tested: line."""
