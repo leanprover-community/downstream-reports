@@ -64,9 +64,9 @@ class TestIsNoiseLine:
     def test_drops_lake_info_progress(self) -> None:
         """`info:` lines from `lake update` (cloning / toolchain hooks) are noise.
 
-        These describe what ``lake update`` is doing rather than how the
-        downstream's source compiled; once we reach the build step they
-        no longer help diagnose a failure.
+        These describe the manifest-resolution and toolchain-setup work
+        ``lake update`` does, not the source compilation itself; the
+        failure tail is for the actual build output.
         """
         # Arrange / Act / Assert
         self._assert_noise("info: aesop: cloning https://github.com/…")

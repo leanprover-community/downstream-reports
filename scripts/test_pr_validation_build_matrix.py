@@ -39,6 +39,8 @@ import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from scripts.conftest import SHA_F
@@ -197,37 +199,24 @@ class TestParseEntry:
 
         Strict grammar prevents the dispatcher from silently ignoring a
         token the user almost certainly meant to be acted on (e.g. a
-        misspelling of `--merge-branch`).
+        misspelling of `--merge-branch`).  The error message names the
+        only allowed flag so a typo is easy to fix.
         """
-        # Arrange
-        # Act
-        try:
+        # Arrange / Act / Assert
+        with pytest.raises(ValueError, match="--merge-branch"):
             build_matrix._parse_entry("FLT --bogus")
-        except ValueError as exc:
-            # Assert
-            assert "--merge-branch" in str(exc)
-        else:
-            raise AssertionError("expected ValueError")
 
     def test_empty_name_raises(self) -> None:
         """`@v1` (no bare name) is rejected."""
         # Arrange / Act / Assert
-        try:
+        with pytest.raises(ValueError):
             build_matrix._parse_entry("@v1")
-        except ValueError:
-            pass
-        else:
-            raise AssertionError("expected ValueError")
 
     def test_empty_rev_after_at_raises(self) -> None:
         """`FLT@` (with an `@` and nothing after) is rejected."""
         # Arrange / Act / Assert
-        try:
+        with pytest.raises(ValueError):
             build_matrix._parse_entry("FLT@")
-        except ValueError:
-            pass
-        else:
-            raise AssertionError("expected ValueError")
 
 
 # ---------------------------------------------------------------------------

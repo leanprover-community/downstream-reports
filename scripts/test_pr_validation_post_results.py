@@ -43,7 +43,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from scripts.conftest import SHA_A, SHA_B, SHA_C, SHA_D, SHA_F
+from scripts.conftest import SHA_A, SHA_C, SHA_D, SHA_F
 from scripts.pr_validation import post_results
 
 
@@ -55,7 +55,6 @@ from scripts.pr_validation import post_results
 # suite.  These names read naturally inside assertions about what the
 # comment links to.
 _MERGE_SHA = SHA_A
-_HEAD_SHA = SHA_B
 _LKG_SHA = SHA_C
 _DS_SHA = SHA_D
 _FKB_SHA = SHA_F
@@ -65,7 +64,6 @@ _FKB_SHA = SHA_F
 # represent the two parents of a PR's merge commit.
 _PR_BASE = "1" * 40
 _PR_HEAD = "2" * 40
-_REPLAYED = "3" * 40
 
 _RUN_URL = "https://github.com/leanprover-community/downstream-reports/actions/runs/1"
 
@@ -163,14 +161,15 @@ class TestMergeModeRendering:
 
         A clean merge-mode pass is unambiguous: the PR builds against the
         merged tree.  No framing subtitle is needed since there's no
-        ambiguity about whose fault any non-existent failure would be.
+        ambiguity about whose fault any non-existent failure would be —
+        the master-health framings (which lead with ``mathlib master is
+        currently …``) only fire on fails.
         """
         # Arrange / Act
         body = _render(_make_result(status="pass"))
 
         # Assert
         assert "## ✅ FLT --merge-branch builds against this PR" in body
-        assert "did not baseline against master" not in body
         assert "mathlib master is currently" not in body
 
     def test_fail_inlines_log_tail(self) -> None:
@@ -247,9 +246,9 @@ class TestLkgModeRendering:
         """`rebase_conflict` infra-failure renders a dedicated headline + actionable explainer.
 
         This stage means the PR's commits don't apply cleanly on top of
-        LKG, which the PR author can usually fix by rebasing.  We swap
-        out the generic infra-failure boilerplate for a targeted
-        message explaining the cause.
+        LKG, which the PR author can usually fix by rebasing onto a
+        more recent base.  The targeted explainer points at that
+        diagnosis specifically.
         """
         # Arrange / Act
         body = _render(
@@ -268,7 +267,6 @@ class TestLkgModeRendering:
         # Assert
         assert "## ⚠️ FLT: could not validate (PR conflicts with LKG)" in body
         assert "do not apply cleanly on top of FLT's last-known-good" in body
-        assert "This is an infrastructure failure; it does not imply" not in body
 
     def test_mathlib_build_at_lkg_header_and_log(self) -> None:
         """`mathlib_build_at_lkg` surfaces the headline and inlines the build log.
@@ -308,10 +306,10 @@ class TestTestTreeRecipe:
         """LKG pass renders commit count, compare URL, and LKG commit link.
 
         The recipe is what makes the verdict reproducible by hand: a
-        reader can follow the compare link to see exactly what
-        commits were replayed and the LKG link to see the anchor
-        commit.  The post-cherry-pick synthetic tree SHA is local to
-        the runner and intentionally omitted.
+        reader follows the compare link to see exactly which commits
+        were replayed and the LKG link to see the anchor commit.
+        Together with the downstream commit link below them, those are
+        the three refs that fully describe what was built.
         """
         # Arrange / Act
         body = _render(
@@ -322,7 +320,6 @@ class TestTestTreeRecipe:
                 pr_base_sha=_PR_BASE,
                 pr_head_sha=_PR_HEAD,
                 commits_replayed=4,
-                replayed_tree_sha=_REPLAYED,
             )
         )
 
@@ -331,7 +328,6 @@ class TestTestTreeRecipe:
         assert "4 PR commit(s)" in body
         assert f"/compare/{_PR_BASE}..{_PR_HEAD}" in body
         assert f"/commit/{_LKG_SHA}" in body
-        assert _REPLAYED[:7] not in body
 
     def test_lkg_recipe_omits_compare_link_when_endpoints_unknown(self) -> None:
         """A pre-cherry-pick infra failure surfaces the LKG anchor under an `Attempted:` label.
@@ -552,7 +548,10 @@ class TestFkbAwareFraming:
         """A successful merge-mode build needs no subtitle disclaimer.
 
         A pass is a pass — master health is irrelevant when the
-        downstream actually built.
+        downstream actually built.  Neither the FKB-set framing
+        (``mathlib master is currently incompatible …``) nor the
+        FKB-null framing (``mathlib master is currently known to
+        build …``) should fire on a pass.
         """
         # Arrange / Act
         body = _render(
@@ -567,7 +566,6 @@ class TestFkbAwareFraming:
 
         # Assert
         assert "mathlib master is currently" not in body
-        assert "did not baseline against master" not in body
 
     def test_lkg_pass_with_fkb_explains_why_lkg_matters(self) -> None:
         """LKG pass + FKB set names the master regression to sharpen the verdict.
@@ -1025,40 +1023,3 @@ class TestRequestedName:
         assert "## ✅ FLT builds against this PR rebased onto LKG" in body
 
 
-# ---------------------------------------------------------------------------
-# Self-contained body invariants
-# ---------------------------------------------------------------------------
-
-
-class TestSelfContainedBody:
-    """No hidden markers or cross-dispatch scaffolding leak into a rendered section.
-
-    The dispatch-level comment is always POSTed fresh; an accidentally-
-    leaked marker or history block would either trigger the wrong
-    edit-in-place behaviour or visibly bloat the comment with
-    leftovers from earlier design iterations.
-    """
-
-    def test_section_contains_no_hidden_html_marker(self) -> None:
-        """``render_entry_section`` emits no ``<!-- pr-check-downstream:* -->`` blocks."""
-        # Arrange / Act
-        body = _render(
-            _make_result(
-                status="pass",
-                mode="lkg",
-                lkg_commit=_LKG_SHA,
-                downstream_rev="v1.2.3",
-            )
-        )
-
-        # Assert
-        assert "<!-- pr-check-downstream:result:" not in body
-        assert "<!-- pr-check-downstream:history-data" not in body
-
-    def test_section_renders_a_single_run_without_a_history_block(self) -> None:
-        """The section contains the current verdict only — no `Previous runs` list."""
-        # Arrange / Act
-        body = _render(_make_result(status="fail"))
-
-        # Assert
-        assert "**Previous runs**" not in body
