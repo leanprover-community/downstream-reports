@@ -19,7 +19,7 @@
 #                 olean cache and have to be rebuilt.
 #
 # Inputs (env, all required unless noted):
-#   MODE            — "merge" (default if empty) or "lkg".
+#   MODE            — "lkg" (default if empty) or "merge".
 #   PR_NUMBER, MERGE_SHA — identifies the PR and its merge ref.
 #   LKG_COMMIT      — required when MODE=lkg; mathlib SHA to rebase onto.
 #   UPSTREAM_REPO   — owner/repo of the upstream we clone (default
@@ -29,6 +29,8 @@
 #                     clone the fork directly.
 #   DOWNSTREAM, DOWNSTREAM_REPO, DEFAULT_BRANCH, DEPENDENCY_NAME
 #                   — identifies the downstream to test.
+#   DOWNSTREAM_REV  — (optional) git refspec to check out on the downstream:
+#                     branch / tag / commit SHA. Defaults to $DEFAULT_BRANCH.
 #   WORKDIR         — scratch directory for clones.
 #   OUTPUT_DIR      — directory for result.json + build.log.
 #   TOOL_BIN        — directory containing the lakedit binary.
@@ -36,7 +38,7 @@
 # Writes:
 #   $OUTPUT_DIR/result.json
 #       { status, stage, message, downstream, merge_sha, downstream_sha,
-#         mode, lkg_commit? }
+#         mode, lkg_commit?, downstream_rev?, ... }
 #       status ∈ { pass, fail, infra_failure }
 #   $OUTPUT_DIR/build.log
 #       Combined log of every subprocess (mirrors the live workflow log).
@@ -58,7 +60,9 @@ set -euo pipefail
 
 UPSTREAM_REPO="${UPSTREAM_REPO:-leanprover-community/mathlib4}"
 
-MODE="${MODE:-merge}"
+# LKG mode is the default; merge mode is opt-in per-entry via --merge-branch
+# in the comment grammar (which the dispatcher maps to MODE=merge here).
+MODE="${MODE:-lkg}"
 LKG_COMMIT="${LKG_COMMIT:-}"
 case "$MODE" in
   merge) ;;
@@ -73,6 +77,12 @@ case "$MODE" in
     exit 1
     ;;
 esac
+
+# DOWNSTREAM_REV is the user-supplied `@<rev>` (branch / tag / commit SHA)
+# from the comment; when absent we fall back to the inventory's
+# default_branch. We resolve it via `fetch origin <rev>` + `checkout
+# FETCH_HEAD` so SHAs work as cleanly as branches and tags.
+DOWNSTREAM_REV="${DOWNSTREAM_REV:-$DEFAULT_BRANCH}"
 
 mkdir -p "$WORKDIR" "$OUTPUT_DIR"
 RESULT="$OUTPUT_DIR/result.json"
@@ -114,6 +124,8 @@ emit() {  # status, stage, message  -- writes result.json
   PR_HEAD_SHA="$PR_HEAD" \
   COMMITS_REPLAYED="$N_COMMITS" \
   REPLAYED_TREE_SHA="$REPLAYED_TREE_SHA" \
+  DOWNSTREAM_REV_OUT="$DOWNSTREAM_REV" \
+  DEFAULT_BRANCH_OUT="$DEFAULT_BRANCH" \
   python3 - "$1" "$2" "$3" "$DOWNSTREAM_SHA" "$MODE" "$LKG_COMMIT" <<'PY'
 import json, os, sys
 status, stage, message, downstream_sha, mode, lkg_commit = sys.argv[1:7]
@@ -128,6 +140,13 @@ record = {
 }
 if mode == "lkg":
     record["lkg_commit"] = lkg_commit or None
+# Record the requested downstream rev only when it actually changes what
+# we'd otherwise default to — that way the comment renderer can decide
+# whether to surface the "(at @<rev>)" annotation.
+rev = os.environ.get("DOWNSTREAM_REV_OUT") or ""
+default_branch = os.environ.get("DEFAULT_BRANCH_OUT") or ""
+if rev and rev != default_branch:
+    record["downstream_rev"] = rev
 # PR endpoints (resolved from MERGE_SHA's two parents). Both modes capture
 # them once we've fetched the merge SHA: post_results.py uses them to render
 # an explicit "what was tested" recipe and to skip the GitHub-API round-trip
@@ -166,7 +185,7 @@ echo "  Merge SHA:  $MERGE_SHA"
 [ "$MODE" = "lkg" ] && echo "  LKG commit: $LKG_COMMIT"
 echo "  Downstream: $DOWNSTREAM"
 echo "    repo:     $DOWNSTREAM_REPO"
-echo "    branch:   $DEFAULT_BRANCH"
+echo "    rev:      $DOWNSTREAM_REV (default_branch: $DEFAULT_BRANCH)"
 echo "    dep:      $DEPENDENCY_NAME"
 endsection
 
@@ -309,16 +328,34 @@ if [ "$MODE" = "lkg" ]; then
 fi
 
 # -----------------------------------------------------------------------------
-# 5. Clone downstream
+# 5. Clone downstream and check out the requested rev
 # -----------------------------------------------------------------------------
+# We resolve $DOWNSTREAM_REV via `fetch origin <rev>` + `checkout
+# FETCH_HEAD` so the same path works for branches, tags, and reachable
+# commit SHAs uniformly. Drops the `--depth=1` optimisation of the old
+# branch-only clone, but downstream repos are small.
 DS="$WORKDIR/downstream"
 rm -rf "$DS"
-section "Clone downstream $DOWNSTREAM_REPO@$DEFAULT_BRANCH"
-if ! git clone --depth=1 --branch "$DEFAULT_BRANCH" \
+section "Clone downstream $DOWNSTREAM_REPO @ $DOWNSTREAM_REV"
+if ! git clone --no-checkout \
       "https://github.com/$DOWNSTREAM_REPO.git" "$DS"; then
   endsection
   err_ann "Clone failed" "could not clone $DOWNSTREAM_REPO"
   emit infra_failure clone_downstream "could not clone $DOWNSTREAM_REPO"
+  exit 0
+fi
+if ! git -C "$DS" fetch origin "$DOWNSTREAM_REV"; then
+  endsection
+  err_ann "Fetch failed" "could not fetch $DOWNSTREAM_REV from $DOWNSTREAM_REPO"
+  emit infra_failure fetch_downstream \
+    "could not fetch $DOWNSTREAM_REV from $DOWNSTREAM_REPO"
+  exit 0
+fi
+if ! git -C "$DS" checkout --detach FETCH_HEAD; then
+  endsection
+  err_ann "Checkout failed" "could not check out $DOWNSTREAM_REV"
+  emit infra_failure checkout_downstream \
+    "could not check out $DOWNSTREAM_REV from $DOWNSTREAM_REPO"
   exit 0
 fi
 DOWNSTREAM_SHA=$(git -C "$DS" rev-parse HEAD 2>/dev/null || true)

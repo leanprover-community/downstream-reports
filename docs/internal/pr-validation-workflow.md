@@ -6,7 +6,7 @@ named downstream, triggered by a PR comment.
 ## Goal
 
 Answer "Will this PR break downstream `D`?" before merge, on demand, via
-`/check-downstream <name>` in a `mathlib4` PR comment.
+`!downstream-check <name>` in a `mathlib4` PR comment.
 
 ## Non-goals (v1)
 
@@ -24,7 +24,7 @@ Answer "Will this PR break downstream `D`?" before merge, on demand, via
 Two workflows, two repos, one new GitHub App.
 
 ```
-mathlib4 PR comment "/check-downstream FLT"
+mathlib4 PR comment "!downstream-check FLT"
     │
     ▼
 mathlib4/.github/workflows/pr_check_downstream.yml          (thin)
@@ -166,7 +166,7 @@ jobs:
     if: |
       github.event_name == 'workflow_dispatch' ||
       (github.event.issue.pull_request &&
-       startsWith(github.event.comment.body, '/check-downstream'))
+       startsWith(github.event.comment.body, '!downstream-check'))
     runs-on: ubuntu-latest
     steps:
       - name: Authorize commenter
@@ -185,12 +185,13 @@ jobs:
         env:
           BODY: ${{ github.event.comment.body }}
         run: |
-          # First line only; trim leading slash; remainder is comma-separated.
+          # First line only; trim the directive; remainder is the
+          # comma-separated `<name>[@<rev>] [--merge-branch]` list.
           line="$(printf '%s' "$BODY" | head -n1 | tr -d '\r')"
-          rest="${line#/check-downstream}"
+          rest="${line#!downstream-check}"
           rest="$(echo "$rest" | sed -E 's/^[[:space:]]+//;s/[[:space:]]+$//')"
           if [ -z "$rest" ]; then
-            echo "::error::usage: /check-downstream <name>[, <name>...] | all"
+            echo "::error::usage: !downstream-check <name>[@<rev>] [--merge-branch][, ...]"
             exit 1
           fi
           echo "downstreams=$rest" >> "$GITHUB_OUTPUT"
@@ -252,10 +253,11 @@ the same repo — we only need the App token for the cross-repo dispatch.
 New directory `mathlib-ci/scripts/pr_check_downstream/`:
 
 - `validate_names.sh` — fetches the inventory from
-  `https://raw.githubusercontent.com/leanprover-community/hopscotch-reports/main/ci/inventory/downstreams.json`,
-  validates each name, expands `all` to the enabled set (gated to `OWNER` /
-  `MEMBER` only — `COLLABORATOR` cannot use `all`), resolves `refs/pull/N/merge`
-  via `gh api`, emits outputs.
+  `https://raw.githubusercontent.com/leanprover-community/downstream-reports/main/ci/inventory/downstreams.json`,
+  validates each comma-separated entry (`<name>[@<rev>] [--merge-branch]`),
+  resolves `refs/pull/N/merge` via `gh api`, emits the normalised entry
+  list + merge SHA. Authorisation is gated upstream in the mathlib4
+  workflow.
 - `post_ack_comment.sh` — finds an existing comment by hidden marker
   `<!-- pr-check-downstream:ack -->` (using `gh api` to list comments) and
   edits it; otherwise creates one. Body shape:
@@ -292,7 +294,7 @@ on:
         required: true
         type: string
       downstreams:
-        description: "Comma-separated downstream names; each may carry an optional @lkg suffix."
+        description: "Comma-separated `<name>[@<rev>] [--merge-branch]` entries."
         required: true
         type: string
 
@@ -485,28 +487,41 @@ clone FLT."
 
 ## Result comment shape
 
-One comment per downstream, edited in place by marker:
+One Markdown comment is **POSTed fresh per matrix entry per dispatch** —
+no edit-in-place, no hidden marker, no embedded history block. If the
+directive is retriggered, a new set of comments appears; the previous
+verdicts stay in place as a record. The shape:
 
 ```
-### ✅ FLT — builds against this PR
+### ✅ FLT — builds against this PR rebased onto LKG
 
-Tested merge ref `abcd123` against `FLT@main`.
-[full build log](artifact link) · [run](actions link)
+**What this run tested:** 3 PR commit(s) ([`abc1234..def5678`](compare-url))
+cherry-picked onto FLT's last-known-good mathlib commit [`257086b`](commit-url)
+→ resulting tree [`7g8h9i0`](commit-url), built against
+[`leanprover-community/FLT@13206c9`](commit-url). [run](actions link)
 
-> ⚠️ This run did not baseline against master. If master is currently broken
-> for this downstream, the failure may not be attributable to this PR. See the
-> [latest downstream report](…) for downstream health.
-> *(TODO: auto-include master baseline.)*
-
-<!-- pr-check-downstream:result:FLT -->
+> This run rebased the PR's commits onto FLT's last-known-good mathlib
+> commit, so the verdict is independent of current mathlib master
+> health.
 ```
 
-Failure variant leads with `❌ FLT — fails against this PR` and a 30-line tail
-of the lake build log inlined in a `<details>` block.
+**Failure variant** (`### ❌ FLT — fails against this PR rebased onto LKG`)
+inlines the filtered tail of `build.log` in a `<details>` block.
 
-Infra-failure variant leads with `⚠️ FLT — could not validate (infra)` and the
-stage that broke (clone / fetch / lakedit / lake update). These do not imply
-anything about the PR.
+**Infra-failure variants:**
+- `### ⚠️ FLT — could not validate (PR conflicts with LKG)` (LKG mode,
+  `stage=rebase_conflict`)
+- `### ⚠️ FLT — could not validate (mathlib build failed at LKG)` (LKG
+  mode, `stage=mathlib_build_at_lkg`)
+- `### ⚠️ FLT — could not validate (infra: <stage>)` (generic — clone /
+  fetch / lakedit / lake update / etc.)
+
+In merge mode (`--merge-branch`) the header drops the `rebased onto LKG`
+suffix and the framing note switches to the master-baseline caveat.
+
+Comments include the requested rev (when `@<rev>` was given) inline in
+the downstream link's label so the reader sees what was asked for; the
+URL always points at the resolved commit SHA.
 
 ## Parameters / extension points
 
@@ -514,13 +529,12 @@ Wire these from day one, defaulting to what we want today:
 
 | Surface          | Variable                       | Default                                 | Where    |
 |------------------|--------------------------------|-----------------------------------------|----------|
-| Inventory URL    | `INVENTORY_URL`                | hopscotch-reports `main` raw URL        | mathlib4 |
-| Hopscotch ref    | `HOPSCOTCH_REF`                | `v1.4.1` (a tag)                        | hopscotch-reports |
-| Runner label     | matrix `runs-on`               | `[self-hosted, pr]`                     | hopscotch-reports |
-| Build timeout    | `PR_VALIDATION_TIMEOUT_MINUTES`| `90`                                    | hopscotch-reports |
-| Comment marker   | `comment_marker_prefix`        | `pr-check-downstream`                   | both     |
+| Inventory URL    | `INVENTORY_URL`                | downstream-reports `main` raw URL       | mathlib4 |
+| Hopscotch ref    | `HOPSCOTCH_REF`                | `v1.4.1` (a tag)                        | downstream-reports |
+| Runner label     | matrix `runs-on`               | `[self-hosted, pr]`                     | downstream-reports |
+| Build timeout    | `PR_VALIDATION_TIMEOUT_MINUTES`| `90`                                    | downstream-reports |
+| LKG snapshot URL | `build_matrix.py --lkg-snapshot-url` | `lkg/latest.json` on the published static site | downstream-reports |
 | Allowed authors  | hardcoded list in auth step    | `OWNER`/`MEMBER`/`COLLABORATOR`         | mathlib4 |
-| `all`-allowed    | hardcoded list in auth step    | `OWNER`/`MEMBER`                        | mathlib4 |
 
 Use `vars.*` (repo variables) for everything that's not a secret; `secrets.*`
 only for the App private key.
@@ -530,32 +544,44 @@ only for the App private key.
 Single line, first line of the comment:
 
 ```
-/check-downstream <name>[@lkg][, <name>[@lkg]...]
-/check-downstream all
-/check-downstream all@lkg
+!downstream-check <name>[@<rev>] [--merge-branch][, <name>[@<rev>] [--merge-branch] ...]
 ```
 
-- Names are matched case-sensitively against `inventory.downstreams[*].name`.
-- An optional `@lkg` suffix selects rebase-onto-LKG mode for that entry —
-  see "Rebase-onto-LKG mode" below.
-- `all` expands to all `enabled: true` entries in merge mode; `all@lkg`
-  applies LKG mode to every enabled entry. Both are gated to OWNER/MEMBER.
-- Empty argument list errors with usage hint.
-- Anything else on the comment is ignored — the comment can carry context
-  text after the directive line.
+Each comma-separated entry:
 
-## Rebase-onto-LKG mode
+| Token            | Required? | Meaning                                                                                                                                                                                                                            |
+|------------------|-----------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `<name>`         | yes       | Must match an `inventory.downstreams[*].name` (case-sensitive).                                                                                                                                                                    |
+| `@<rev>`         | no        | Any git refspec — branch, tag, or commit SHA — for the downstream's checkout. Defaults to the inventory's `default_branch` when absent.                                                                                            |
+| `--merge-branch` | no        | Flips that one entry from the default LKG mode to merge mode (test against the PR's would-be-merged tree instead of cherry-picking onto the LKG). Per-entry, so mixing `FLT --merge-branch, Toric` runs each in a different mode. |
 
-Default validation tests the downstream against the PR's would-be-merged
-tree, which contains whatever mathlib master happens to be at dispatch
-time. When master is already incompatible with the downstream, every PR
-validation against that downstream produces a noisy `❌ fails` verdict
-that has nothing to do with the PR.
+Other rules:
 
-LKG mode (`<name>@lkg`) takes the downstream's `last_known_good_commit`
+- Authorisation is gated upstream to `OWNER` / `MEMBER` / `COLLABORATOR`.
+- Empty argument list errors with a usage hint.
+- Anything after the first line is ignored — the comment can carry
+  contextual prose under the directive.
+- There is no `all` / `all@*` shorthand. Enumerate names explicitly.
+
+## LKG vs merge mode
+
+The two modes differ in what mathlib tree the downstream is tested
+against. LKG is the default; `--merge-branch` opts a single entry into
+merge mode.
+
+**LKG mode** (default) takes the downstream's `last_known_good_commit`
 from the published `lkg/latest.json` snapshot, cherry-picks the PR's
-commits onto it, and validates the downstream against that synthetic
-tree. The verdict is independent of current master health.
+commits onto it, sanity-builds mathlib's library target, then builds the
+downstream. The verdict is independent of current master health — when
+master happens to be already broken for that downstream (which is the
+case we built this whole repo to track), an LKG-mode pass tells you the
+PR did *not* introduce that break.
+
+**Merge mode** (`--merge-branch`) clones the PR's `merge_commit_sha`
+directly — current master + the PR applied, as GitHub computes it — and
+builds the downstream against it. Cheaper because the upstream olean
+cache hits cleanly, but a failure may be master's fault rather than
+the PR's.
 
 ### Pipeline (per matrix job, when `mode=lkg`)
 
@@ -576,9 +602,9 @@ tree. The verdict is independent of current master health.
 
 | `stage` | What it means | What the PR author should do |
 |---------|---------------|------------------------------|
-| `rebase_conflict` | Cherry-pick of the PR's commits onto LKG produced a conflict. | The PR likely depends on post-LKG mathlib changes; re-run without `@lkg` (and live with the master noise) or wait for a fresh LKG. |
+| `rebase_conflict` | Cherry-pick of the PR's commits onto LKG produced a conflict. | The PR likely depends on post-LKG mathlib changes; re-run with `--merge-branch` (and live with the master noise) or wait for a fresh LKG. |
 | `mathlib_build_at_lkg` | Cherry-pick succeeded but `lake build Mathlib` failed at LKG. | Same conclusion as `rebase_conflict` — the PR does not stand alone at LKG. |
-| `lkg_missing` (raised in `build_matrix.py`) | The downstream has no recorded LKG yet (e.g. recently enabled). | Drop the `@lkg` suffix; LKG mode requires a successful regression run on record. |
+| `lkg_missing` (raised in `build_matrix.py`) | The downstream has no recorded LKG yet (e.g. recently enabled). | Use `--merge-branch`; LKG mode requires a successful regression run on record. |
 
 ### Cost
 
@@ -599,16 +625,15 @@ hour-plus a full mathlib rebuild would take.
 3. Land `scripts/pr_check_downstream/` in mathlib-ci.
 4. Land `pr_check_downstream.yml` in mathlib4 on a feature branch. Smoke-test
    by self-commenting on a draft PR.
-5. Once green on a single downstream, allow `all` for OWNER/MEMBER.
-6. Document the comment grammar in mathlib4's CONTRIBUTING (separate PR).
+5. Document the comment grammar in mathlib4's CONTRIBUTING (separate PR).
 
 ## Future work / TODOs
 
-- **Per-downstream LKG baseline.** *Implemented* via the `@lkg` suffix; see
-  "Rebase-onto-LKG mode" above. This is *not* a true master baseline —
-  there is no parallel build of master to compare against — but it is
-  often the more actionable signal: the verdict is whether the PR breaks
-  the downstream *in isolation*, regardless of master health.
+- **Per-downstream LKG baseline.** *Implemented* — LKG mode is now the
+  default and `--merge-branch` opts back into the master-included path.
+  This is *not* a true master baseline (no parallel build of master),
+  but it is the more actionable signal: the verdict is whether the PR
+  breaks the downstream *in isolation*, regardless of master health.
 - **True master baseline.** Run a parallel build of the same downstream
   against current master and surface a "this PR is responsible" / "master
   is also broken" verdict alongside the per-downstream LKG result.

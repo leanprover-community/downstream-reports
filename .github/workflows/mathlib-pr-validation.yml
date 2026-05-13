@@ -83,9 +83,15 @@ jobs:
   validate:
     if: ${{ needs.plan.outputs.has_downstreams == 'true' }}
     needs: plan
-    # Include `mode` in the display name so the same downstream tested in
-    # both modes shows up as two distinct rows in the workflow UI.
-    name: "validate: ${{ matrix.name }} [${{ matrix.mode }}]"
+    # The display name encodes (name, rev_slug, mode) so two entries that
+    # differ only in rev or mode show up as distinct rows in the workflow
+    # UI. `rev_slug` is `default` when no `@<rev>` was given (see
+    # build_matrix.py); we elide it from the title in that common case to
+    # keep the row name compact.
+    name: >-
+      validate: ${{ matrix.name
+        }}${{ matrix.rev_slug != 'default' && format('@{0}', matrix.rev_slug) || ''
+        }} [${{ matrix.mode }}]
     # Self-hosted runner without CI secrets in scope: the validate job
     # builds arbitrary mathlib4 trees (the PR's would-be-merged commit, or
     # the PR's commits cherry-picked onto a downstream's LKG) and runs
@@ -121,13 +127,18 @@ jobs:
           DOWNSTREAM_REPO: ${{ matrix.repo }}
           DEFAULT_BRANCH:  ${{ matrix.default_branch }}
           DEPENDENCY_NAME: ${{ matrix.dependency_name }}
+          # `matrix.rev` is `''` when the user didn't supply an `@<rev>`;
+          # validate.sh then falls back to $DEFAULT_BRANCH.
+          DOWNSTREAM_REV:  ${{ matrix.rev }}
           # `mode` is always set by build_matrix.py ("merge" or "lkg");
           # `lkg_commit` is only set when mode=lkg. The empty fallback keeps
           # the env var unset cleanly when mode=merge.
           MODE:            ${{ matrix.mode }}
           LKG_COMMIT:      ${{ matrix.lkg_commit || '' }}
           WORKDIR:         ${{ runner.temp }}/pr-validation
-          OUTPUT_DIR:      ${{ runner.temp }}/artifacts/result-${{ matrix.name }}
+          # Per-matrix output dir is keyed on (name, rev_slug, mode) so two
+          # entries that differ in either dimension don't collide on disk.
+          OUTPUT_DIR:      ${{ runner.temp }}/artifacts/result-${{ matrix.name }}-${{ matrix.rev_slug }}-${{ matrix.mode }}
           TOOL_BIN:        ${{ runner.temp }}/tool-bin
         run: bash scripts/pr_validation/validate.sh
 
@@ -135,19 +146,20 @@ jobs:
         if: always()
         env:
           DOWNSTREAM:  ${{ matrix.name }}
-          OUTPUT_DIR:  ${{ runner.temp }}/artifacts/result-${{ matrix.name }}
+          OUTPUT_DIR:  ${{ runner.temp }}/artifacts/result-${{ matrix.name }}-${{ matrix.rev_slug }}-${{ matrix.mode }}
         run: python3 scripts/pr_validation/summarize.py
 
       - name: Upload result
         if: always()
         uses: actions/upload-artifact@v7.0.0
         with:
-          # Both `name` (so two modes against the same downstream don't
-          # collide) and `path` (point at the per-matrix directory rather
-          # than the parent so the artifact contains result.json/build.log
-          # at its root, not nested under result-<name>/) are deliberate.
-          name: result-${{ matrix.name }}-${{ matrix.mode }}
-          path: ${{ runner.temp }}/artifacts/result-${{ matrix.name }}
+          # Artifact name is keyed on (name, rev_slug, mode) — the same
+          # triple post_results.py uses for the comment marker — so two
+          # entries that differ in any dimension produce two artifacts and
+          # two PR comments. `path` points at the per-matrix output dir so
+          # result.json / build.log sit at the artifact root.
+          name: result-${{ matrix.name }}-${{ matrix.rev_slug }}-${{ matrix.mode }}
+          path: ${{ runner.temp }}/artifacts/result-${{ matrix.name }}-${{ matrix.rev_slug }}-${{ matrix.mode }}
           if-no-files-found: error
 
   report:

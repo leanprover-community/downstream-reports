@@ -1,29 +1,27 @@
 #!/usr/bin/env python3
-"""Build the validation job matrix from the inventory and a list of names.
+"""Build the validation job matrix from the inventory and a list of entries.
 
-Reads the downstream inventory and intersects it with the requested names,
-emitting a GitHub Actions matrix include list with the fields the validate
-job needs.
+Reads the downstream inventory and intersects it with the requested
+entries, emitting a GitHub Actions matrix `include` list with the fields
+the validate job needs.
 
-Per-name modes
---------------
-A name may carry an optional ``@<mode>`` suffix selecting how the PR should
-be tested against that downstream. The recognised modes are:
+Comment grammar (each comma-separated entry):
 
-* (no suffix) — *merge mode* (default). Validate the downstream against the
-  PR's would-be-merged tree exactly as GitHub computed it.
-* ``@lkg`` — *LKG mode*. Cherry-pick the PR's commits onto the downstream's
-  last-known-good mathlib commit (looked up from the published
-  ``lkg/latest.json`` snapshot) and validate the downstream against that
-  rebased tree. Yields a verdict that's independent of current mathlib
-  master health.
+    <name>[@<rev>] [--merge-branch]
 
-Mode selection is per-downstream: ``FLT@lkg, Toric`` runs FLT in LKG mode
-and Toric in merge mode in the same dispatch.
+* `<name>` (required) — must match an `inventory.downstreams[*].name`
+  (case-sensitive).
+* `@<rev>` (optional) — any git refspec for the downstream checkout
+  (branch / tag / commit SHA). Defaults to the inventory's
+  `default_branch`.
+* `--merge-branch` (optional, per-entry) — flips that single entry from
+  the default LKG mode to merge mode (i.e. test against the PR's
+  would-be-merged tree instead of cherry-picking onto the downstream's
+  last-known-good mathlib commit).
 
 This script is invoked by the plan job in
-``.github/workflows/mathlib-pr-validation.yml``. The dispatching mathlib4
-workflow has already validated the names against the inventory; we
+``.github/workflows/mathlib-pr-validation.yml``. The dispatching
+mathlib4 workflow has already parsed and validated the entries; we
 re-validate here as defence in depth because the dispatched payload is
 untrusted input.
 """
@@ -32,6 +30,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 import urllib.error
 import urllib.request
@@ -42,29 +41,68 @@ DEFAULT_LKG_SNAPSHOT_URL = (
     "https://downstreamreports.z13.web.core.windows.net/lkg/latest.json"
 )
 
-# Mode tokens recognised on the right-hand side of an ``@`` suffix.
-_LKG_MODE = "lkg"
-_MERGE_MODE = "merge"
+_MERGE_BRANCH_FLAG = "--merge-branch"
+
+# Mode tokens stored in matrix entries / result.json (kept stable).
+_MODE_LKG = "lkg"
+_MODE_MERGE = "merge"
+
+# Sentinel inserted into artifact / job names when no `@<rev>` was given.
+_DEFAULT_REV_SLUG = "default"
+
+# Artifact names must be filesystem-safe; we sanitise revs aggressively.
+_REV_SLUG_RE = re.compile(r"[^A-Za-z0-9._-]+")
 
 
-def _parse_name_token(token: str) -> tuple[str, str]:
-    """Split a ``name[@mode]`` token into ``(name, mode)``.
+def _slugify_rev(rev: str | None) -> str:
+    """Return a filesystem-safe slug for a rev, or the default sentinel."""
 
-    Raises ``ValueError`` if the suffix is unknown. The bare-name half is
-    returned trimmed; the only currently recognised suffix is ``@lkg``.
+    if not rev:
+        return _DEFAULT_REV_SLUG
+    slug = _REV_SLUG_RE.sub("_", rev).strip("_")
+    return slug or _DEFAULT_REV_SLUG
+
+
+def _parse_entry(entry: str) -> tuple[str, str | None, str]:
+    """Split `<name>[@<rev>] [--merge-branch]` into (name, rev, mode).
+
+    `rev` is `None` when no `@<rev>` suffix was supplied; the validate
+    step then falls back to the inventory's `default_branch`. Raises
+    ``ValueError`` on unknown flags or empty bare names.
     """
 
-    bare, _, mode = token.partition("@")
+    tokens = entry.split()
+    if not tokens:
+        raise ValueError("empty entry")
+
+    name_rev = tokens[0]
+    flags = tokens[1:]
+
+    bare, sep, rev = name_rev.partition("@")
     bare = bare.strip()
     if not bare:
-        raise ValueError(f"empty downstream name in token: {token!r}")
-    if not mode:
-        return bare, _MERGE_MODE
-    if mode != _LKG_MODE:
-        raise ValueError(
-            f"unknown mode '@{mode}' for {bare}; only @lkg is supported"
-        )
-    return bare, _LKG_MODE
+        raise ValueError(f"empty downstream name in entry: {entry!r}")
+    rev_value: str | None
+    if not sep:
+        rev_value = None
+    else:
+        rev_value = rev.strip() or None
+        if rev_value is None:
+            raise ValueError(
+                f"empty rev after `@` in entry: {entry!r}"
+            )
+
+    mode = _MODE_LKG
+    for flag in flags:
+        if flag == _MERGE_BRANCH_FLAG:
+            mode = _MODE_MERGE
+        else:
+            raise ValueError(
+                f"unknown flag {flag!r} in entry {entry!r}"
+                f" (only {_MERGE_BRANCH_FLAG} is supported)"
+            )
+
+    return bare, rev_value, mode
 
 
 def _fetch_lkg_snapshot(url: str) -> dict[str, Any]:
@@ -100,13 +138,13 @@ def _resolve_lkg_commit(snapshot: dict[str, Any], name: str) -> str:
     if entry is None:
         raise ValueError(
             f"{name} is not present in the LKG snapshot; "
-            "remove the @lkg suffix or wait for a successful regression run"
+            "wait for a successful regression run or use --merge-branch"
         )
     commit = entry.get("last_known_good_commit")
     if not commit:
         raise ValueError(
             f"{name} has no recorded last_known_good_commit; "
-            "remove the @lkg suffix or wait for a successful regression run"
+            "wait for a successful regression run or use --merge-branch"
         )
     return commit
 
@@ -122,7 +160,10 @@ def main() -> int:
     parser.add_argument(
         "--names",
         required=True,
-        help="Comma-separated downstream names; each may carry an @lkg suffix.",
+        help=(
+            "Comma-separated `<name>[@<rev>] [--merge-branch]` entries"
+            " as resolved by the mathlib-ci validate_names.sh step."
+        ),
     )
     parser.add_argument(
         "--output",
@@ -134,8 +175,8 @@ def main() -> int:
         "--lkg-snapshot-url",
         default=DEFAULT_LKG_SNAPSHOT_URL,
         help=(
-            "URL of the published LKG snapshot. Only fetched when at least one"
-            " requested name has an @lkg suffix."
+            "URL of the published LKG snapshot. Only fetched when at least"
+            " one requested entry uses the default LKG mode."
         ),
     )
     args = parser.parse_args()
@@ -145,42 +186,40 @@ def main() -> int:
 
     by_name = {entry["name"]: entry for entry in inventory["downstreams"]}
 
-    raw_tokens = [t.strip() for t in args.names.split(",") if t.strip()]
-    if not raw_tokens:
+    raw_entries = [t.strip() for t in args.names.split(",") if t.strip()]
+    if not raw_entries:
         print("error: --names is empty", file=sys.stderr)
         return 1
 
-    parsed: list[tuple[str, str]] = []  # (name, mode)
-    for token in raw_tokens:
+    parsed: list[tuple[str, str | None, str]] = []
+    for entry in raw_entries:
         try:
-            parsed.append(_parse_name_token(token))
+            parsed.append(_parse_entry(entry))
         except ValueError as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 1
 
-    # Reject duplicate-mode requests (same name appearing twice in the same mode).
-    # `FLT` and `FLT@lkg` are distinct entries and intentionally allowed
-    # together — they exercise the same downstream against different mathlib
-    # trees, which can be useful for diagnostics.
-    seen: set[tuple[str, str]] = set()
-    for name, mode in parsed:
-        if (name, mode) in seen:
-            print(
-                f"error: duplicate request for {name} in mode {mode}",
-                file=sys.stderr,
-            )
-            return 1
-        seen.add((name, mode))
+    # Dedup on (name, rev, mode) — distinct fields are intentionally allowed
+    # (e.g. `FLT, FLT@main` runs twice if the user wrote two entries; `FLT,
+    # FLT --merge-branch` runs twice in distinct modes). Exact duplicates
+    # are silently collapsed.
+    seen: set[tuple[str, str | None, str]] = set()
+    deduped: list[tuple[str, str | None, str]] = []
+    for triple in parsed:
+        if triple in seen:
+            continue
+        seen.add(triple)
+        deduped.append(triple)
 
-    unknown = [name for name, _ in parsed if name not in by_name]
+    unknown = sorted({name for name, _, _ in deduped if name not in by_name})
     if unknown:
         print(
-            f"error: unknown downstream(s): {', '.join(sorted(set(unknown)))}",
+            f"error: unknown downstream(s): {', '.join(unknown)}",
             file=sys.stderr,
         )
         return 1
 
-    needs_snapshot = any(mode == _LKG_MODE for _, mode in parsed)
+    needs_snapshot = any(mode == _MODE_LKG for _, _, mode in deduped)
     snapshot: dict[str, Any] | None = None
     if needs_snapshot:
         try:
@@ -190,16 +229,22 @@ def main() -> int:
             return 1
 
     include: list[dict[str, Any]] = []
-    for name, mode in parsed:
-        entry = by_name[name]
+    for name, rev, mode in deduped:
+        entry_meta = by_name[name]
         item: dict[str, Any] = {
-            "name": entry["name"],
-            "repo": entry["repo"],
-            "default_branch": entry["default_branch"],
-            "dependency_name": entry.get("dependency_name", "mathlib"),
+            "name": entry_meta["name"],
+            "repo": entry_meta["repo"],
+            "default_branch": entry_meta["default_branch"],
+            "dependency_name": entry_meta.get("dependency_name", "mathlib"),
             "mode": mode,
+            # `rev` is the verbatim refspec the user requested, or `""` when
+            # they didn't supply one (the validate step then falls back to
+            # default_branch). The slug form is a filesystem-safe version
+            # used in artifact names / job titles.
+            "rev": rev or "",
+            "rev_slug": _slugify_rev(rev),
         }
-        if mode == _LKG_MODE:
+        if mode == _MODE_LKG:
             assert snapshot is not None  # set above when needs_snapshot
             try:
                 item["lkg_commit"] = _resolve_lkg_commit(snapshot, name)

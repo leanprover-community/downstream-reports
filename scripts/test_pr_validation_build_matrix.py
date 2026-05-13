@@ -3,22 +3,18 @@
 
 from __future__ import annotations
 
+import importlib.util
 import json
-import subprocess
 import sys
 import tempfile
 import unittest
-import urllib.error
 from pathlib import Path
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-# build_matrix.py uses no external deps and lives outside the `scripts.`
-# package proper (no __init__ in pr_validation), so we import the module by
-# path rather than as a regular package import.
-import importlib.util
-
+# build_matrix lives outside the `scripts.` package proper (no __init__ in
+# pr_validation), so import the module by path.
 _BUILD_MATRIX_PATH = (
     Path(__file__).resolve().parent / "pr_validation" / "build_matrix.py"
 )
@@ -71,26 +67,16 @@ _LKG_SNAPSHOT_JSON = {
             "repo": "leanprover-community/FLT",
             "dependency_name": "mathlib",
             "last_known_good_commit": "f" * 40,
-            "first_known_bad_commit": None,
-            "last_good_release": None,
-            "last_good_release_commit": None,
         },
         "Toric": {
             "repo": "YaelDillies/toric",
             "dependency_name": "mathlib",
             "last_known_good_commit": "0" * 40,
-            "first_known_bad_commit": None,
-            "last_good_release": None,
-            "last_good_release_commit": None,
         },
-        # `newcomer` is in the inventory but never had a successful run yet.
         "newcomer": {
             "repo": "some-org/newcomer",
             "dependency_name": "mathlib",
             "last_known_good_commit": None,
-            "first_known_bad_commit": None,
-            "last_good_release": None,
-            "last_good_release_commit": None,
         },
     },
 }
@@ -131,35 +117,86 @@ def _run_main(
 
 
 # ---------------------------------------------------------------------------
-# Token parsing
+# Entry-string parsing
 # ---------------------------------------------------------------------------
 
 
-class ParseNameTokenTests(unittest.TestCase):
-    """Tests for build_matrix._parse_name_token()."""
+class ParseEntryTests(unittest.TestCase):
+    """build_matrix._parse_entry covers the comment grammar."""
 
-    def test_bare_name_yields_merge_mode(self) -> None:
-        """Scenario: a name without an @ suffix defaults to merge mode."""
+    def test_bare_name_defaults_to_lkg_mode_and_no_rev(self) -> None:
+        """Scenario: a bare `<name>` defaults to LKG mode, no rev."""
         self.assertEqual(
-            build_matrix._parse_name_token("FLT"), ("FLT", "merge")
+            build_matrix._parse_entry("FLT"), ("FLT", None, "lkg")
         )
 
-    def test_lkg_suffix_yields_lkg_mode(self) -> None:
-        """Scenario: a `@lkg` suffix selects LKG mode and is stripped from the name."""
+    def test_rev_suffix_attaches_to_entry(self) -> None:
+        """Scenario: `<name>@<rev>` captures the rev separately from the name."""
         self.assertEqual(
-            build_matrix._parse_name_token("FLT@lkg"), ("FLT", "lkg")
+            build_matrix._parse_entry("FLT@v1.2.3"),
+            ("FLT", "v1.2.3", "lkg"),
         )
 
-    def test_unknown_suffix_raises(self) -> None:
-        """Scenario: any suffix other than @lkg is rejected."""
+    def test_merge_branch_flag_flips_mode(self) -> None:
+        """Scenario: trailing `--merge-branch` flips that entry to merge mode."""
+        self.assertEqual(
+            build_matrix._parse_entry("FLT --merge-branch"),
+            ("FLT", None, "merge"),
+        )
+
+    def test_rev_and_merge_branch_combine(self) -> None:
+        """Scenario: rev + flag work together."""
+        self.assertEqual(
+            build_matrix._parse_entry("FLT@v1.2.3 --merge-branch"),
+            ("FLT", "v1.2.3", "merge"),
+        )
+
+    def test_unknown_flag_raises(self) -> None:
+        """Scenario: any flag other than --merge-branch is rejected."""
         with self.assertRaises(ValueError) as ctx:
-            build_matrix._parse_name_token("FLT@beta")
-        self.assertIn("only @lkg is supported", str(ctx.exception))
+            build_matrix._parse_entry("FLT --bogus")
+        self.assertIn("--merge-branch", str(ctx.exception))
 
     def test_empty_name_raises(self) -> None:
-        """Scenario: a token with empty bare name (e.g. `@lkg`) is rejected."""
+        """Scenario: `@v1` (no bare name) is rejected."""
         with self.assertRaises(ValueError):
-            build_matrix._parse_name_token("@lkg")
+            build_matrix._parse_entry("@v1")
+
+    def test_empty_rev_after_at_raises(self) -> None:
+        """Scenario: `FLT@` (with an `@` and nothing after) is rejected."""
+        with self.assertRaises(ValueError):
+            build_matrix._parse_entry("FLT@")
+
+
+# ---------------------------------------------------------------------------
+# Slugify
+# ---------------------------------------------------------------------------
+
+
+class SlugifyTests(unittest.TestCase):
+    """_slugify_rev maps revs to filesystem-safe slugs."""
+
+    def test_none_yields_default(self) -> None:
+        """Scenario: no rev → the literal sentinel 'default'."""
+        self.assertEqual(build_matrix._slugify_rev(None), "default")
+        self.assertEqual(build_matrix._slugify_rev(""), "default")
+
+    def test_simple_branch_unchanged(self) -> None:
+        """Scenario: `main`, `v1.2.3` pass through with no rewrite."""
+        self.assertEqual(build_matrix._slugify_rev("main"), "main")
+        self.assertEqual(build_matrix._slugify_rev("v1.2.3"), "v1.2.3")
+
+    def test_slashes_replaced(self) -> None:
+        """Scenario: `feature/foo` is sanitised so the slug is safe for paths."""
+        self.assertEqual(
+            build_matrix._slugify_rev("feature/foo"), "feature_foo"
+        )
+
+    def test_special_chars_collapsed(self) -> None:
+        """Scenario: runs of unsafe chars collapse into a single underscore."""
+        self.assertEqual(
+            build_matrix._slugify_rev("foo bar*baz"), "foo_bar_baz"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -180,113 +217,136 @@ class BuildMatrixCLITests(unittest.TestCase):
     def _read_matrix(self) -> list[dict]:
         return json.loads(self.output.read_text())["include"]
 
-    def test_merge_mode_only_does_not_fetch_snapshot(self) -> None:
-        """Scenario: a merge-only dispatch never touches the LKG snapshot URL."""
-        with patch.object(build_matrix, "_fetch_lkg_snapshot") as fetch_mock:
-            rc = _run_main(
-                inventory=self.inventory,
-                names="FLT, Toric",
-                output=self.output,
-            )
-        self.assertEqual(rc, 0)
-        fetch_mock.assert_not_called()
-        include = self._read_matrix()
-        self.assertEqual([e["name"] for e in include], ["FLT", "Toric"])
-        for entry in include:
-            self.assertEqual(entry["mode"], "merge")
-            self.assertNotIn("lkg_commit", entry)
-
-    def test_lkg_mode_resolves_commit_from_snapshot(self) -> None:
-        """Scenario: an `@lkg` entry attaches the snapshot's last_known_good_commit."""
+    def test_bare_name_picks_lkg_and_fetches_snapshot(self) -> None:
+        """Scenario: a bare name defaults to LKG mode and the snapshot is fetched."""
         snapshot = _write_snapshot(self.tmpdir)
         rc = _run_main(
             inventory=self.inventory,
-            names="FLT@lkg",
+            names="FLT",
             output=self.output,
             snapshot_url=snapshot.as_uri(),
         )
         self.assertEqual(rc, 0)
         include = self._read_matrix()
         self.assertEqual(len(include), 1)
-        self.assertEqual(include[0]["mode"], "lkg")
-        self.assertEqual(include[0]["lkg_commit"], "f" * 40)
+        entry = include[0]
+        self.assertEqual(entry["name"], "FLT")
+        self.assertEqual(entry["mode"], "lkg")
+        self.assertEqual(entry["rev"], "")
+        self.assertEqual(entry["rev_slug"], "default")
+        self.assertEqual(entry["lkg_commit"], "f" * 40)
 
-    def test_mixed_mode_request_emits_both(self) -> None:
-        """Scenario: `FLT@lkg, Toric` emits one LKG entry and one merge entry."""
+    def test_merge_branch_skips_snapshot(self) -> None:
+        """Scenario: a single `--merge-branch` entry does NOT fetch the snapshot."""
+        with patch.object(build_matrix, "_fetch_lkg_snapshot") as fetch_mock:
+            rc = _run_main(
+                inventory=self.inventory,
+                names="FLT --merge-branch",
+                output=self.output,
+            )
+        self.assertEqual(rc, 0)
+        fetch_mock.assert_not_called()
+        entry = self._read_matrix()[0]
+        self.assertEqual(entry["mode"], "merge")
+        self.assertNotIn("lkg_commit", entry)
+
+    def test_rev_attached_to_entry(self) -> None:
+        """Scenario: `FLT@v1.2.3` produces rev + slug fields on the matrix entry."""
         snapshot = _write_snapshot(self.tmpdir)
         rc = _run_main(
             inventory=self.inventory,
-            names="FLT@lkg, Toric",
+            names="FLT@v1.2.3",
+            output=self.output,
+            snapshot_url=snapshot.as_uri(),
+        )
+        self.assertEqual(rc, 0)
+        entry = self._read_matrix()[0]
+        self.assertEqual(entry["rev"], "v1.2.3")
+        self.assertEqual(entry["rev_slug"], "v1.2.3")
+
+    def test_mixed_request_distinct_entries(self) -> None:
+        """Scenario: rev + flag combos that resolve differently get distinct matrix entries."""
+        snapshot = _write_snapshot(self.tmpdir)
+        rc = _run_main(
+            inventory=self.inventory,
+            names="FLT, FLT@main --merge-branch, Toric",
             output=self.output,
             snapshot_url=snapshot.as_uri(),
         )
         self.assertEqual(rc, 0)
         include = self._read_matrix()
-        modes = {e["name"]: e["mode"] for e in include}
-        self.assertEqual(modes, {"FLT": "lkg", "Toric": "merge"})
+        triples = [(e["name"], e["rev"], e["mode"]) for e in include]
+        self.assertEqual(
+            triples,
+            [
+                ("FLT", "", "lkg"),
+                ("FLT", "main", "merge"),
+                ("Toric", "", "lkg"),
+            ],
+        )
 
-    def test_unknown_suffix_returns_nonzero(self) -> None:
-        """Scenario: `FLT@beta` is rejected before any snapshot fetch."""
+    def test_duplicate_identical_entries_dedup(self) -> None:
+        """Scenario: identical entries (same name, rev, mode) are silently collapsed."""
+        snapshot = _write_snapshot(self.tmpdir)
+        rc = _run_main(
+            inventory=self.inventory,
+            names="FLT, FLT, FLT@main, FLT@main",
+            output=self.output,
+            snapshot_url=snapshot.as_uri(),
+        )
+        self.assertEqual(rc, 0)
+        names = [(e["name"], e["rev"]) for e in self._read_matrix()]
+        self.assertEqual(names, [("FLT", ""), ("FLT", "main")])
+
+    def test_unknown_name_returns_nonzero(self) -> None:
+        """Scenario: a name not in the inventory is rejected before snapshot fetch."""
         with patch.object(build_matrix, "_fetch_lkg_snapshot") as fetch_mock:
             rc = _run_main(
                 inventory=self.inventory,
-                names="FLT@beta",
+                names="MissingProject",
                 output=self.output,
             )
         self.assertEqual(rc, 1)
         fetch_mock.assert_not_called()
 
-    def test_unknown_name_returns_nonzero(self) -> None:
-        """Scenario: a name not present in the inventory is rejected."""
+    def test_unknown_flag_returns_nonzero(self) -> None:
+        """Scenario: any flag other than --merge-branch is rejected."""
         rc = _run_main(
             inventory=self.inventory,
-            names="MissingProject",
+            names="FLT --bogus",
             output=self.output,
         )
         self.assertEqual(rc, 1)
 
-    def test_missing_lkg_for_known_name_returns_nonzero(self) -> None:
-        """Scenario: an `@lkg` entry whose snapshot has null LKG fails fast."""
+    def test_missing_lkg_for_lkg_mode_returns_nonzero(self) -> None:
+        """Scenario: an LKG-mode entry whose snapshot has null LKG fails fast."""
         snapshot = _write_snapshot(self.tmpdir)
         rc = _run_main(
             inventory=self.inventory,
-            names="newcomer@lkg",
+            names="newcomer",
             output=self.output,
             snapshot_url=snapshot.as_uri(),
         )
         self.assertEqual(rc, 1)
+
+    def test_missing_lkg_acceptable_in_merge_mode(self) -> None:
+        """Scenario: `--merge-branch` doesn't care about the LKG snapshot."""
+        rc = _run_main(
+            inventory=self.inventory,
+            names="newcomer --merge-branch",
+            output=self.output,
+        )
+        self.assertEqual(rc, 0)
 
     def test_snapshot_fetch_failure_returns_nonzero(self) -> None:
         """Scenario: LKG snapshot fetch transport error surfaces a clean error."""
         rc = _run_main(
             inventory=self.inventory,
-            names="FLT@lkg",
+            names="FLT",
             output=self.output,
             snapshot_url="file:///nonexistent/path/lkg.json",
         )
         self.assertEqual(rc, 1)
-
-    def test_duplicate_mode_request_rejected(self) -> None:
-        """Scenario: requesting the same downstream twice in the same mode is rejected."""
-        rc = _run_main(
-            inventory=self.inventory,
-            names="FLT, FLT",
-            output=self.output,
-        )
-        self.assertEqual(rc, 1)
-
-    def test_same_name_in_both_modes_is_allowed(self) -> None:
-        """Scenario: `FLT, FLT@lkg` is accepted — these are distinct validations."""
-        snapshot = _write_snapshot(self.tmpdir)
-        rc = _run_main(
-            inventory=self.inventory,
-            names="FLT, FLT@lkg",
-            output=self.output,
-            snapshot_url=snapshot.as_uri(),
-        )
-        self.assertEqual(rc, 0)
-        include = self._read_matrix()
-        self.assertEqual([e["mode"] for e in include], ["merge", "lkg"])
 
 
 if __name__ == "__main__":

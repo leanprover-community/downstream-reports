@@ -55,28 +55,15 @@ def _make_result(**overrides) -> dict:
     return base
 
 
-def _render(result: dict, *, history: list | None = None) -> str:
+def _render(result: dict) -> str:
     return post_results.render_body(
         name="FLT",
         repo="leanprover-community/FLT",
         default_branch="main",
         result=result,
-        head_sha=_HEAD_SHA,
         merge_sha=_MERGE_SHA,
         run_url=_RUN_URL,
         log_tail="some build error",
-        history=history
-        or [
-            post_results.make_history_entry(
-                head_sha=_HEAD_SHA,
-                merge_sha=_MERGE_SHA,
-                status=result.get("status", "infra_failure"),
-                run_url=_RUN_URL,
-                downstream_sha=_DS_SHA,
-                mode=result.get("mode") or "merge",
-                lkg_commit=result.get("lkg_commit"),
-            )
-        ],
     )
 
 
@@ -277,77 +264,58 @@ class TestTreeRecipeTests(unittest.TestCase):
             "Explainer should appear before the failure log so it's not missed.",
         )
 
+    def test_recipe_surfaces_requested_rev(self) -> None:
+        """Scenario: when the result records `downstream_rev`, the recipe link uses it as label."""
+        body = _render(
+            _make_result(
+                status="pass",
+                mode="lkg",
+                lkg_commit=_LKG_SHA,
+                pr_base_sha=_PR_BASE,
+                pr_head_sha=_PR_HEAD,
+                commits_replayed=1,
+                downstream_rev="v1.2.3",
+            )
+        )
+        # Link label includes the rev, not just the short SHA.
+        self.assertIn(
+            "[`leanprover-community/FLT@v1.2.3`]"
+            f"(https://github.com/leanprover-community/FLT/commit/{_DS_SHA})",
+            body,
+        )
+
 
 # ---------------------------------------------------------------------------
-# History line rendering
+# No-marker behaviour
 # ---------------------------------------------------------------------------
 
 
-class CommentMarkerTests(unittest.TestCase):
-    """The hidden marker that keys an existing comment includes the mode."""
+class NoMarkerTests(unittest.TestCase):
+    """Comments are self-contained — no hidden marker or history block.
 
-    def test_marker_includes_mode_so_modes_do_not_collide(self) -> None:
-        """Scenario: same downstream tested in both modes → two distinct markers → two comments."""
-        merge_marker = post_results.comment_marker("Toric", "merge")
-        lkg_marker = post_results.comment_marker("Toric", "lkg")
-        self.assertNotEqual(merge_marker, lkg_marker)
-        self.assertIn(":Toric:merge", merge_marker)
-        self.assertIn(":Toric:lkg", lkg_marker)
+    We dropped the edit-in-place machinery: each dispatch POSTs fresh
+    comments, so a body that still leaked the old `<!-- … -->` markers
+    would be visible to readers as dead text. These tests pin the
+    invariant.
+    """
 
-    def test_rendered_body_contains_mode_keyed_marker(self) -> None:
-        """Scenario: render_body emits the per-mode marker so find_existing_comment matches it."""
-        body = _render(_make_result(status="pass", mode="lkg", lkg_commit=_LKG_SHA))
-        self.assertIn("<!-- pr-check-downstream:result:FLT:lkg -->", body)
-        self.assertNotIn("<!-- pr-check-downstream:result:FLT -->", body)
-
-
-class HistoryLineTests(unittest.TestCase):
-    """render_history_line should annotate lkg-mode entries with the LKG SHA."""
-
-    def test_merge_mode_history_line(self) -> None:
-        """Scenario: a legacy entry without `mode` renders as merge mode (no annotation)."""
-        entry = {
-            "head_sha": _HEAD_SHA,
-            "status": "pass",
-            "run_url": _RUN_URL,
-            "downstream_sha": _DS_SHA,
-        }
-        line = post_results.render_history_line(
-            entry, "leanprover-community/FLT", "main"
+    def test_body_does_not_contain_pr_check_downstream_marker(self) -> None:
+        """Scenario: render_body emits no `<!-- pr-check-downstream:* -->` blocks."""
+        body = _render(
+            _make_result(
+                status="pass",
+                mode="lkg",
+                lkg_commit=_LKG_SHA,
+                downstream_rev="v1.2.3",
+            )
         )
-        self.assertIn("✅", line)
-        self.assertIn("passed against `leanprover-community/FLT@main`", line)
-        self.assertNotIn("rebased onto LKG", line)
+        self.assertNotIn("<!-- pr-check-downstream:result:", body)
+        self.assertNotIn("<!-- pr-check-downstream:history-data", body)
 
-    def test_lkg_mode_history_line_with_commit(self) -> None:
-        """Scenario: an lkg-mode entry annotates the LKG short SHA inline."""
-        entry = {
-            "head_sha": _HEAD_SHA,
-            "status": "pass",
-            "run_url": _RUN_URL,
-            "downstream_sha": _DS_SHA,
-            "mode": "lkg",
-            "lkg_commit": _LKG_SHA,
-        }
-        line = post_results.render_history_line(
-            entry, "leanprover-community/FLT", "main"
-        )
-        self.assertIn(f"rebased onto LKG `{_LKG_SHA[:7]}`", line)
-
-    def test_lkg_mode_history_line_without_commit(self) -> None:
-        """Scenario: an lkg-mode entry without commit (e.g. lkg_missing) still annotates."""
-        entry = {
-            "head_sha": _HEAD_SHA,
-            "status": "infra_failure",
-            "run_url": _RUN_URL,
-            "downstream_sha": None,
-            "mode": "lkg",
-        }
-        line = post_results.render_history_line(
-            entry, "leanprover-community/FLT", "main"
-        )
-        self.assertIn("rebased onto LKG", line)
-        self.assertIn("⚠️", line)
+    def test_body_does_not_contain_previous_runs_section(self) -> None:
+        """Scenario: there is no `Previous runs` block — that was history-only chrome."""
+        body = _render(_make_result(status="fail"))
+        self.assertNotIn("**Previous runs**", body)
 
 
 if __name__ == "__main__":

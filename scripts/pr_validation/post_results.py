@@ -1,24 +1,22 @@
 #!/usr/bin/env python3
-"""Post / update per-downstream result comments on a mathlib4 PR.
+"""Post per-entry result comments on a mathlib4 PR.
 
-For each ``result-<name>/result.json`` produced by the validate matrix, find
-an existing comment on the PR identified by the marker
-
-    <!-- pr-check-downstream:result:<name> -->
-
-and edit it in place; otherwise, post a new comment.  Each update prepends the
-current run to a hidden history list so the comment accumulates a run log over
-the life of the PR.
+For each ``result-*/result.json`` produced by the validate matrix, render
+a self-contained Markdown comment and POST it to the PR. Each dispatch
+appends a fresh set of comments — there is no edit-in-place; if you want
+"the latest verdict" you read the most recent one. The trade-off is
+simplicity (no marker plumbing, no history accumulation) at the cost of
+a longer PR comment list when a directive is re-triggered.
 
 Inputs (env):
     GH_TOKEN  — token with issues:write on leanprover-community/mathlib4
     PR_NUMBER — PR number on mathlib4
-    MERGE_SHA — merge SHA we tested against (used to derive the PR head SHA)
+    MERGE_SHA — merge SHA we tested against
     RUN_URL   — link to the validation run (for the result body)
 
 Inputs (CLI):
-    --results-dir  — directory containing ``result-<name>/result.json``
-                     and ``result-<name>/build.log`` artifact directories
+    --results-dir  — directory containing ``result-<name>-<slug>-<mode>/``
+                     artifact directories.
 """
 
 from __future__ import annotations
@@ -34,16 +32,9 @@ from typing import Any
 from log_filter import read_log_tail
 
 REPO = "leanprover-community/mathlib4"
-# Each comment is keyed by (downstream-name, mode) so the same downstream
-# validated in both merge and lkg mode produces two distinct comments side
-# by side rather than overwriting each other.
-MARKER_PREFIX = "<!-- pr-check-downstream:result:"
-HISTORY_KEY = "pr-check-downstream:history-data"
 
-
-def comment_marker(name: str, mode: str) -> str:
-    return f"{MARKER_PREFIX}{name}:{mode} -->"
-LOG_MAX_CHARS = 60_000  # GitHub comment limit is 65,536; leave room for wrapper text
+# GitHub comment limit is 65,536; leave room for wrapper text.
+LOG_MAX_CHARS = 60_000
 
 
 def gh_api(args: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
@@ -54,29 +45,6 @@ def gh_api(args: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
         capture_output=True,
         **kwargs,
     )
-
-
-def find_existing_comment(pr_number: str, marker: str) -> tuple[str, str] | None:
-    """Return ``(comment_id, body)`` for the comment matching ``marker``, or None."""
-    page = 1
-    while True:
-        result = gh_api(
-            [
-                "-H",
-                "Accept: application/vnd.github+json",
-                f"/repos/{REPO}/issues/{pr_number}/comments?per_page=100&page={page}",
-            ]
-        )
-        comments = json.loads(result.stdout)
-        if not comments:
-            return None
-        for comment in comments:
-            body = comment.get("body", "")
-            if marker in body:
-                return str(comment["id"]), body
-        if len(comments) < 100:
-            return None
-        page += 1
 
 
 def post_comment(pr_number: str, body: str) -> None:
@@ -93,30 +61,6 @@ def post_comment(pr_number: str, body: str) -> None:
     )
 
 
-def get_pr_head_sha(merge_sha: str) -> str | None:
-    """Fallback: fetch the PR head SHA from the merge commit's second parent.
-
-    Newer result.json files include ``pr_head_sha`` directly (validate.sh
-    resolves it from the local clone) so this API call is rarely needed; we
-    keep it for forward-compat with older result artifacts that pre-date the
-    field.
-    """
-    try:
-        result = gh_api(
-            [
-                "-H",
-                "Accept: application/vnd.github+json",
-                f"/repos/{REPO}/commits/{merge_sha}",
-            ]
-        )
-        parents = json.loads(result.stdout).get("parents", [])
-        if len(parents) >= 2:
-            return parents[1]["sha"]
-    except Exception as exc:
-        print(f"warning: could not fetch PR head SHA: {exc}", file=sys.stderr)
-    return None
-
-
 def short_sha(sha: str) -> str:
     return sha[:7] if sha else "(unknown)"
 
@@ -124,6 +68,7 @@ def short_sha(sha: str) -> str:
 # ---------------------------------------------------------------------------
 # Link / recipe rendering helpers
 # ---------------------------------------------------------------------------
+
 
 def commit_link(sha: str | None, repo: str = REPO) -> str:
     """Render a commit SHA as a backticked + linked Markdown reference."""
@@ -140,11 +85,24 @@ def compare_link(base: str, head: str, repo: str = REPO) -> str:
     )
 
 
-def downstream_link(repo_slug: str, sha: str | None) -> str:
-    """Render `repo@<short>` linked to that commit on the downstream repo."""
+def downstream_link(
+    repo_slug: str,
+    sha: str | None,
+    rev: str | None = None,
+) -> str:
+    """Render `repo@<rev-or-short>` linked to that commit on the downstream.
+
+    When ``rev`` is provided (the user-supplied refspec — a branch / tag /
+    SHA), the link text shows that rev for clarity; otherwise we fall back
+    to a 7-char short SHA. The URL always points at the resolved SHA so
+    the reader gets the exact tested tree.
+    """
     if not sha:
+        if rev:
+            return f"`{repo_slug}@{rev}`"
         return f"`{repo_slug}`"
-    return f"[`{repo_slug}@{short_sha(sha)}`](https://github.com/{repo_slug}/commit/{sha})"
+    label = rev if rev else short_sha(sha)
+    return f"[`{repo_slug}@{label}`](https://github.com/{repo_slug}/commit/{sha})"
 
 
 def render_test_tree_paragraph(
@@ -158,8 +116,8 @@ def render_test_tree_paragraph(
 ) -> str:
     """One-paragraph recipe of what this run actually built and tested.
 
-    The output reads as a single sentence so a PR author skimming the
-    comment understands the test tree without expanding any sections.
+    Reads as a single sentence so a PR author skimming the comment
+    understands the test tree without expanding any sections.
     """
     mode = result.get("mode") or "merge"
     pr_base = result.get("pr_base_sha")
@@ -168,9 +126,16 @@ def render_test_tree_paragraph(
     replayed = result.get("replayed_tree_sha")
     lkg = result.get("lkg_commit")
     ds_sha = result.get("downstream_sha")
+    # `downstream_rev` is set only when the user requested a specific rev
+    # (i.e. it differs from the inventory's default_branch). When present
+    # we want the link text to show that rev rather than just the short
+    # resolved SHA, so the reader sees what was asked for.
+    ds_rev = result.get("downstream_rev")
 
     if ds_sha:
-        ds_phrase = f"built against {downstream_link(repo_slug, ds_sha)}"
+        ds_phrase = f"built against {downstream_link(repo_slug, ds_sha, ds_rev)}"
+    elif ds_rev:
+        ds_phrase = f"built against `{repo_slug}@{ds_rev}`"
     else:
         ds_phrase = f"built against `{repo_slug}@{branch}`"
 
@@ -214,99 +179,23 @@ def render_test_tree_paragraph(
 
 
 # ---------------------------------------------------------------------------
-# History helpers
+# Body rendering
 # ---------------------------------------------------------------------------
 
-def parse_history(name: str, body: str) -> list[dict[str, Any]]:
-    """Extract the history list embedded in a previous comment body."""
-    prefix = f"<!-- {HISTORY_KEY}:{name}\n"
-    start = body.find(prefix)
-    if start == -1:
-        return []
-    json_start = start + len(prefix)
-    end = body.find("\n-->", json_start)
-    if end == -1:
-        return []
-    try:
-        data = json.loads(body[json_start:end])
-        return data if isinstance(data, list) else []
-    except (json.JSONDecodeError, ValueError):
-        return []
-
-
-def encode_history(name: str, entries: list[dict[str, Any]]) -> str:
-    return f"<!-- {HISTORY_KEY}:{name}\n{json.dumps(entries)}\n-->"
-
-
-def make_history_entry(
-    head_sha: str | None,
-    merge_sha: str,
-    status: str,
-    run_url: str,
-    downstream_sha: str | None,
-    mode: str = "merge",
-    lkg_commit: str | None = None,
-) -> dict[str, Any]:
-    entry: dict[str, Any] = {
-        "head_sha": head_sha or merge_sha,
-        "status": status,
-        "run_url": run_url,
-        "downstream_sha": downstream_sha or None,
-        "mode": mode,
-    }
-    if mode == "lkg" and lkg_commit:
-        entry["lkg_commit"] = lkg_commit
-    return entry
-
-
-def render_history_line(entry: dict[str, Any], repo_slug: str, branch: str) -> str:
-    head_sha = entry.get("head_sha", "")
-    status = entry.get("status", "")
-    run_url = entry.get("run_url", "")
-    ds_sha = entry.get("downstream_sha") or ""
-    mode = entry.get("mode") or "merge"
-
-    icon = "✅" if status == "pass" else "❌" if status == "fail" else "⚠️"
-    verb = "passed" if status == "pass" else "failed" if status == "fail" else "infra failure"
-
-    sha_link = (
-        f"[`{short_sha(head_sha)}`](https://github.com/{REPO}/commit/{head_sha})"
-        if head_sha
-        else "`(unknown)`"
-    )
-    ds_part = f" [`{short_sha(ds_sha)}`]" if ds_sha else ""
-    mode_part = ""
-    if mode == "lkg":
-        lkg_commit = entry.get("lkg_commit") or ""
-        if lkg_commit:
-            mode_part = f" (rebased onto LKG `{short_sha(lkg_commit)}`)"
-        else:
-            mode_part = " (rebased onto LKG)"
-    return (
-        f"- {sha_link} {icon} {verb} against"
-        f" `{repo_slug}@{branch}`{ds_part}{mode_part} — [run]({run_url})"
-    )
-
-
-# ---------------------------------------------------------------------------
-# Rendering
-# ---------------------------------------------------------------------------
 
 def render_body(
+    *,
     name: str,
     repo: str,
     default_branch: str,
     result: dict[str, Any],
-    head_sha: str | None,
     merge_sha: str,
     run_url: str,
     log_tail: str,
-    history: list[dict[str, Any]],
 ) -> str:
     status = result.get("status", "infra_failure")
     stage = result.get("stage", "unknown")
     mode = result.get("mode") or "merge"
-    marker = comment_marker(name, mode)
     repo_slug = repo or "(unknown)"
     branch = default_branch or "(unknown)"
     rebased_suffix = " rebased onto LKG" if mode == "lkg" else ""
@@ -412,23 +301,7 @@ def render_body(
                 ]
             )
 
-    # Previous runs (history[0] is the current run; history[1:] are older ones)
-    previous = history[1:]
-    if previous:
-        parts.extend(
-            [
-                "---",
-                "",
-                "**Previous runs**",
-                "",
-                *[render_history_line(e, repo_slug, branch) for e in previous],
-                "",
-            ]
-        )
-
-    parts.append(marker)
-    parts.append(encode_history(name, history))
-    return "\n".join(parts)
+    return "\n".join(parts).rstrip() + "\n"
 
 
 def load_inventory_lookup() -> dict[str, dict[str, Any]]:
@@ -458,8 +331,6 @@ def main() -> int:
     merge_sha = os.environ["MERGE_SHA"]
     run_url = os.environ["RUN_URL"]
 
-    head_sha = get_pr_head_sha(merge_sha)
-
     inventory = load_inventory_lookup()
 
     if not args.results_dir.exists():
@@ -483,38 +354,16 @@ def main() -> int:
             result = json.load(handle)
 
         name = result.get("downstream") or entry.name[len("result-"):]
-        mode = result.get("mode") or "merge"
         meta = inventory.get(name, {})
-        marker = comment_marker(name, mode)
-
-        existing = find_existing_comment(pr_number, marker)
-        # parse_history is keyed only on `name` because the history block lives
-        # inside the per-mode comment body (the marker we just matched), so
-        # there's no risk of cross-mode bleed-in.
-        history = parse_history(name, existing[1] if existing else "")
-        history = [
-            make_history_entry(
-                head_sha=head_sha,
-                merge_sha=merge_sha,
-                status=result.get("status", "infra_failure"),
-                run_url=run_url,
-                downstream_sha=result.get("downstream_sha"),
-                mode=result.get("mode") or "merge",
-                lkg_commit=result.get("lkg_commit"),
-            ),
-            *history,
-        ]
 
         body = render_body(
             name=name,
             repo=meta.get("repo", ""),
             default_branch=meta.get("default_branch", ""),
             result=result,
-            head_sha=head_sha,
             merge_sha=merge_sha,
             run_url=run_url,
             log_tail=read_log_tail(entry / "build.log", LOG_MAX_CHARS),
-            history=history,
         )
 
         post_comment(pr_number, body)
