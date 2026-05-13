@@ -27,7 +27,8 @@
       "repo": "YaelDillies/toric",
       "default_branch": "master",
       "dependency_name": "mathlib",
-      "enabled": true
+      "enabled": true,
+      "warm_cache": true
     },
     {
       "name": "cslib",
@@ -74,63 +75,72 @@
       "repo": "kbuzzard/ClassFieldTheory",
       "default_branch": "main",
       "dependency_name": "mathlib",
-      "enabled": true
+      "enabled": true,
+      "warm_cache": true
     },
     {
       "name": "gibbs-measure",
       "repo": "YaelDillies/gibbs-measure",
       "default_branch": "main",
       "dependency_name": "mathlib",
-      "enabled": true
+      "enabled": true,
+      "warm_cache": true
     },
     {
       "name": "forbidden-matrix",
       "repo": "YaelDillies/forbidden-matrix",
       "default_branch": "master",
       "dependency_name": "mathlib",
-      "enabled": true
+      "enabled": true,
+      "warm_cache": true
     },
     {
       "name": "BrauerGroup_new",
       "repo": "Whysoserioushah/BrauerGroup_new",
       "default_branch": "main",
       "dependency_name": "mathlib",
-      "enabled": true
+      "enabled": true,
+      "warm_cache": true
     },
     {
       "name": "add-combi",
       "repo": "leanprover-community/add-combi",
       "default_branch": "master",
       "dependency_name": "mathlib",
-      "enabled": true
+      "enabled": true,
+      "warm_cache": true
     },
     {
       "name": "cam-combi",
       "repo": "YaelDillies/cam-combi",
       "default_branch": "master",
       "dependency_name": "mathlib",
-      "enabled": true
+      "enabled": true,
+      "warm_cache": true
     },
     {
       "name": "chandra-furst-lipton",
       "repo": "YaelDillies/chandra-furst-lipton",
       "default_branch": "master",
       "dependency_name": "mathlib",
-      "enabled": true
+      "enabled": true,
+      "warm_cache": true
     },
     {
       "name": "misc-yd",
       "repo": "YaelDillies/misc-yd",
       "default_branch": "master",
       "dependency_name": "mathlib",
-      "enabled": true
+      "enabled": true,
+      "warm_cache": true
     },
     {
       "name": "PersistentDecomp",
       "repo": "Paul-Lez/PersistentDecomp",
       "default_branch": "master",
       "dependency_name": "mathlib",
-      "enabled": true
+      "enabled": true,
+      "warm_cache": true
     },
     {
       "name": "flt-regular",
