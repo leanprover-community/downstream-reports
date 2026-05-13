@@ -27,21 +27,40 @@ Both files are refreshed by the same `publish-lkg` workflow run.
 ## Overview
 
 ```
-downstream-reports                         Downstream repos
-─────────────────                         ────────────────
-mathlib-downstream-report workflow        scheduled workflow
-  └─ report job writes DB                   └─ bump-to-latest action
-                                                ├─ fetches lkg/latest.json
-publish-lkg workflow                            ├─ runs hopscotch dep
-  └─ export_lkg_snapshot.py                    └─ outputs: updated, skipped, …
+downstream-reports                                Downstream repos
+─────────────────                                ────────────────
+mathlib-downstream-report workflow               scheduled workflow
+  └─ report job writes DB                          └─ bump-to-latest action
+            │                                          ├─ fetches lkg/latest.json
+            ▼  workflow_run                            ├─ runs hopscotch dep
+warm-mathlib-cache workflow                            └─ outputs: updated, skipped, …
+  └─ probes & rebuilds the LKG/FKB SHAs
+     for opted-in downstreams, pushing the      open-bump-pr action
+     resulting oleans to mathlib's Azure cache    └─ git commit + gh pr create/update
+            │
+            ▼  workflow_run (success on main)
+publish-lkg workflow
+  └─ export_lkg_snapshot.py
        └─ reads downstream_status table
-  └─ az storage blob upload               open-bump-pr action
-       └─ lkg/latest.json (public read)     └─ git commit + gh pr create/update
+  └─ export_runs_snapshot.py
+       └─ reads run_result + run + validate_job
+  └─ az storage blob upload
+       └─ lkg/latest.json   (public read)
+       └─ runs/latest.json  (public read)
 ```
 
-The snapshot is read from the **full accumulated database state**, not just the
-results of the latest run. Publishing can therefore happen at any time and will
-always reflect the current picture.
+The snapshots are read from the **full accumulated database state**, not just
+the results of the latest run. Publishing can therefore happen at any time and
+will always reflect the current picture.
+
+`publish-lkg` is gated on the success of `warm-mathlib-cache`, not on the
+report directly. The warming pass is what enforces the contract that the SHAs
+in `lkg/latest.json` have been confirmed warm in mathlib's Azure cache — if
+warming is skipped or fails, the snapshot is not refreshed and consumers
+continue to see the previous still-warm cycle. See
+[cache-warming.md](./cache-warming.md) for the full design (including the
+`cache_warmth` filter and the eventual-consistency cron schedule that
+self-heals missed chains).
 
 ---
 
@@ -88,14 +107,15 @@ LKG snapshot).
 
 ### `publish-lkg.yml`
 
-Triggers on successful completion of `mathlib-downstream-report` on `main`, and
-also supports `workflow_dispatch` for on-demand publishing.
+Triggers on successful completion of `warm-mathlib-cache` on `main` (the chain
+is `mathlib-downstream-report → warm-mathlib-cache → publish-lkg`), and also
+supports `workflow_dispatch` for on-demand publishing.
 
 ```
 on:
   workflow_dispatch:
   workflow_run:
-    workflows: ["mathlib-downstream-report"]
+    workflows: ["warm-mathlib-cache"]
     types: [completed]
     branches: [main]
 ```
@@ -107,9 +127,12 @@ The job condition allows all non-`workflow_run` triggers through, and for
 if: github.event_name != 'workflow_run' ||
     (github.event.workflow_run.head_branch == 'main' &&
      github.event.workflow_run.conclusion == 'success')
-``` Authentication to Azure uses OIDC — no
-long-lived secrets — via `azure/login@v2` with a federated credential scoped to
-`refs/heads/main`.
+```
+
+A failed warming pass therefore leaves `lkg/latest.json` and
+`runs/latest.json` pointing at the previous (still-warm) cycle.
+Authentication to Azure uses OIDC — no long-lived secrets — via
+`azure/login@v2` with a federated credential scoped to `refs/heads/main`.
 
 ### Composite actions
 

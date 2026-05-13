@@ -215,8 +215,13 @@ def format_new_failure_message(
     ])
 
     culprit_log = record.get("culprit_log_text")
+    culprit_log_url = record.get("culprit_log_artifact_url")
     if culprit_log:
         lines.extend(["", "```spoiler Failure log", culprit_log, "```"])
+        if culprit_log_url:
+            lines.append(f"[Download full log]({culprit_log_url})")
+    elif culprit_log_url:
+        lines.extend(["", f"[Download failure log]({culprit_log_url})"])
 
     return "\n".join(lines)
 
@@ -287,8 +292,13 @@ def format_ondemand_failure_message(
         lines.append(f"- Failure stage: {failure_stage}")
 
     culprit_log = record.get("culprit_log_text")
+    culprit_log_url = record.get("culprit_log_artifact_url")
     if culprit_log:
         lines.extend(["", "```spoiler Failure log", culprit_log, "```"])
+        if culprit_log_url:
+            lines.append(f"[Download full log]({culprit_log_url})")
+    elif culprit_log_url:
+        lines.extend(["", f"[Download failure log]({culprit_log_url})"])
 
     return "\n".join(lines)
 

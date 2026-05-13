@@ -762,6 +762,13 @@ def render_table_row(
         btns.append(f'<a href="{esc(r["job_url"])}" class="btn" target="_blank" rel="noopener noreferrer">Validation job&nbsp;↗</a>')
     if row_run_url:
         btns.append(f'<a href="{esc(row_run_url)}" class="btn" target="_blank" rel="noopener noreferrer">Full run&nbsp;↗</a>')
+    culprit_log_url = r.get("culprit_log_artifact_url")
+    if culprit_log_url:
+        btns.append(
+            f'<a href="{esc(culprit_log_url)}" class="btn" '
+            'data-tooltip="Download the failing-commit build log"'
+            ' target="_blank" rel="noopener noreferrer">Failure log&nbsp;↗</a>'
+        )
     links_cell = f'<div class="links">{"".join(btns)}</div>'
 
     _av = str(age_days) if age_days is not None else (str(age_val) if age_val is not None else "-1")

@@ -13,9 +13,15 @@
 # Writes to GITHUB_OUTPUT (every key is always written; empty string when
 # no data is available):
 #   run_id, run_url, job_id, job_url, result_artifact_name,
+#   culprit_log_artifact_name, culprit_log_artifact_url,
 #   reported_at, target_commit, downstream_commit, outcome, episode_state,
 #   first_known_bad_commit, last_known_good_commit,
 #   downstream_name, repo
+#
+# The failing-commit log itself is not exposed here — consumers download the
+# `culprit-log-<name>` artifact via `culprit_log_artifact_url` when they need
+# the contents.  Keeping arbitrary build output out of the published snapshot
+# is intentional.
 #
 # Non-fatal: if the snapshot is unreachable (404, 5xx, network failure) or
 # the downstream entry is missing, the script still exits 0 with all
@@ -39,6 +45,8 @@ emit_empty() {
     echo "job_id="
     echo "job_url="
     echo "result_artifact_name="
+    echo "culprit_log_artifact_name="
+    echo "culprit_log_artifact_url="
     echo "reported_at="
     echo "target_commit="
     echo "downstream_commit="
@@ -108,6 +116,8 @@ RUN_URL=$(get run_url)
 JOB_ID=$(get job_id)
 JOB_URL=$(get job_url)
 RESULT_ARTIFACT=$(get result_artifact_name)
+CULPRIT_LOG_ARTIFACT_NAME=$(get culprit_log_artifact_name)
+CULPRIT_LOG_ARTIFACT_URL=$(get culprit_log_artifact_url)
 REPORTED_AT=$(get reported_at)
 TARGET_COMMIT=$(get target_commit)
 DOWNSTREAM_COMMIT=$(get downstream_commit)
@@ -116,17 +126,18 @@ EPISODE_STATE=$(get episode_state)
 FKB_COMMIT=$(get first_known_bad_commit)
 LKG_COMMIT=$(get last_known_good_commit)
 
-echo "Downstream:        $DS_NAME"
-echo "Repo:              $REPO"
-echo "Latest run:        ${RUN_URL:-<none>}"
-echo "Latest job:        ${JOB_URL:-<none>}"
-echo "Reported at:       ${REPORTED_AT:-<none>}"
-echo "Target commit:     ${TARGET_COMMIT:-<none>}"
-echo "Downstream commit: ${DOWNSTREAM_COMMIT:-<none>}"
-echo "Outcome:           ${OUTCOME:-<none>}"
-echo "Episode state:     ${EPISODE_STATE:-<none>}"
-echo "FKB commit:        ${FKB_COMMIT:-<none>}"
-echo "LKG commit:        ${LKG_COMMIT:-<none>}"
+echo "Downstream:           $DS_NAME"
+echo "Repo:                 $REPO"
+echo "Latest run:           ${RUN_URL:-<none>}"
+echo "Latest job:           ${JOB_URL:-<none>}"
+echo "Culprit log artifact: ${CULPRIT_LOG_ARTIFACT_URL:-<none>}"
+echo "Reported at:          ${REPORTED_AT:-<none>}"
+echo "Target commit:        ${TARGET_COMMIT:-<none>}"
+echo "Downstream commit:    ${DOWNSTREAM_COMMIT:-<none>}"
+echo "Outcome:              ${OUTCOME:-<none>}"
+echo "Episode state:        ${EPISODE_STATE:-<none>}"
+echo "FKB commit:           ${FKB_COMMIT:-<none>}"
+echo "LKG commit:           ${LKG_COMMIT:-<none>}"
 
 {
   echo "run_id=$RUN_ID"
@@ -134,6 +145,8 @@ echo "LKG commit:        ${LKG_COMMIT:-<none>}"
   echo "job_id=$JOB_ID"
   echo "job_url=$JOB_URL"
   echo "result_artifact_name=$RESULT_ARTIFACT"
+  echo "culprit_log_artifact_name=$CULPRIT_LOG_ARTIFACT_NAME"
+  echo "culprit_log_artifact_url=$CULPRIT_LOG_ARTIFACT_URL"
   echo "reported_at=$REPORTED_AT"
   echo "target_commit=$TARGET_COMMIT"
   echo "downstream_commit=$DOWNSTREAM_COMMIT"

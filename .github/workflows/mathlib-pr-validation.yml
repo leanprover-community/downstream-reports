@@ -1,6 +1,6 @@
 name: mathlib-pr-validation
 
-# Runs the per-PR downstream validation triggered by `/check-downstream` on a
+# Runs the per-PR downstream validation triggered by `!downstream-check` on a
 # mathlib4 PR. Dispatched from `mathlib4/.github/workflows/pr_check_downstream.yml`
 # via a GitHub App token. See `docs/internal/pr-validation-workflow.md`.
 
@@ -22,13 +22,16 @@ on:
         type: string
       downstreams:
         description: >-
-          Comma-separated downstream names. Each name may carry an optional
-          `@lkg` suffix (e.g. `FLT@lkg, Toric`) selecting LKG mode for that
-          downstream — see docs/internal/pr-validation-workflow.md.
+          Comma-separated `<name-or-slug>[@<rev>] [--merge-branch]`
+          entries. Each entry is independent — LKG is the default mode;
+          `--merge-branch` flips that single entry to merge mode.
+          `<name-or-slug>` accepts the inventory short name or the
+          downstream's `owner/repo` slug. See
+          docs/internal/pr-validation-workflow.md.
         required: true
         type: string
       post_results:
-        description: "Post result comments back on the mathlib4 PR. Set to false to skip the App-token + comment step (useful for testing before the App is wired up)."
+        description: "Post the dispatch-level result comment back on the mathlib4 PR. Set to false to skip the App-token + comment step (useful for testing before the App is wired up)."
         required: false
         default: true
         type: boolean
@@ -170,11 +173,10 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7.0.0
         with:
-          # Artifact name is keyed on (name, rev_slug, mode) — the same
-          # triple post_results.py uses for the comment marker — so two
-          # entries that differ in any dimension produce two artifacts and
-          # two PR comments. `path` points at the per-matrix output dir so
-          # result.json / build.log sit at the artifact root.
+          # Artifact name is keyed on (name, rev_slug, mode) so two entries
+          # that differ in any dimension produce two artifacts that the
+          # report job can keep separate. `path` points at the per-matrix
+          # output dir so result.json / build.log sit at the artifact root.
           name: result-${{ matrix.name }}-${{ matrix.rev_slug }}-${{ matrix.mode }}
           path: ${{ runner.temp }}/artifacts/result-${{ matrix.name }}-${{ matrix.rev_slug }}-${{ matrix.mode }}
           if-no-files-found: error
@@ -219,7 +221,7 @@ jobs:
           owner: leanprover-community
           repositories: mathlib4
 
-      - name: Post / update result comments
+      - name: Post result comment
         env:
           GH_TOKEN:      ${{ steps.app_token.outputs.token }}
           PR_NUMBER:     ${{ inputs.pr_number }}

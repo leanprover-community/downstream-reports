@@ -43,7 +43,7 @@ import json
 import os
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Iterable, Protocol, runtime_checkable
 
 
 # ---------------------------------------------------------------------------
@@ -106,6 +106,26 @@ class LatestRunRecord:
     last_known_good: str | None
     job_id: str | None = None
     job_url: str | None = None
+    # Download URL for the `culprit-log-<name>` artifact uploaded by the probe job.
+    # The log text itself is not persisted — consumers fetch the artifact when they
+    # need the contents, so the database stays free of arbitrary build output.
+    culprit_log_artifact_url: str | None = None
+
+
+@dataclass
+class ManifestWatcherLedgerRow:
+    """One row in the manifest-watcher dispatch ledger.
+
+    Maps to a row in ``manifest_watcher_ledger`` (SQL) or to one entry inside
+    ``manifest_watcher_ledger.json`` on the filesystem.  The watcher writes one
+    row per dispatched downstream so subsequent ticks don't re-dispatch the
+    same ``(downstream, observed_pin)`` until ``dispatched_at`` ages out.
+    """
+
+    downstream: str
+    observed_pin: str
+    dispatched_at: str           # ISO-8601 timestamp
+    run_url: str | None = None
 
 
 @dataclass
@@ -142,6 +162,12 @@ class RunResultRecord:
     bump_commits: int | None = None  # commits between pinned_commit and last_known_good
     last_good_release: str | None = None  # latest semver release tag reachable from LKG
     search_base_not_ancestor: bool = False
+    # Direct download URL for the `culprit-log-<name>` artifact, when one was uploaded.
+    # Falls back to None when no culprit log was produced (passing run, error before
+    # build) or when artifact-id resolution failed in the report job.  The log text
+    # itself (`culprit_log_text` above) is held only in memory for the in-process
+    # markdown report and Zulip alert payload — never written to SQL.
+    culprit_log_artifact_url: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -210,7 +236,52 @@ class StorageBackend(Protocol):
         Returns ``{(downstream, downstream_commit): {...}}`` where each value
         contains at minimum: ``outcome``, ``episode_state``, ``first_known_bad``,
         ``target_commit``, ``failure_stage``, ``repo``, ``run_url``, ``job_url``.
+
+        Ordering: when a ``(downstream, downstream_commit)`` pair has
+        multiple matching runs, the **newest** result (highest
+        ``created_at``) wins.  Older runs are by definition stale; the
+        on-demand select step depends on this newest-wins tie-break to
+        decide whether the most recent attempt at a commit was a pass
+        or a fail.
+
+        Error outcomes are excluded — a run that errored is not a
+        conclusive prior result, and we want to retry it on the next
+        run rather than treat it as already-tested.
+
+        Pinned by
+        ``test_storage.TestFilesystemBackendLoadPriorResults``.
         """
+        ...
+
+    def load_known_warm_shas(self, upstream: str) -> set[str]:
+        """Return the set of upstream SHAs already confirmed warm in the cache.
+
+        Used by the cache-warming planner to skip SHAs whose Azure cache state
+        was already verified by a previous warm run. Backends with no
+        persistence (filesystem, dry-run) return an empty set so planning
+        degrades gracefully off SQL.
+        """
+        ...
+
+    def record_warm_shas(self, upstream: str, shas: Iterable[str]) -> None:
+        """Mark *shas* as confirmed warm for *upstream* (idempotent upsert)."""
+        ...
+
+    def load_manifest_watcher_ledger(
+        self, upstream: str
+    ) -> dict[str, "ManifestWatcherLedgerRow"]:
+        """Return the watcher's per-downstream dispatch ledger for *upstream*.
+
+        Empty dict when no rows exist.  The watcher uses this to skip
+        re-dispatching the same ``(downstream, observed_pin)`` while a previous
+        dispatch is still in flight, with a TTL fallback for stuck rows.
+        """
+        ...
+
+    def upsert_manifest_watcher_ledger(
+        self, upstream: str, rows: list["ManifestWatcherLedgerRow"]
+    ) -> None:
+        """Insert or replace ledger rows for *upstream* (one per downstream)."""
         ...
 
 
@@ -438,6 +509,73 @@ class FilesystemBackend:
             for key, (_, row) in best.items()
         }
 
+    # The cache-warming workflow only runs against SQL in production. Off-SQL
+    # backends report no known-warm SHAs (so the planner re-considers everything)
+    # and silently drop record_warm_shas calls.
+    def load_known_warm_shas(self, upstream: str) -> set[str]:
+        return set()
+
+    def record_warm_shas(self, upstream: str, shas: Iterable[str]) -> None:
+        return None
+
+    # ------------------------------------------------------------------
+    # Manifest-watcher ledger (one JSON file per upstream)
+    # ------------------------------------------------------------------
+
+    def _ledger_path(self, upstream: str) -> Path:
+        # `upstream` is "owner/repo" — keep it readable on disk.
+        safe = upstream.replace("/", "__")
+        return self._root / "watcher" / f"manifest-{safe}.json"
+
+    def load_manifest_watcher_ledger(
+        self, upstream: str
+    ) -> dict[str, ManifestWatcherLedgerRow]:
+        path = self._ledger_path(upstream)
+        if not path.exists():
+            return {}
+        try:
+            payload = json.loads(path.read_text())
+        except Exception:
+            return {}
+        return {
+            name: ManifestWatcherLedgerRow(
+                downstream=name,
+                observed_pin=data["observed_pin"],
+                dispatched_at=data["dispatched_at"],
+                run_url=data.get("run_url"),
+            )
+            for name, data in payload.get("downstreams", {}).items()
+            if isinstance(data, dict) and data.get("observed_pin") and data.get("dispatched_at")
+        }
+
+    def upsert_manifest_watcher_ledger(
+        self, upstream: str, rows: list[ManifestWatcherLedgerRow]
+    ) -> None:
+        if not rows:
+            return
+        existing = self.load_manifest_watcher_ledger(upstream)
+        for row in rows:
+            existing[row.downstream] = row
+        path = self._ledger_path(upstream)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(
+                {
+                    "downstreams": {
+                        name: {
+                            "observed_pin": r.observed_pin,
+                            "dispatched_at": r.dispatched_at,
+                            "run_url": r.run_url,
+                        }
+                        for name, r in sorted(existing.items())
+                    },
+                },
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n"
+        )
+
 
 # ---------------------------------------------------------------------------
 # SQL implementation (requires sqlalchemy)
@@ -514,6 +652,7 @@ try:
         Column("age_commits", Integer),
         Column("bump_commits", Integer),
         Column("search_base_not_ancestor", Boolean, nullable=False, server_default="false"),
+        Column("culprit_log_artifact_url", String),
     )
 
     _sa_validate_job = Table(
@@ -526,6 +665,27 @@ try:
         Column("started_at", DateTime(timezone=True)),
         Column("finished_at", DateTime(timezone=True)),
         Column("conclusion", String),
+    )
+
+    # Records SHAs that the cache-warming workflow has confirmed as warm in the
+    # mathlib Azure cache. Mathlib's olean cache is content-hashed and immutable
+    # per SHA, so once a SHA is recorded here the planner can skip it forever.
+    _sa_cache_warmth = Table(
+        "cache_warmth",
+        _sa_metadata,
+        Column("upstream", String, primary_key=True),
+        Column("sha", String, primary_key=True),
+        Column("warmed_at", DateTime(timezone=True), nullable=False),
+    )
+
+    _sa_manifest_watcher_ledger = Table(
+        "manifest_watcher_ledger",
+        _sa_metadata,
+        Column("downstream", String, primary_key=True),
+        Column("upstream", String, primary_key=True),
+        Column("observed_pin", String, nullable=False),
+        Column("dispatched_at", DateTime(timezone=True), nullable=False),
+        Column("run_url", String, nullable=True),
     )
 
     _SA_AVAILABLE = True
@@ -694,6 +854,7 @@ class SqlBackend:
                     "age_commits": r.age_commits,
                     "bump_commits": r.bump_commits,
                     "search_base_not_ancestor": r.search_base_not_ancestor,
+                    "culprit_log_artifact_url": r.culprit_log_artifact_url,
                 })
 
             for downstream, s in updated_statuses.items():
@@ -828,6 +989,75 @@ class SqlBackend:
             }
         return result
 
+    def load_known_warm_shas(self, upstream: str) -> set[str]:
+        t = _sa_cache_warmth
+        stmt = sa_select(t.c.sha).where(t.c.upstream == upstream)
+        with self._engine.connect() as conn:
+            return {row[0] for row in conn.execute(stmt).fetchall()}
+
+    def record_warm_shas(self, upstream: str, shas: Iterable[str]) -> None:
+        from datetime import datetime, timezone
+
+        deduped = sorted({sha for sha in shas if sha})
+        if not deduped:
+            return
+        warmed_at = datetime.now(timezone.utc)
+        with self._engine.begin() as conn:
+            for sha in deduped:
+                self._upsert(
+                    conn,
+                    _sa_cache_warmth,
+                    values={"upstream": upstream, "sha": sha, "warmed_at": warmed_at},
+                    conflict_cols=["upstream", "sha"],
+                    update_cols=["warmed_at"],
+                )
+
+    def load_manifest_watcher_ledger(
+        self, upstream: str
+    ) -> dict[str, ManifestWatcherLedgerRow]:
+        t = _sa_manifest_watcher_ledger
+        stmt = sa_select(
+            t.c.downstream, t.c.observed_pin, t.c.dispatched_at, t.c.run_url,
+        ).where(t.c.upstream == upstream)
+        with self._engine.connect() as conn:
+            rows = conn.execute(stmt).fetchall()
+        result: dict[str, ManifestWatcherLedgerRow] = {}
+        for row in rows:
+            dispatched_at = row[2]
+            dispatched_iso = (
+                dispatched_at.isoformat().replace("+00:00", "Z")
+                if dispatched_at is not None
+                else ""
+            )
+            result[row[0]] = ManifestWatcherLedgerRow(
+                downstream=row[0],
+                observed_pin=row[1],
+                dispatched_at=dispatched_iso,
+                run_url=row[3],
+            )
+        return result
+
+    def upsert_manifest_watcher_ledger(
+        self, upstream: str, rows: list[ManifestWatcherLedgerRow]
+    ) -> None:
+        if not rows:
+            return
+        with self._engine.begin() as conn:
+            for row in rows:
+                self._upsert(
+                    conn,
+                    _sa_manifest_watcher_ledger,
+                    values={
+                        "downstream": row.downstream,
+                        "upstream": upstream,
+                        "observed_pin": row.observed_pin,
+                        "dispatched_at": _parse_dt(row.dispatched_at),
+                        "run_url": row.run_url,
+                    },
+                    conflict_cols=["downstream", "upstream"],
+                    update_cols=["observed_pin", "dispatched_at", "run_url"],
+                )
+
 
 # ---------------------------------------------------------------------------
 # Site-generation read-only queries
@@ -892,6 +1122,7 @@ def load_latest_run_per_downstream(
             rr.c.last_known_good,
             vj.c.job_id,
             vj.c.job_url,
+            rr.c.culprit_log_artifact_url,
         )
         .join(latest_per_ds, rr.c.downstream == latest_per_ds.c.downstream)
         .join(
@@ -933,6 +1164,7 @@ def load_latest_run_per_downstream(
             last_known_good=row[9],
             job_id=row[10],
             job_url=row[11],
+            culprit_log_artifact_url=row[12],
         )
     return result
 
@@ -993,6 +1225,7 @@ def load_run_for_site(engine: Any, run_id: str) -> tuple[dict, list[dict]]:
                 _sa_run_result.c.age_commits,
                 _sa_run_result.c.bump_commits,
                 _sa_run_result.c.search_base_not_ancestor,
+                _sa_run_result.c.culprit_log_artifact_url,
                 _sa_run.c.run_url,
                 _sa_validate_job.c.job_url,
                 _sa_validate_job.c.started_at.label("job_started_at"),
@@ -1083,6 +1316,7 @@ class DryRunBackend:
             lines.append(f"    bump_commits:            {r.bump_commits}")
             lines.append(f"    commit_window_truncated: {r.commit_window_truncated}")
             lines.append(f"    error:                   {r.error}")
+            lines.append(f"    culprit_log_artifact_url:{r.culprit_log_artifact_url}")
         for ds, status in updated_statuses.items():
             lines.append(f"  updated_status [{ds}]:")
             lines.append(f"    last_known_good_commit:  {status.last_known_good_commit}")
@@ -1108,6 +1342,31 @@ class DryRunBackend:
     ) -> dict[tuple[str, str], dict[str, Any]]:
         print(f"[dry-run] load_prior_results({workflow!r}, {len(pairs)} pair(s)) -> {{}}")
         return {}
+
+    def load_known_warm_shas(self, upstream: str) -> set[str]:
+        print(f"[dry-run] load_known_warm_shas(upstream={upstream!r}) -> set()")
+        return set()
+
+    def record_warm_shas(self, upstream: str, shas: Iterable[str]) -> None:
+        deduped = sorted({sha for sha in shas if sha})
+        print(f"[dry-run] record_warm_shas(upstream={upstream!r}, shas={deduped})")
+
+    def load_manifest_watcher_ledger(
+        self, upstream: str
+    ) -> dict[str, ManifestWatcherLedgerRow]:
+        print(f"[dry-run] load_manifest_watcher_ledger(upstream={upstream!r}) -> {{}}")
+        return {}
+
+    def upsert_manifest_watcher_ledger(
+        self, upstream: str, rows: list[ManifestWatcherLedgerRow]
+    ) -> None:
+        lines = [f"[dry-run] upsert_manifest_watcher_ledger(upstream={upstream!r}):"]
+        for r in rows:
+            lines.append(
+                f"  {r.downstream}: observed_pin={r.observed_pin[:12]} "
+                f"dispatched_at={r.dispatched_at} run_url={r.run_url}"
+            )
+        print("\n".join(lines))
 
 
 # ---------------------------------------------------------------------------

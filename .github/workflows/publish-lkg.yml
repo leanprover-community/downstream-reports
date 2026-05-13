@@ -14,8 +14,12 @@ name: publish-lkg
 # Both snapshots are read from the database (full accumulated state, not
 # just the latest run) and uploaded as publicly-readable JSON files.
 #
-# Runs only on completion of mathlib-downstream-report on the main branch,
-# matching the federated credential subject claim.
+# Runs only on completion of warm-mathlib-cache on the main branch — that
+# is, after the LKG/FKB SHAs reported by mathlib-downstream-report have
+# been confirmed warm in mathlib's Azure cache. Gating on warm-mathlib-cache
+# (not on the report directly) is what enforces the contract that
+# lkg/latest.json never advertises a SHA whose cache is cold. The full
+# chain is: mathlib-downstream-report → warm-mathlib-cache → publish-lkg.
 #
 # Required GitHub configuration (one-time setup):
 #   Secrets:   AZURE_CLIENT_ID, AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID, POSTGRES_DSN
@@ -24,7 +28,7 @@ name: publish-lkg
 on:
   workflow_dispatch:
   workflow_run:
-    workflows: ["mathlib-downstream-report"]
+    workflows: ["warm-mathlib-cache"]
     types: [completed]
     branches: [main]
 
@@ -34,8 +38,11 @@ permissions:
 
 jobs:
   publish-lkg:
-    # On workflow_run: only publish when the regression report ran on main and succeeded.
-    # On workflow_dispatch: always run (dispatching from main is enforced by the OIDC federated credential).
+    # On workflow_run: only publish when the upstream warm-mathlib-cache run
+    # ran on main and succeeded. A failed warming pass means we cannot
+    # promise the SHAs are cache-warm; refuse to refresh the snapshot.
+    # On workflow_dispatch: always run (dispatching from main is enforced
+    # by the OIDC federated credential).
     if: github.event_name != 'workflow_run' || (github.event.workflow_run.head_branch == 'main' && github.event.workflow_run.conclusion == 'success')
     runs-on: ubuntu-latest
     steps:

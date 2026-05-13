@@ -31,6 +31,13 @@ class DownstreamConfig:
     bumping_branch: str | None = None
     skip_already_good: bool = True
     skip_known_bad_bisect: bool = True
+    warm_cache: bool = False
+    # When True, the manifest-watcher (.github/workflows/manifest-watcher.yml,
+    # cron */15) inspects this downstream every 15 min and dispatches a
+    # targeted regression-report run when its lake-manifest.json pin moves
+    # to or past first_known_bad_commit.  Default False (opt-in) so the
+    # watcher only spends API calls on downstreams that actively bump-track.
+    watch_manifest: bool = False
 
 
 @dataclass(frozen=True)

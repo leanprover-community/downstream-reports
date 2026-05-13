@@ -8,7 +8,13 @@ description: >
   the FKB advances.  When the regression clears, the tracking issue and any
   open fix PRs are closed with resolution comments.
 
-  Set open-pr to false to avoid opening a bumping PR.
+  Set open-pr to false to avoid opening a bumping PR (issue-only mode).
+  Set open-issue to false to avoid opening a tracking issue (PR-only mode);
+  useful when you only want to track longer-lasting problems with issues.
+  Setting both to false puts the action in read-only mode: it still fetches
+  and logs the current FKB/LKG and last-run metadata to the workflow run,
+  but opens or closes nothing.  Useful for temporarily pausing side effects
+  without removing the job.
 
 inputs:
   downstream:
@@ -49,9 +55,34 @@ inputs:
     required: false
     default: ${{ github.token }}
     description: >
-      Token for gh issue / gh pr / gh api calls.  Needs "issues: write" when
-      open-pr is false; additionally needs "contents: write" and
-      "pull-requests: write" when open-pr is true.
+      Token used for PR-side operations (branch push, opening / closing fix
+      PRs).  When open-pr is true this typically needs to be a GitHub App
+      token with "contents: write" and "pull-requests: write": pushes by the
+      default GITHUB_TOKEN do not trigger downstream CI, and PR creation can
+      be blocked by the repo-wide "Allow GitHub Actions to create and approve
+      pull requests" setting.  Ignored when open-pr is false.
+  issue-token:
+    required: false
+    default: ${{ github.token }}
+    description: >
+      Token used for issue-side operations (label creation, listing,
+      creating, editing, commenting, closing the tracking issue).  Defaults
+      to the workflow's GITHUB_TOKEN, which is the most reliable choice
+      because "issues: write" granted via the workflow's permissions block
+      is not subject to the kind of repo-wide overrides that affect PR
+      creation.  Override only if you specifically need issues to be
+      authored by a different identity.
+
+  open-issue:
+    required: false
+    default: 'true'
+    description: >
+      Master switch for the tracking-issue side.  When true (the default), the
+      action opens or maintains a persistent issue describing the current
+      incompatibility and closes it when the regression resolves.  Set to
+      false for a PR-only mode that skips all issue lifecycle steps — useful
+      when you reserve issues for longer-lasting problems and prefer to
+      surface incompatibilities as fix PRs only.
 
   # --- New inputs: PR side ---
   open-pr:
@@ -123,7 +154,7 @@ outputs:
     description: 'Issue URL (empty when action=noop)'
     value: ${{ steps.resolve-outputs.outputs.issue_url }}
   action:
-    description: '"created", "updated", "closed", or "noop" — describes the issue lifecycle'
+    description: '"created", "updated", "closed", "noop", or "disabled" (when open-issue: false) — describes the issue lifecycle'
     value: ${{ steps.resolve-outputs.outputs.action }}
   pr-number:
     description: 'Fix PR number (empty when pr-action is non-creating)'
@@ -176,12 +207,14 @@ runs:
     # ------------------------------------------------------------------
     # Step 4: Ensure the tracking issue label exists in the consuming repo.
     # Skip when the incompatibility is resolved AND close-on-resolve is
-    # false (no issue will be touched, so no label needed).
+    # false (no issue will be touched, so no label needed), or when
+    # open-issue is false (issue side disabled entirely).
     # ------------------------------------------------------------------
     - name: Ensure tracking label exists
+      if: inputs.open-issue == 'true'
       shell: bash
       env:
-        GH_TOKEN: ${{ inputs.token }}
+        GH_TOKEN: ${{ inputs.issue-token }}
         GH_REPO: ${{ github.repository }}
         LABEL: ${{ inputs.label }}
         FKB_COMMIT: ${{ steps.fkb.outputs.commit }}
@@ -222,10 +255,10 @@ runs:
     # ------------------------------------------------------------------
     - name: Handle resolved incompatibility
       id: resolve
-      if: steps.fkb.outputs.commit == ''
+      if: inputs.open-issue == 'true' && steps.fkb.outputs.commit == ''
       shell: bash
       env:
-        GH_TOKEN: ${{ inputs.token }}
+        GH_TOKEN: ${{ inputs.issue-token }}
         GH_REPO: ${{ github.repository }}
         LABEL: ${{ inputs.label }}
         CLOSE_ON_RESOLVE: ${{ inputs.close-on-resolve }}
@@ -294,10 +327,10 @@ runs:
     # ------------------------------------------------------------------
     - name: Fetch commit metadata
       id: meta
-      if: steps.fkb.outputs.commit != ''
+      if: inputs.open-issue == 'true' && steps.fkb.outputs.commit != ''
       shell: bash
       env:
-        GH_TOKEN: ${{ inputs.token }}
+        GH_TOKEN: ${{ inputs.issue-token }}
         UPSTREAM: ${{ inputs.upstream }}
         FKB_COMMIT: ${{ steps.fkb.outputs.commit }}
         LKG_COMMIT: ${{ steps.lkg.outputs.commit }}
@@ -363,7 +396,7 @@ runs:
     # ------------------------------------------------------------------
     - name: Compose issue content
       id: compose
-      if: steps.fkb.outputs.commit != ''
+      if: inputs.open-issue == 'true' && steps.fkb.outputs.commit != ''
       shell: bash
       env:
         UPSTREAM: ${{ inputs.upstream }}
@@ -388,6 +421,7 @@ runs:
         DOWNSTREAM_COMMIT: ${{ steps.run.outputs.downstream_commit }}
         REPORTED_AT: ${{ steps.run.outputs.reported_at }}
         TARGET_COMMIT: ${{ steps.run.outputs.target_commit }}
+        CULPRIT_LOG_ARTIFACT_URL: ${{ steps.run.outputs.culprit_log_artifact_url }}
       run: |
         set -euo pipefail
 
@@ -444,6 +478,9 @@ runs:
           if [ -n "$JOB_URL" ]; then
             VALIDATION_LINE="${VALIDATION_LINE} · [Job log](${JOB_URL})"
           fi
+          if [ -n "${CULPRIT_LOG_ARTIFACT_URL:-}" ]; then
+            VALIDATION_LINE="${VALIDATION_LINE} · [Failure log](${CULPRIT_LOG_ARTIFACT_URL})"
+          fi
         else
           VALIDATION_LINE="_(not yet recorded in the runs snapshot)_"
         fi
@@ -483,10 +520,10 @@ runs:
     # ------------------------------------------------------------------
     - name: Create or update issue
       id: upsert
-      if: steps.fkb.outputs.commit != ''
+      if: inputs.open-issue == 'true' && steps.fkb.outputs.commit != ''
       shell: bash
       env:
-        GH_TOKEN: ${{ inputs.token }}
+        GH_TOKEN: ${{ inputs.issue-token }}
         GH_REPO: ${{ github.repository }}
         LABEL: ${{ inputs.label }}
         ISSUE_TITLE: ${{ steps.compose.outputs.title }}
@@ -514,6 +551,9 @@ runs:
             --body  "$ISSUE_BODY" \
             --label "$LABEL")
           ISSUE_NUMBER="${ISSUE_URL##*/}"
+          # gh issue create --label is silently dropped in some environments;
+          # apply it explicitly as a second call to guarantee it is present.
+          gh issue edit "$ISSUE_NUMBER" --add-label "$LABEL"
           echo "Created issue #$ISSUE_NUMBER: $ISSUE_URL"
           echo "action=created"               >> "$GITHUB_OUTPUT"
         fi
@@ -577,10 +617,15 @@ runs:
 
     # ------------------------------------------------------------------
     # Step 11: Close stale fix PRs (FKB advanced to a new commit).
-    # A PR is stale when its head branch does not match the branch for
-    # the current FKB.  Runs only when FKB is present and close-stale-prs
-    # is true.  The old branch is NOT deleted so WIP commits stay
-    # reachable.
+    # "Stale" means the head branch's FKB-short prefix doesn't match the
+    # current FKB. PRs on the canonical branch (`<prefix>-<short>`) and
+    # on suffixed variants (`<prefix>-<short>-<random>`, used when the
+    # canonical branch lingers from a previously-closed PR) are both
+    # kept — same FKB SHA, just a different branch — so that step 12
+    # below can short-circuit instead of opening a redundant new PR
+    # every run. The old branch is NOT deleted so WIP commits stay
+    # reachable. Runs only when FKB is present and close-stale-prs
+    # is true.
     # ------------------------------------------------------------------
     - name: Close stale fix PRs
       id: close-stale-prs
@@ -613,8 +658,13 @@ runs:
           PR_URL=$(echo "$pr"     | jq -r '.url')
           HEAD_REF=$(echo "$pr"   | jq -r '.headRefName')
 
-          if [ "$HEAD_REF" = "$CURRENT_BRANCH" ]; then
-            echo "PR #$PR_NUMBER is on current branch '$CURRENT_BRANCH' — keeping."
+          # Keep PRs whose branch is the canonical FKB branch *or* a
+          # suffixed variant of it (`<canonical>-<random>`). The trailing
+          # `-` in the second pattern is what guards against accidentally
+          # matching a different FKB SHA whose branch happens to share a
+          # prefix with this one.
+          if [[ "$HEAD_REF" == "$CURRENT_BRANCH" || "$HEAD_REF" == "$CURRENT_BRANCH"-* ]]; then
+            echo "PR #$PR_NUMBER is on a current-FKB branch ('$HEAD_REF') — keeping."
             continue
           fi
 
@@ -632,11 +682,16 @@ runs:
         done < <(echo "$OPEN_PRS" | jq -c '.[]')
 
     # ------------------------------------------------------------------
-    # Step 12: Check whether an open fix PR already exists on the current
-    # FKB branch.  If it does, no bump or push is needed.
-    # If no open PR exists but the remote branch does (leftover from a
-    # previously-closed PR), append a short random hex suffix so the new
-    # PR gets a fresh branch and the push requires no --force.
+    # Step 12: Check whether an open fix PR already exists for the current
+    # FKB SHA — on the canonical branch `<prefix>-<short>` *or* a suffixed
+    # variant `<prefix>-<short>-<random>`. If so, no bump or push is
+    # needed: the rule is "no new PR for an FKB SHA already covered by an
+    # open PR." Step 11 above kept the open PR alive across runs for
+    # exactly this short-circuit.
+    #
+    # If no open PR exists but the canonical remote branch does (leftover
+    # from a previously-closed PR), append a short random hex suffix so
+    # the new PR gets a fresh branch and the push requires no --force.
     # ------------------------------------------------------------------
     - name: Check for existing fix PR
       id: check-pr
@@ -648,6 +703,7 @@ runs:
         FKB_COMMIT: ${{ steps.fkb.outputs.commit }}
         DEPENDENCY_NAME: ${{ inputs.dependency-name }}
         BRANCH_PREFIX: ${{ inputs.branch-prefix }}
+        PR_LABEL: ${{ inputs.pr-label }}
       run: |
         set -euo pipefail
 
@@ -655,19 +711,27 @@ runs:
         FKB_SHORT="${FKB_COMMIT:0:7}"
         BASE_BRANCH="${BRANCH_PREFIX_EFFECTIVE}-${FKB_SHORT}"
 
-        echo "Looking for existing fix PR on branch '$BASE_BRANCH'..."
+        echo "Looking for existing fix PR matching branch prefix '$BASE_BRANCH'..."
 
+        # `gh pr list --head` only matches the head branch exactly, so we
+        # filter by the fix-PR label and post-match in jq, picking up both
+        # the canonical and the suffixed cases. Keys are number + url +
+        # headRefName so we can echo a useful log line.
+        # Piped to a separate jq call so we can pass `--arg`; gh's
+        # built-in `--jq` only forwards the expression, not jq flags.
         EXISTING=$(gh pr list \
-          --head "$BASE_BRANCH" \
+          --label "$PR_LABEL" \
           --state open \
-          --json number,url \
-          --jq '.[0] // empty')
+          --json number,url,headRefName \
+          | jq --arg base "$BASE_BRANCH" \
+            '[.[] | select(.headRefName == $base or (.headRefName | startswith($base + "-")))] | .[0] // empty')
 
         if [ -n "$EXISTING" ]; then
-          PR_NUMBER=$(echo "$EXISTING" | jq -r '.number')
-          PR_URL=$(echo "$EXISTING"    | jq -r '.url')
-          echo "Found existing fix PR #$PR_NUMBER: $PR_URL — no bump needed."
-          echo "current_branch=${BASE_BRANCH}"   >> "$GITHUB_OUTPUT"
+          PR_NUMBER=$(echo "$EXISTING"  | jq -r '.number')
+          PR_URL=$(echo "$EXISTING"     | jq -r '.url')
+          HEAD_REF=$(echo "$EXISTING"   | jq -r '.headRefName')
+          echo "Found existing fix PR #$PR_NUMBER on '$HEAD_REF': $PR_URL — no bump needed."
+          echo "current_branch=${HEAD_REF}"      >> "$GITHUB_OUTPUT"
           echo "existing_pr_number=${PR_NUMBER}" >> "$GITHUB_OUTPUT"
           echo "existing_pr_url=${PR_URL}"       >> "$GITHUB_OUTPUT"
           exit 0
@@ -727,6 +791,12 @@ runs:
         git config user.name  "$GIT_USER_NAME"
         git config user.email "$GIT_USER_EMAIL"
 
+        # actions/checkout sets http.extraHeader with GITHUB_TOKEN; unset it so
+        # the App token in the push URL isn't overridden by that credential.
+        # Restore it afterwards so callers that rely on persisted credentials still work.
+        OLD_HEADER=$(git config --local http.https://github.com/.extraheader || true)
+        git config --unset http.https://github.com/.extraheader || true
+
         git checkout -B "$BRANCH"
         git add -A
         git commit -m "${COMMIT_MESSAGE:-chore: bump dependency to first-known-bad}"
@@ -734,6 +804,10 @@ runs:
         git push \
           "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
           "$BRANCH"
+
+        if [ -n "$OLD_HEADER" ]; then
+          git config --local http.https://github.com/.extraheader "$OLD_HEADER"
+        fi
 
         echo "Pushed branch '$BRANCH'."
 
@@ -756,6 +830,7 @@ runs:
         ISSUE_URL: ${{ steps.upsert.outputs.issue_url }}
         DEP_NAME: ${{ inputs.dependency-name }}
         FKB_COMMIT: ${{ steps.fkb.outputs.commit }}
+        CULPRIT_LOG_ARTIFACT_URL: ${{ steps.run.outputs.culprit_log_artifact_url }}
       run: |
         set -euo pipefail
 
@@ -768,7 +843,11 @@ runs:
             printf '%s\n\n' "$BUMP_DESCRIPTION"
           fi
           if [ -n "$ISSUE_URL" ]; then
-            printf 'Tracking issue: %s\n\n' "$ISSUE_URL"
+            printf 'Closes #%s\n\n' "${ISSUE_URL##*/}"
+          fi
+          if [ -n "${CULPRIT_LOG_ARTIFACT_URL:-}" ]; then
+            printf 'Failure log from the validation run: [download](%s) _(link expires after 1 year)_\n\n' \
+              "$CULPRIT_LOG_ARTIFACT_URL"
           fi
           printf -- '---\n\n'
           printf 'This PR bumps `%s` to an identified incompatible (first-known-bad) commit (`%s`) so you can reproduce and fix the incompatibility locally by checking out this branch.\n\n' \
@@ -803,6 +882,7 @@ runs:
       if: always()
       shell: bash
       env:
+        OPEN_ISSUE: ${{ inputs.open-issue }}
         OPEN_PR: ${{ inputs.open-pr }}
         FKB_COMMIT: ${{ steps.fkb.outputs.commit }}
         RESOLVE_ACTION: ${{ steps.resolve.outputs.action }}
@@ -820,7 +900,11 @@ runs:
         set -euo pipefail
 
         # --- Issue outputs ---
-        if [ -n "${UPSERT_ACTION:-}" ]; then
+        if [ "$OPEN_ISSUE" != "true" ]; then
+          echo "action=disabled"                    >> "$GITHUB_OUTPUT"
+          echo "issue_number="                      >> "$GITHUB_OUTPUT"
+          echo "issue_url="                         >> "$GITHUB_OUTPUT"
+        elif [ -n "${UPSERT_ACTION:-}" ]; then
           echo "action=${UPSERT_ACTION}"            >> "$GITHUB_OUTPUT"
           echo "issue_number=${UPSERT_NUMBER:-}"    >> "$GITHUB_OUTPUT"
           echo "issue_url=${UPSERT_URL:-}"          >> "$GITHUB_OUTPUT"

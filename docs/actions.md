@@ -1,15 +1,20 @@
-# Reusable workflows and composite actions
+# Composite actions
 
-This repo publishes two reusable workflows and four composite actions for
-downstream Lean projects to consume.
+This repo publishes four composite actions for downstream Lean projects to
+consume:
 
-For the common case — a scheduled job that bumps a dependency and opens a PR
-— use the `bump-dependency-to-latest` reusable workflow directly (see below).
-For tracking active incompatibilities in a persistent issue **and** opening a
-ready-to-work fix PR, use `track-incompatibility` (the recommended option). 
-The composite actions (`bump-to-latest`,
-`open-bump-pr`, `query-latest`, `track-incompatibility`) are the building blocks for custom workflows
-that need more control.
+- `bump-to-latest` — read the snapshot's target commit and bump the dependency
+  pin (with a `lake build` sanity check).
+- `open-bump-pr` — commit working-tree changes onto a dedicated branch and
+  create or update a PR.
+- `query-latest` — lightweight read-only lookup of the snapshot.
+- `track-incompatibility` — open and maintain a persistent GitHub issue (and
+  optionally a fix PR) tracking the current `first-known-bad` regression.
+
+For the common case — a scheduled job that bumps a dependency, opens a PR, and
+tracks any incompatibility — compose `bump-to-latest` + `open-bump-pr` plus a
+`track-incompatibility` job. See the [canonical example](#canonical-example)
+below.
 
 > **Extensibility note.** Today the actions are used exclusively for the
 > mathlib upstream. The intent is to keep them general enough to support other
@@ -20,77 +25,164 @@ that need more control.
 
 ---
 
-## `bump-dependency-to-latest` reusable workflow
+## Set up authentication
 
-**Path:** `.github/workflows/bump-dependency-to-latest.yml`
+> [!NOTE]
+> The composite actions push branches, create / update PRs, and (for
+> `track-incompatibility`) open issues. They all need a token with the right
+> scopes. There are two ways to provide one — the built-in `GITHUB_TOKEN` is
+> the simplest, but a GitHub App is recommended when you want your
+> downstream's own CI to run on the bump PRs.
 
-Wraps `bump-to-latest` + `open-bump-pr` into a single callable unit. This is the
-recommended starting point for downstreams that just want a scheduled bump PR
-with no boilerplate.
+### Option A — Default `GITHUB_TOKEN` (simplest, with a CI caveat)
 
-### Minimal usage
+GitHub Actions injects a `GITHUB_TOKEN` into every workflow run; the composite
+actions pick it up via the `token` input's default (`${{ github.token }}`).
+Two configuration steps are required before this works:
+
+1. **Grant the necessary permissions in the workflow.** Add a `permissions:`
+   block at job (or workflow) scope. For `bump-to-latest` + `open-bump-pr`:
+
+   ```yaml
+   permissions:
+     contents: write
+     pull-requests: write
+   ```
+
+   When using `track-incompatibility` with the issue side enabled, also add
+   `issues: write`.
+
+2. **Enable PR creation at the repo level.** GitHub blocks Actions from
+   opening pull requests by default. Toggle this on under **Settings →
+   Actions → General → Workflow permissions** by ticking **"Allow GitHub
+   Actions to create and approve pull requests"**. Without it, `open-bump-pr`
+   (and `track-incompatibility`'s fix-PR side) fail with
+   `GitHub Actions is not permitted to create or approve pull requests`. This
+   setting is org-level too — an org-wide block overrides the repo toggle.
+
+With those two boxes ticked the [canonical example](#canonical-example) works
+as-is.
+
+> [!WARNING]
+> **Bump PRs opened with `GITHUB_TOKEN` do NOT trigger your downstream's CI.**
+>
+> GitHub deliberately suppresses workflow triggers (`push`, `pull_request`, …)
+> for events caused by the default `GITHUB_TOKEN`, to prevent runaway
+> recursion. PRs opened by these actions under `GITHUB_TOKEN` show up
+> authored by `github-actions[bot]` but **do not run any of the workflows
+> configured on your repo** — `pull_request` / `push` checks stay blank.
+>
+> The bump and `lake build` are still verified inside `bump-to-latest`'s own
+> job, so the PR is safe to merge. But if you rely on additional CI (lints,
+> downstream-of-downstream tests, deploy previews, …) before merging, use a
+> GitHub App token ([Option B](#option-b--github-app-installation-token-recommended-for-ci-on-pr))
+> instead.
+
+### Option B — GitHub App installation token (recommended for CI-on-PR)
+
+A GitHub App acts as its own identity, so pushes and PRs it creates trigger
+workflows the same way a human commit would. The cost is a one-time setup;
+the benefit is full CI coverage on bump PRs and a stable bot identity.
+
+1. **Create the App.** Settings → Developer settings → GitHub Apps → New
+   GitHub App. Grant **repository** permissions:
+   - `Contents: Read and write`
+   - `Pull requests: Read and write`
+   - `Issues: Read and write` — only if you use `track-incompatibility`'s
+     issue side
+   - `Metadata: Read-only` — auto-granted
+
+   No webhooks or user-level permissions are needed.
+
+2. **Install it** on the downstream repo (or on the owning org, scoped to
+   that repo).
+
+3. **Store the credentials.** From the App's settings page generate a private
+   key (PEM) and save it as a repository secret — `MY_BOT_PRIVATE_KEY` below.
+   Save the numeric App ID as a repository (or org) variable —
+   `MY_BOT_APP_ID` below.
+
+4. **Mint an installation token per run** with
+   [`actions/create-github-app-token`](https://github.com/actions/create-github-app-token)
+   and pass it to the composite actions via their `token` input:
+
+   ```yaml
+   jobs:
+     bump:
+       runs-on: ubuntu-latest
+       permissions:
+         contents: write
+         pull-requests: write
+       steps:
+         - uses: actions/create-github-app-token@v1
+           id: app-token
+           with:
+             app-id: ${{ vars.MY_BOT_APP_ID }}
+             private-key: ${{ secrets.MY_BOT_PRIVATE_KEY }}
+
+         - uses: actions/checkout@v6
+           with:
+             token: ${{ steps.app-token.outputs.token }}
+
+         - name: Bump to latest
+           id: bump
+           uses: leanprover-community/downstream-reports/.github/actions/bump-to-latest@main
+
+         - name: Open or update PR
+           if: steps.bump.outputs.updated == 'true'
+           uses: leanprover-community/downstream-reports/.github/actions/open-bump-pr@main
+           with:
+             title:           ${{ steps.bump.outputs.pr-title }}
+             message:         ${{ steps.bump.outputs.bump-description }}
+             commit-message:  ${{ steps.bump.outputs.commit-message }}
+             token:           ${{ steps.app-token.outputs.token }}
+             git-user-name:   my-bot[bot]
+             git-user-email:  ${{ vars.MY_BOT_APP_ID }}+my-bot[bot]@users.noreply.github.com
+   ```
+
+   The same `token: ${{ steps.app-token.outputs.token }}` works on
+   `track-incompatibility`. That action splits PR-side and issue-side
+   credentials (`token` vs `issue-token`) — usually only `token` needs the
+   App, since `issues: write` granted via the workflow `permissions:` block
+   is not subject to the repo-wide PR-creation override.
+
+The "Allow GitHub Actions to create and approve pull requests" repo toggle
+is **not** required when using an App token — it only governs the default
+`GITHUB_TOKEN`.
+
+#### Personal access token (PAT) 
+
+A classic or fine-grained PAT can be substituted for the App token: store
+it as a secret and pass it via the same `token` input. Two trade-offs vs an
+App:
+
+- It's bound to a single human user, so that user authors the PRs and is
+  shown as the actor that triggered subsequent CI runs.
+- It counts against that user's per-hour API rate limit, shared with all
+  their other GitHub activity.
+
+Apps are preferred for shared / organisational repos and for anything
+long-lived; PATs are fine for personal sandboxes.
+
+---
+
+## Canonical example
+
+A two-job workflow that opens an LKG-bump PR (so the project can advance to
+the latest compatible dependency commit at any time) and, when a regression
+is reported, a separate fix PR pinned at the FKB (so the breaking change
+can be worked on in parallel). The two PRs live on different branches and
+don't conflict — the LKG PR is mergeable immediately to keep the project
+moving while the fix lands later.
 
 ```yaml
-name: Bump mathlib to latest
+name: Update Dependencies
 
 on:
   schedule:
-    - cron: "0 18 * * *"   # adjust to taste
+    - cron: "0 */6 * * *"   # Check for updates every six hours 
   workflow_dispatch:
 
-jobs:
-  bump:
-    uses: leanprover-community/downstream-reports/.github/workflows/bump-dependency-to-latest.yml@main
-    permissions:
-      contents: write
-      pull-requests: write
-```
-
-The `downstream` lookup defaults to `github.repository` (matched as a repo
-slug), so no inputs are required as long as the repo is registered in the
-inventory.
-
-### Inputs
-
-| Input | Default | Description |
-|-------|---------|-------------|
-| `branch` | `hopscotch/lkg-bump` | Branch name for the bump PR. Force-pushed on every run. |
-| `base` | repo default branch | Base branch for the PR |
-| `labels` | — | Comma-separated labels to apply to the PR |
-| `dependency-name` | `mathlib` | Dependency name in the lakefile |
-| `hopscotch-version` | `v1.4.1` | Hopscotch release tag to download |
-| `query-type` | `last-known-good` | Which commit to bump to: `last-known-good` or `first-known-bad` |
-
-### Outputs
-
-| Output | Description |
-|--------|-------------|
-| `pr-number` | PR number (empty when `action=noop`) |
-| `pr-url` | PR URL (empty when `action=noop`) |
-| `action` | `"created"`, `"updated"`, or `"noop"` |
-| `updated` | `"true"` if hopscotch successfully bumped the project |
-| `skipped` | `"true"` if the project was already at the target commit |
-| `build-failed` | `"true"` if hopscotch ran but the build failed |
-
-### Customised example
-
-```yaml
-jobs:
-  bump:
-    uses: leanprover-community/downstream-reports/.github/workflows/bump-dependency-to-latest.yml@main
-    permissions:
-      contents: write
-      pull-requests: write
-    with:
-      branch: automation/lkg-bump
-      labels: dependencies
-```
-
-**With a GitHub App token** (to open PRs as a bot account rather than `github-actions[bot]`):
-
-Use the composite actions directly so the token stays within one job — GitHub masks step outputs automatically, but job outputs are plaintext and cannot safely carry a token.
-
-```yaml
 jobs:
   bump:
     runs-on: ubuntu-latest
@@ -98,31 +190,63 @@ jobs:
       contents: write
       pull-requests: write
     steps:
-      - uses: actions/create-github-app-token@v1
-        id: app-token
-        with:
-          app-id: ${{ vars.MY_BOT_APP_ID }}
-          private-key: ${{ secrets.MY_BOT_PRIVATE_KEY }}
-
       - uses: actions/checkout@v6
-        with:
-          token: ${{ steps.app-token.outputs.token }}
 
-      - name: Bump to latest
+      - name: Bump to latest mathlib
         id: bump
         uses: leanprover-community/downstream-reports/.github/actions/bump-to-latest@main
 
-      - name: Open PR
+      - name: Open or update PR
         if: steps.bump.outputs.updated == 'true'
         uses: leanprover-community/downstream-reports/.github/actions/open-bump-pr@main
         with:
-          title:           ${{ steps.bump.outputs.pr-title }}
-          message:         ${{ steps.bump.outputs.bump-description }}
-          commit-message:  ${{ steps.bump.outputs.commit-message }}
-          token:           ${{ steps.app-token.outputs.token }}
-          git-user-name:   my-bot[bot]
-          git-user-email:  ${{ vars.MY_BOT_APP_ID }}+my-bot[bot]@users.noreply.github.com
+          title:          ${{ steps.bump.outputs.pr-title }}
+          message:        ${{ steps.bump.outputs.bump-description }}
+          commit-message: ${{ steps.bump.outputs.commit-message }}
+
+  open-issue:
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Open or update incompatibility issue and PR
+        uses: leanprover-community/downstream-reports/.github/actions/track-incompatibility@main
 ```
+
+For just the LKG bump (no incompatibility tracking), drop the `open-issue`
+job. To suppress the LKG PR while a regression is active (so the only open
+PR is the FKB fix one), gate the `bump` job on `query-latest`'s
+`first-known-bad` output and add a step that closes the LKG PR when
+`track-incompatibility`'s `pr-number` output is non-empty.
+
+---
+
+## Sub-daily cron cadence
+
+The actions are idempotent on unchanged input, so the workflow above can run on
+a sub-daily cron (e.g. `"0 */2 * * *"`, every two hours) without producing
+PR / issue / CI noise on ticks where the snapshot hasn't moved. Two layered
+short-circuits make this safe:
+
+- **`bump-to-latest`** probes the LKG bump-PR branch (`hopscotch/lkg-bump`,
+  matching `open-bump-pr`'s default) before running hopscotch. If that branch's
+  manifest already pins the dependency at the snapshot's target, the action
+  exits with `skipped=true` and never invokes `lake build`. Auto-disabled for
+  `query-type: first-known-bad` (FKB lives on per-FKB-SHA branches handled
+  by `track-incompatibility`).
+- **`open-bump-pr`** compares the local commit's tree against the remote bump
+  branch's HEAD tree. If they're identical and an open PR already points at
+  the branch, the force-push and the `gh pr edit` are both skipped (the
+  action surfaces this via `action: up-to-date`).
+
+A caller using a non-default branch on `open-bump-pr` silently loses the
+`bump-to-latest` optimization: the probe 404s on `hopscotch/lkg-bump` and the
+bump runs every tick. That's correct (no false skips) but wasteful at sub-daily
+cadence — stick with the default branch name unless you have a reason not to.
 
 ---
 
@@ -181,6 +305,14 @@ to the triggering run and records today's date.
 If there are no working-tree changes (`git diff` is clean) the action exits with
 `action=noop` and no PR is touched.
 
+To stay quiet under sub-daily cadences, the action also short-circuits when the
+remote branch already has a commit whose **tree** matches the one it would push
+*and* an open PR already points at the branch. In that case both the force-push
+and the PR title/body edit are skipped, and the action exits with
+`action=up-to-date` (with the existing PR's `pr-number` / `pr-url` surfaced).
+The fresh-SHA / same-tree commit that would otherwise trigger PR CI on every
+tick of an awaiting-merge bump PR therefore never lands.
+
 ### Inputs
 
 | Input | Required | Default | Description |
@@ -200,9 +332,9 @@ If there are no working-tree changes (`git diff` is clean) the action exits with
 
 | Output | Description |
 |--------|-------------|
-| `pr-number` | PR number (empty when `action=noop`) |
-| `pr-url` | PR URL (empty when `action=noop`) |
-| `action` | `"created"`, `"updated"`, or `"noop"` |
+| `pr-number` | PR number (empty when `action=noop`; populated for `created` / `updated` / `up-to-date`) |
+| `pr-url` | PR URL (empty when `action=noop`; populated for `created` / `updated` / `up-to-date`) |
+| `action` | `"created"` (new PR opened), `"updated"` (existing PR's title/body edited after a force-push), `"up-to-date"` (remote branch already had an identical tree at HEAD with an open PR — no push, no edit), or `"noop"` (no working-tree changes vs HEAD) |
 
 ---
 
@@ -216,7 +348,13 @@ ready starting point for investigation.  When the FKB advances, stale fix PRs
 are closed automatically.  When the regression clears, both the issue and any
 open fix PRs are closed with resolution comments.
 
-Set `open-pr: false` to run in issue-only mode, where no PR is opened.
+Set `open-pr: false` to run in issue-only mode, where no PR is opened. Set
+`open-issue: false` for the symmetric PR-only mode — useful when you reserve
+issues for longer-lasting problems and want incompatibilities surfaced only
+as fix PRs. Setting both to `false` puts the action in read-only mode: it
+still fetches and logs the current FKB/LKG and last-run metadata, but opens
+or closes nothing — handy for temporarily pausing side effects without
+removing the job.
 
 ### Inputs
 
@@ -227,7 +365,9 @@ Set `open-pr: false` to run in issue-only mode, where no PR is opened.
 | `label` | no | `dependency-incompatibility` | Label identifying the tracking issue. Created if missing. |
 | `title` | no | auto | Full issue title; auto-generated when empty. |
 | `close-on-resolve` | no | `true` | Close the tracking issue with a resolution comment when FKB clears. |
-| `token` | no | `github.token` | Token for `gh issue` / `gh pr` / `gh api`. Needs `issues: write`; also `contents: write` and `pull-requests: write` when `open-pr: true`. |
+| `token` | no | `github.token` | Token for PR-side operations (push, fix-PR open/close). Needs `contents: write` and `pull-requests: write` when `open-pr: true`. Typically a GitHub App token, since pushes by the default `GITHUB_TOKEN` do not trigger downstream CI and PR creation can be disabled repo-wide. Ignored when `open-pr: false`. |
+| `issue-token` | no | `github.token` | Token for issue-side operations (label, list, create, edit, comment, close). Defaults to `GITHUB_TOKEN`, which is reliable here because `issues: write` granted via the workflow's `permissions:` block isn't subject to repo-wide overrides. Override only to change the issue author. Ignored when `open-issue: false`. |
+| `open-issue` | no | `true` | Master switch for the tracking-issue side. Set `false` for PR-only mode (no issue is opened or closed). |
 | `open-pr` | no | `true` | Master switch for the fix-PR side. Set `false` for issue-only mode. |
 | `pr-label` | no | `dependency-incompatibility-fix` | Label applied to fix PRs; primary key for stale-PR detection. Created automatically. |
 | `branch-prefix` | no | `bump-<dependency-name>/fix` | Prefix for the fix-PR branch. Final branch: `<prefix>-<fkb-short7>` (e.g. `bump-mathlib/fix-abc1234`). Stable per FKB SHA. |
@@ -245,7 +385,7 @@ Set `open-pr: false` to run in issue-only mode, where no PR is opened.
 |--------|-------------|
 | `issue-number` | Issue number (empty when `action=noop`) |
 | `issue-url` | Issue URL |
-| `action` | `"created"`, `"updated"`, `"closed"`, or `"noop"` — describes the **issue** lifecycle |
+| `action` | `"created"`, `"updated"`, `"closed"`, `"noop"`, or `"disabled"` (when `open-issue: false`) — describes the **issue** lifecycle |
 | `pr-number` | Fix PR number (empty when `pr-action` is non-creating) |
 | `pr-url` | Fix PR URL |
 | `pr-action` | `"created"`, `"noop-existing"`, `"noop-no-changes"`, `"noop-resolved"`, or `"disabled"` (when `open-pr: false`) |
@@ -283,6 +423,19 @@ jobs:
       issues: write
     with:
       open-pr: 'false'
+```
+
+PR-only mode (no tracking issue — reserve issues for longer-lasting problems):
+
+```yaml
+jobs:
+  track:
+    uses: leanprover-community/downstream-reports/.github/workflows/track-incompatibility.yml@main
+    permissions:
+      contents: write
+      pull-requests: write
+    with:
+      open-issue: 'false'
 ```
 
 Accepts the same inputs as the composite action and forwards them through.
@@ -326,36 +479,14 @@ downstream repo can use it with no inputs at all.
 
 ---
 
-## Typical workflows
+## Common patterns
 
-**Simplest — reusable workflow (no boilerplate):**
+The [canonical example](#canonical-example) above covers the recommended
+two-job pattern. The snippets below show smaller pieces.
 
-```yaml
-name: Bump mathlib to latest
-
-on:
-  schedule:
-    - cron: "0 18 * * *"
-  workflow_dispatch:
-
-jobs:
-  bump:
-    uses: leanprover-community/downstream-reports/.github/workflows/bump-dependency-to-latest.yml@main
-    permissions:
-      contents: write
-      pull-requests: write
-```
-
-**Custom — composite actions (when you need extra steps):**
+**Just the LKG bump (no incompatibility tracking):**
 
 ```yaml
-name: Bump mathlib to latest
-
-on:
-  schedule:
-    - cron: "0 18 * * *"
-  workflow_dispatch:
-
 permissions:
   contents: write
   pull-requests: write
@@ -369,7 +500,6 @@ jobs:
       - name: Bump to latest
         id: bump
         uses: leanprover-community/downstream-reports/.github/actions/bump-to-latest@main
-        # no inputs needed — defaults to github.repository matched by repo slug
 
       - name: Open PR
         if: steps.bump.outputs.updated == 'true'
@@ -386,7 +516,6 @@ jobs:
       - name: Get latest commit
         id: latest
         uses: leanprover-community/downstream-reports/.github/actions/query-latest@main
-        # no inputs needed — defaults to github.repository
 
       - run: echo "LKG is ${{ steps.latest.outputs.commit }}"
 ```
@@ -406,23 +535,6 @@ jobs:
 **Bump to the latest compatible semver release tag (e.g. `v4.13.0`):**
 
 ```yaml
-# Bump to the latest compatible mathlib release tag (rather than a raw commit).
-# The resulting lakefile pins `inputRev` to a human-readable tag like "v4.13.0".
-
-jobs:
-  bump:
-    uses: leanprover-community/downstream-reports/.github/workflows/bump-dependency-to-latest.yml@main
-    permissions:
-      contents: write
-      pull-requests: write
-    with:
-      query-type: last-good-release
-      branch: automation/release-bump
-```
-
-Or using the composite actions directly for a read-only lookup:
-
-```yaml
       - name: Look up latest compatible release
         id: release
         uses: leanprover-community/downstream-reports/.github/actions/query-latest@main
@@ -438,3 +550,8 @@ When `query-type: last-good-release`:
 - `rev` is a **tag name** (e.g. `v4.13.0`) that `hopscotch dep` and Lake's `inputRev` both accept directly.
 - `commit` is the resolved SHA, for consumers that need byte-equality comparison against the `rev` field in `lake-manifest.json`.
 - Both fields are empty when no semver release precedes the downstream's current LKG.
+
+**With a GitHub App token** (so bump PRs trigger your downstream's CI and are
+attributed to a bot account rather than `github-actions[bot]`) — see
+[Authentication → Option B](#option-b--github-app-installation-token-recommended-for-ci-on-pr)
+for the full setup and example.
