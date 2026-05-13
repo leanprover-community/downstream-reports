@@ -39,8 +39,9 @@ hopscotch-reports/.github/workflows/mathlib-pr-validation.yml  (heavy)
     │  - clone downstream, lakedit set --path, lake update, lake build
     │  - capture log, classify outcome
     ▼
-mathlib4 PR comment (edited in place)
-    "✅ FLT builds against this PR"  /  "❌ FLT fails — log: ..."
+mathlib4 PR comment (one per dispatch, summary table + per-entry sections)
+    "## ✅ FLT builds against this PR rebased onto LKG"
+    "## ❌ Toric --merge-branch fails against this PR"
 ```
 
 ## GitHub App setup
@@ -265,7 +266,7 @@ New directory `mathlib-ci/scripts/pr_check_downstream/`:
   > **Downstream validation triggered**
   > Testing this PR (merge ref `<short-sha>`) against: `FLT`, `Toric`.
   > Run: <link>
-  > Results will be posted as a separate comment per downstream.
+  > Results will be posted as a single follow-up comment when the run finishes.
   > <!-- pr-check-downstream:ack -->
 
 These scripts live in `mathlib-ci` (not `mathlib4`) because they touch tokens
@@ -417,9 +418,13 @@ New directory `hopscotch-reports/scripts/pr_validation/`:
   to `$TOOL_BIN/lakedit`. Caches by hopscotch SHA in a stable path so reruns
   on the same self-hosted runner are fast.
 - `validate.sh` — see next section.
-- `post_results.py` — reads each `result.json`, finds existing per-downstream
-  comments on the PR (marker `<!-- pr-check-downstream:result:<name> -->`),
-  edits in place or creates new. Uploads `build.log` artifacts and links them.
+- `post_results.py` — reads every `result.json` in the validate matrix and
+  POSTs a **single** dispatch-level comment on the PR. The body opens with
+  an optional `_Requested by @<user>._` mention, the dispatch title, a
+  summary table (entry → verdict), and one `##` section per entry carrying
+  the framing subtitle, `Tested:`/`Attempted:` recipe, and optional
+  failure log. One mention per dispatch keeps notifications quiet; the
+  build logs themselves remain available via the `result-*` run artifacts.
 
 ### `validate.sh` body
 
@@ -487,41 +492,76 @@ clone FLT."
 
 ## Result comment shape
 
-One Markdown comment is **POSTed fresh per matrix entry per dispatch** —
-no edit-in-place, no hidden marker, no embedded history block. If the
-directive is retriggered, a new set of comments appears; the previous
-verdicts stay in place as a record. The shape:
+One Markdown comment is **POSTed fresh per dispatch**, carrying every
+matrix entry's verdict. No edit-in-place, no hidden marker, no embedded
+history block: if the directive is retriggered, a new comment appears
+and the previous one stays in place as a record.
+
+The body opens with an optional `_Requested by @<user>._` mention (so the
+dispatcher gets one notification per run, not one per entry), then the
+dispatch title with the merge SHA and run link, then a summary table when
+there are at least two entries, then one `## ` section per entry. Shape:
 
 ```
-### ✅ FLT — builds against this PR rebased onto LKG
+_Requested by @marcelolynch._
 
-**What this run tested:** 3 PR commit(s) ([`abc1234..def5678`](compare-url))
-cherry-picked onto FLT's last-known-good mathlib commit [`257086b`](commit-url)
-→ resulting tree [`7g8h9i0`](commit-url), built against
-[`leanprover-community/FLT@13206c9`](commit-url). [run](actions link)
+# Downstream validation against PR merge [`abc1234`](commit-url) · [run](run-url)
 
-> This run rebased the PR's commits onto FLT's last-known-good mathlib
-> commit, so the verdict is independent of current mathlib master
-> health.
+| Entry | Verdict |
+|---|---|
+| `FLT` | ✅ builds (rebased onto LKG) |
+| `Toric --merge-branch` | ❌ fails (master incompatibility at [`fff7777`](commit-url)) |
+
+## ✅ FLT builds against this PR rebased onto LKG
+
+**Tested:** 3 PR commit(s) ([`abc1234..def5678`](compare-url)) cherry-picked
+onto FLT's last-known-good mathlib commit [`257086b`](commit-url), built
+against [`leanprover-community/FLT@13206c9`](commit-url).
+
+## ❌ Toric --merge-branch fails against this PR
+
+> mathlib master is currently incompatible with Toric — the regression
+> was first observed at [`fff7777`](commit-url). This failure may
+> reflect that existing incompatibility rather than the PR itself.
+> Drop `--merge-branch` to re-run against Toric's last-known-good
+> mathlib instead.
+
+**Tested:** the PR's merge tree [`abc1234`](commit-url) (head …, 3 commit(s)
+over base …), built against [`leanprover-community/Toric@…`](commit-url).
+
+<details><summary>failure log</summary>
+…tail of build.log…
+</details>
 ```
 
-**Failure variant** (`### ❌ FLT — fails against this PR rebased onto LKG`)
-inlines the filtered tail of `build.log` in a `<details>` block.
+Per-entry section headers follow the entry-label grammar from
+`!downstream-check`: a bare name for LKG mode (the default), `@<rev>`
+when a rev was requested, and a ` --merge-branch` suffix in merge mode.
+The framing blockquote is skipped on a clean pass with no recorded
+master regression (FKB unset); every other combination earns a
+one-sentence subtitle so the reader can interpret the verdict without
+scanning back to the dispatch grammar.
 
-**Infra-failure variants:**
-- `### ⚠️ FLT — could not validate (PR conflicts with LKG)` (LKG mode,
+**Section variants:**
+- `## ✅ <entry> builds against this PR[ rebased onto LKG]` (pass)
+- `## ❌ <entry> fails against this PR[ rebased onto LKG]` (fail; inlines
+  the filtered tail of `build.log` in a `<details>` block)
+- `## ⚠️ <entry>: could not validate (PR conflicts with LKG)` (LKG mode,
   `stage=rebase_conflict`)
-- `### ⚠️ FLT — could not validate (mathlib build failed at LKG)` (LKG
+- `## ⚠️ <entry>: could not validate (mathlib build failed at LKG)` (LKG
   mode, `stage=mathlib_build_at_lkg`)
-- `### ⚠️ FLT — could not validate (infra: <stage>)` (generic — clone /
+- `## ⚠️ <entry>: could not validate (infra: <stage>)` (generic — clone /
   fetch / lakedit / lake update / etc.)
 
-In merge mode (`--merge-branch`) the header drops the `rebased onto LKG`
-suffix and the framing note switches to the master-baseline caveat.
-
-Comments include the requested rev (when `@<rev>` was given) inline in
+Sections include the requested rev (when `@<rev>` was given) inline in
 the downstream link's label so the reader sees what was asked for; the
 URL always points at the resolved commit SHA.
+
+**Size budget:** the comment caps at ~60K chars to stay under GitHub's
+65,536-char limit. Inline failure logs are sized to a per-entry budget
+scaled to the number of failing entries; pathologically large logs are
+progressively halved until the body fits, with the run-artifact link in
+the title as the always-available full-log fallback.
 
 ## Parameters / extension points
 

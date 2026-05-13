@@ -1,17 +1,18 @@
 #!/usr/bin/env python3
-"""Post per-entry result comments on a mathlib4 PR.
+"""Post a single dispatch-level result comment on a mathlib4 PR.
 
-For each ``result-*/result.json`` produced by the validate matrix, render
-a self-contained Markdown comment and POST it to the PR. Each comment
-body carries the full verdict (header + subtitle + Tested recipe +
-optional failure log), so the most recent comment for a given matrix
-entry is always the authoritative one for that dispatch.
+Reads every ``result-*/result.json`` from the validate matrix and assembles
+one Markdown comment that opens with a summary table and then renders a
+per-entry section for each requested downstream. One comment per dispatch
+keeps the requester's @-mention to a single notification and groups
+related verdicts together in the PR conversation.
 
 Inputs (env):
-    GH_TOKEN  — token with issues:write on leanprover-community/mathlib4
-    PR_NUMBER — PR number on mathlib4
-    MERGE_SHA — merge SHA we tested against
-    RUN_URL   — link to the validation run (for the result body)
+    GH_TOKEN     — token with issues:write on leanprover-community/mathlib4
+    PR_NUMBER    — PR number on mathlib4
+    MERGE_SHA    — merge SHA we tested against
+    RUN_URL      — link to the validation run (for the result body)
+    TRIGGERED_BY — optional GitHub login to @-mention at the top
 
 Inputs (CLI):
     --results-dir  — directory containing ``result-<name>-<slug>-<mode>/``
@@ -32,8 +33,16 @@ from log_filter import read_log_tail
 
 REPO = "leanprover-community/mathlib4"
 
-# GitHub comment limit is 65,536; leave room for wrapper text.
-LOG_MAX_CHARS = 60_000
+# GitHub's PR comment limit is 65,536 chars; we leave a small safety margin
+# for our wrapper text and the `gh api -f body=` request envelope.
+COMMENT_MAX_CHARS = 60_000
+# Largest failure log inlined for any single entry, even when there's room.
+# Beyond this the readable signal stops growing — bigger logs go to the
+# linked run artifact instead of bloating the comment.
+PER_ENTRY_LOG_MAX = 12_000
+# Smallest log we'd ever inline; below this we drop the log entirely and
+# point at the run artifact. Keeps a stuffed dispatch readable.
+PER_ENTRY_LOG_MIN = 1_500
 
 
 def gh_api(args: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
@@ -104,10 +113,74 @@ def downstream_link(
     return f"[`{repo_slug}@{label}`](https://github.com/{repo_slug}/commit/{sha})"
 
 
+def entry_label(name: str, mode: str, rev: str | None = None) -> str:
+    """Compact mode-aware entry name that mirrors `!downstream-check` grammar.
+
+    The label round-trips the user's request: a bare ``name`` is LKG mode
+    (the default), ``name@rev`` pins the downstream rev, and the
+    ``--merge-branch`` suffix marks merge mode. Used by both the dispatch
+    summary table and the per-entry section headers so readers see the
+    same token end-to-end.
+    """
+    label = name
+    if rev:
+        label = f"{name}@{rev}"
+    if mode == "merge":
+        label = f"{label} --merge-branch"
+    return label
+
+
+def verdict_summary(result: dict[str, Any]) -> str:
+    """One-line verdict for the dispatch summary table."""
+    status = result.get("status")
+    mode = result.get("mode") or "merge"
+    stage = result.get("stage")
+    fkb = result.get("fkb_commit")
+    if status == "pass":
+        if mode == "lkg":
+            return "✅ builds (rebased onto LKG)"
+        return "✅ builds"
+    if status == "fail":
+        if mode == "lkg":
+            # LKG mode rebased the PR onto a known-good mathlib, so a fail
+            # here implicates the PR rather than master.
+            return "❌ fails (attributable to the PR)"
+        if fkb:
+            return (
+                f"❌ fails (master incompatibility at {commit_link(fkb)})"
+            )
+        return "❌ fails (attributable to the PR)"
+    # infra_failure
+    if mode == "lkg" and stage == "rebase_conflict":
+        return "⚠️ could not validate (PR conflicts with LKG)"
+    if mode == "lkg" and stage == "mathlib_build_at_lkg":
+        return "⚠️ could not validate (mathlib build failed at LKG)"
+    return f"⚠️ could not validate ({stage})"
+
+
+def _section_header(result: dict[str, Any]) -> str:
+    name = result.get("downstream") or "(unknown)"
+    mode = result.get("mode") or "merge"
+    status = result.get("status", "infra_failure")
+    stage = result.get("stage", "unknown")
+    rev = result.get("downstream_rev")
+    el = entry_label(name, mode, rev)
+    rebased_suffix = " rebased onto LKG" if mode == "lkg" else ""
+    if status == "pass":
+        return f"## ✅ {el} builds against this PR{rebased_suffix}"
+    if status == "fail":
+        return f"## ❌ {el} fails against this PR{rebased_suffix}"
+    if mode == "lkg" and stage == "rebase_conflict":
+        return f"## ⚠️ {el}: could not validate (PR conflicts with LKG)"
+    if mode == "lkg" and stage == "mathlib_build_at_lkg":
+        return f"## ⚠️ {el}: could not validate (mathlib build failed at LKG)"
+    return f"## ⚠️ {el}: could not validate (infra: {stage})"
+
+
 def _framing_for(
     name: str, mode: str, status: str, fkb: str | None
 ) -> str:
-    """Return the blockquote subtitle for a comment, or '' to omit it.
+    """Return the blockquote subtitle for an entry section, or '' to omit it.
 
     The wording depends on three axes:
 
@@ -116,22 +189,23 @@ def _framing_for(
     * fkb (set / null) — whether the LKG snapshot positively records
       that master is currently broken for this downstream
 
-    LKG-mode runs always frame the verdict as independent of master
-    health; when fkb is set we additionally name why that matters.
-
-    Merge-mode runs lean on fkb to be definitive: a fail with fkb set
-    points at the existing regression and recommends LKG mode; a fail
-    with fkb null reports master as healthy so the verdict implicates
-    the PR. Merge-mode passes need no subtitle — the recipe is enough.
+    A clean pass with no master regression on record is unambiguous and
+    needs no caveat — the recipe paragraph already says everything. Every
+    other combination earns a one-sentence framing so the reader can
+    interpret the verdict without scanning back to the dispatch grammar.
     """
     if mode == "lkg":
+        if status == "pass" and not fkb:
+            # Clean PR-only verdict; the section header + recipe already
+            # convey the LKG rebase, no extra caveat needed.
+            return ""
         if fkb:
             return (
                 f"> This run replayed the PR's changes on top of a"
                 f" mathlib revision compatible with {name}. Current"
                 f" mathlib master is incompatible with {name} (first"
-                f" regression at {commit_link(fkb)}), so this verdict is"
-                f" purely about the PR's effect on {name}."
+                f" regression at {commit_link(fkb)}), so this result should"
+                f" purely be about the PR's effect on {name}."
             )
         return (
             f"> This run replayed the PR's changes on top of a mathlib"
@@ -141,7 +215,6 @@ def _framing_for(
 
     # merge mode
     if status == "pass":
-        # A clean build against master+PR is unambiguous; no caveat.
         return ""
     if status == "fail":
         if fkb:
@@ -261,15 +334,15 @@ def render_test_tree_paragraph(
         else:
             recipe = f"{tree}, built against {ds}"
 
-    return f"**{label}:** {recipe}. [run]({run_url})"
+    return f"**{label}:** {recipe}."
 
 
 # ---------------------------------------------------------------------------
-# Body rendering
+# Per-entry section rendering
 # ---------------------------------------------------------------------------
 
 
-def render_body(
+def render_entry_section(
     *,
     name: str,
     repo: str,
@@ -278,27 +351,21 @@ def render_body(
     merge_sha: str,
     run_url: str,
     log_tail: str,
-    triggered_by: str = "",
 ) -> str:
+    """Render one downstream entry as a `##` section.
+
+    The section is self-contained: header + optional framing subtitle +
+    ``Tested:`` / ``Attempted:`` recipe + optional inline failure log.
+    Callers stitch multiple sections under a single dispatch body
+    via :func:`render_dispatch_body`.
+    """
     status = result.get("status", "infra_failure")
     stage = result.get("stage", "unknown")
     mode = result.get("mode") or "merge"
     repo_slug = repo or "(unknown)"
     branch = default_branch or "(unknown)"
-    rebased_suffix = " rebased onto LKG" if mode == "lkg" else ""
 
-    if status == "pass":
-        header = f"### ✅ {name} builds against this PR{rebased_suffix}"
-    elif status == "fail":
-        header = f"### ❌ {name} fails against this PR{rebased_suffix}"
-    elif mode == "lkg" and stage == "rebase_conflict":
-        header = f"### ⚠️ {name}: could not validate (PR conflicts with LKG)"
-    elif mode == "lkg" and stage == "mathlib_build_at_lkg":
-        header = (
-            f"### ⚠️ {name}: could not validate (mathlib build failed at LKG)"
-        )
-    else:  # generic infra_failure
-        header = f"### ⚠️ {name}: could not validate (infra: {stage})"
+    header = _section_header(result)
 
     test_tree = render_test_tree_paragraph(
         name=name,
@@ -316,12 +383,8 @@ def render_body(
     # regression on master for this downstream.
     fkb = result.get("fkb_commit")
     framing = _framing_for(name, mode, status, fkb)
-    parts: list[str] = []
-    if triggered_by:
-        # Italic line above the header so the requester gets notified
-        # without crowding the verdict visually.
-        parts.extend([f"_Requested by @{triggered_by}._", ""])
-    parts.extend([header, ""])
+
+    parts: list[str] = [header, ""]
     if framing:
         parts.extend([framing, ""])
     parts.extend([test_tree, ""])
@@ -390,6 +453,221 @@ def render_body(
     return "\n".join(parts).rstrip() + "\n"
 
 
+# Backwards-compat alias for callers (and tests) that import the per-entry
+# renderer under its previous name. The signature accepts ``triggered_by`` so
+# legacy callers don't break, but the mention is now hoisted to the
+# dispatch-level body; ``render_dispatch_body`` is the new entry point.
+def render_body(
+    *,
+    name: str,
+    repo: str,
+    default_branch: str,
+    result: dict[str, Any],
+    merge_sha: str,
+    run_url: str,
+    log_tail: str,
+    triggered_by: str = "",
+) -> str:
+    section = render_entry_section(
+        name=name,
+        repo=repo,
+        default_branch=default_branch,
+        result=result,
+        merge_sha=merge_sha,
+        run_url=run_url,
+        log_tail=log_tail,
+    )
+    if not triggered_by:
+        return section
+    return f"_Requested by @{triggered_by}._\n\n{section}"
+
+
+# ---------------------------------------------------------------------------
+# Dispatch-level body rendering
+# ---------------------------------------------------------------------------
+
+
+def _summary_row(
+    *,
+    result: dict[str, Any],
+    repo: str,
+) -> tuple[str, str]:
+    """Return ``(entry_cell, verdict_cell)`` for a single table row.
+
+    Both cells are inline Markdown — the entry name is wrapped in backticks
+    so the user-grammar token stands out, the verdict carries the icon and
+    a one-line gloss with linked SHAs when meaningful.
+    """
+    name = result.get("downstream") or "(unknown)"
+    mode = result.get("mode") or "merge"
+    rev = result.get("downstream_rev")
+    el = entry_label(name, mode, rev)
+    return f"`{el}`", verdict_summary(result)
+
+
+def _render_summary_table(rows: list[tuple[str, str]]) -> str:
+    """Two-column GitHub-flavored Markdown table of (entry, verdict)."""
+    lines = ["| Entry | Verdict |", "|---|---|"]
+    for entry_cell, verdict_cell in rows:
+        lines.append(f"| {entry_cell} | {verdict_cell} |")
+    return "\n".join(lines)
+
+
+def render_dispatch_body(
+    *,
+    entries: list[dict[str, Any]],
+    merge_sha: str,
+    run_url: str,
+    triggered_by: str = "",
+) -> str:
+    """Assemble the single dispatch-level comment body.
+
+    ``entries`` is a list of dicts in the order to display, each carrying:
+
+    * ``name``           — downstream name
+    * ``repo``           — `owner/repo` for the downstream
+    * ``default_branch`` — fallback rev for link rendering
+    * ``result``         — parsed ``result.json``
+    * ``log_tail``       — pre-truncated log slice for inlining
+
+    The body opens with an optional @-mention, then the dispatch title,
+    a summary table (when there are at least two entries), and one
+    ``##`` section per entry.
+    """
+    parts: list[str] = []
+    if triggered_by:
+        parts.append(f"_Requested by @{triggered_by}._")
+        parts.append("")
+    parts.append(
+        f"# Downstream validation against PR merge {commit_link(merge_sha)}"
+        f" · [run]({run_url})"
+    )
+    parts.append("")
+
+    if len(entries) >= 2:
+        rows = [
+            _summary_row(result=e["result"], repo=e.get("repo", ""))
+            for e in entries
+        ]
+        parts.append(_render_summary_table(rows))
+        parts.append("")
+
+    for entry in entries:
+        section = render_entry_section(
+            name=entry["name"],
+            repo=entry.get("repo", ""),
+            default_branch=entry.get("default_branch", ""),
+            result=entry["result"],
+            merge_sha=merge_sha,
+            run_url=run_url,
+            log_tail=entry.get("log_tail", ""),
+        )
+        parts.append(section.rstrip())
+        parts.append("")
+
+    return "\n".join(parts).rstrip() + "\n"
+
+
+# ---------------------------------------------------------------------------
+# Size budgeting
+# ---------------------------------------------------------------------------
+
+
+def _has_inlined_log(result: dict[str, Any]) -> bool:
+    """True if this result would carry an inline failure log."""
+    status = result.get("status")
+    if status == "fail":
+        return True
+    if status == "infra_failure" and result.get("stage") == "mathlib_build_at_lkg":
+        return True
+    return False
+
+
+def _per_entry_log_budget(entries: list[dict[str, Any]]) -> int:
+    """Per-entry log char cap, scaled to the number of failing entries.
+
+    Reserve a slab of the comment budget for fixed scaffolding (title,
+    table, section headers, recipe paragraphs) and split the rest among
+    the entries that actually carry logs. Caps at ``PER_ENTRY_LOG_MAX``
+    so a lone failure in an otherwise-passing dispatch doesn't drown the
+    body; floors at ``PER_ENTRY_LOG_MIN`` so a stuffed dispatch still
+    shows a usable tail per entry.
+    """
+    n_with_logs = sum(1 for e in entries if _has_inlined_log(e["result"]))
+    if n_with_logs == 0:
+        return PER_ENTRY_LOG_MAX
+    # ~70% of the budget for logs; the other ~30% covers all scaffolding
+    # even on the largest dispatches we expect (10+ entries).
+    log_pool = (COMMENT_MAX_CHARS * 7) // 10
+    return max(PER_ENTRY_LOG_MIN, min(PER_ENTRY_LOG_MAX, log_pool // n_with_logs))
+
+
+def _shrink_to_fit(
+    *,
+    entries: list[dict[str, Any]],
+    merge_sha: str,
+    run_url: str,
+    triggered_by: str,
+    run_artifacts_url: str | None = None,
+) -> str:
+    """Render the dispatch body and progressively trim logs to fit the limit.
+
+    Strategy: keep the largest inline log; if total exceeds
+    ``COMMENT_MAX_CHARS`` after first render, halve the longest
+    ``log_tail`` and re-render. Stop once we fit or every log has hit
+    the floor. The final fallback drops all logs and prints a single
+    "logs truncated — see run artifact" line.
+    """
+    body = render_dispatch_body(
+        entries=entries,
+        merge_sha=merge_sha,
+        run_url=run_url,
+        triggered_by=triggered_by,
+    )
+    if len(body) <= COMMENT_MAX_CHARS:
+        return body
+
+    # Halve the longest log repeatedly until we fit or hit the floor.
+    while len(body) > COMMENT_MAX_CHARS:
+        # Find the entry with the longest inlined log.
+        candidates = [e for e in entries if _has_inlined_log(e["result"])]
+        if not candidates:
+            break
+        biggest = max(candidates, key=lambda e: len(e.get("log_tail", "")))
+        tail = biggest.get("log_tail", "")
+        if len(tail) <= PER_ENTRY_LOG_MIN:
+            # Already at the floor; can't shrink this one further.
+            # Drop this entry's log entirely so the next iteration moves on.
+            biggest["log_tail"] = ""
+        else:
+            new_len = max(PER_ENTRY_LOG_MIN, len(tail) // 2)
+            biggest["log_tail"] = tail[-new_len:]
+        body = render_dispatch_body(
+            entries=entries,
+            merge_sha=merge_sha,
+            run_url=run_url,
+            triggered_by=triggered_by,
+        )
+
+    if len(body) > COMMENT_MAX_CHARS:
+        # Last resort: drop every log.
+        for e in entries:
+            e["log_tail"] = ""
+        body = render_dispatch_body(
+            entries=entries,
+            merge_sha=merge_sha,
+            run_url=run_url,
+            triggered_by=triggered_by,
+        )
+
+    return body
+
+
+# ---------------------------------------------------------------------------
+# Result loading + main
+# ---------------------------------------------------------------------------
+
+
 def load_inventory_lookup() -> dict[str, dict[str, Any]]:
     """Look up downstream metadata from the local inventory."""
     inventory_path = (
@@ -401,6 +679,54 @@ def load_inventory_lookup() -> dict[str, dict[str, Any]]:
     with inventory_path.open() as handle:
         data = json.load(handle)
     return {entry["name"]: entry for entry in data["downstreams"]}
+
+
+def _entry_sort_key(result: dict[str, Any]) -> tuple[str, str, str]:
+    """Stable ordering for the summary table + sections.
+
+    Sort by (name, rev_slug, mode) so two entries that differ only in mode
+    sit next to each other in the table and the reader can compare verdicts
+    at a glance.
+    """
+    name = (result.get("downstream") or "").lower()
+    rev = result.get("downstream_rev") or ""
+    mode = result.get("mode") or "merge"
+    return (name, rev, mode)
+
+
+def collect_entries(
+    results_dir: Path, inventory: dict[str, dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Walk the results dir, parse each ``result.json``, and assemble entries."""
+    entries: list[dict[str, Any]] = []
+    for sub in sorted(results_dir.iterdir()):
+        if not sub.is_dir() or not sub.name.startswith("result-"):
+            continue
+        result_path = sub / "result.json"
+        if not result_path.exists():
+            print(
+                f"warning: missing result.json in {sub}; skipping",
+                file=sys.stderr,
+            )
+            continue
+        with result_path.open() as handle:
+            result = json.load(handle)
+
+        name = result.get("downstream") or sub.name[len("result-"):]
+        meta = inventory.get(name, {})
+        log_tail = read_log_tail(sub / "build.log", PER_ENTRY_LOG_MAX)
+        entries.append(
+            {
+                "name": name,
+                "repo": meta.get("repo", ""),
+                "default_branch": meta.get("default_branch", ""),
+                "result": result,
+                "log_tail": log_tail,
+            }
+        )
+
+    entries.sort(key=lambda e: _entry_sort_key(e["result"]))
+    return entries
 
 
 def main() -> int:
@@ -420,7 +746,7 @@ def main() -> int:
     # When the trigger is a `!downstream-check` comment, this is the
     # commenter; when the trigger is a manual `gh workflow run`, the
     # caller can pass `-f triggered_by=<login>` to opt in. Falsy when
-    # unset, in which case render_body skips the mention line.
+    # unset, in which case the body skips the mention line.
     triggered_by = os.environ.get("TRIGGERED_BY", "").strip()
 
     inventory = load_inventory_lookup()
@@ -429,42 +755,27 @@ def main() -> int:
         print(f"no results directory at {args.results_dir}", file=sys.stderr)
         return 1
 
-    posted = 0
-    for entry in sorted(args.results_dir.iterdir()):
-        if not entry.is_dir():
-            continue
-        if not entry.name.startswith("result-"):
-            continue
-        result_path = entry / "result.json"
-        if not result_path.exists():
-            print(
-                f"warning: missing result.json in {entry}; skipping",
-                file=sys.stderr,
-            )
-            continue
-        with result_path.open() as handle:
-            result = json.load(handle)
-
-        name = result.get("downstream") or entry.name[len("result-"):]
-        meta = inventory.get(name, {})
-
-        body = render_body(
-            name=name,
-            repo=meta.get("repo", ""),
-            default_branch=meta.get("default_branch", ""),
-            result=result,
-            merge_sha=merge_sha,
-            run_url=run_url,
-            log_tail=read_log_tail(entry / "build.log", LOG_MAX_CHARS),
-            triggered_by=triggered_by,
-        )
-
-        post_comment(pr_number, body)
-        posted += 1
-
-    if posted == 0:
+    entries = collect_entries(args.results_dir, inventory)
+    if not entries:
         print("warning: no result artifacts found", file=sys.stderr)
         return 1
+
+    # Pre-trim each log to the per-entry budget before assembly, so the
+    # shrink-to-fit loop only has to handle pathological overruns.
+    per_entry_max = _per_entry_log_budget(entries)
+    for e in entries:
+        tail = e.get("log_tail", "")
+        if len(tail) > per_entry_max:
+            e["log_tail"] = tail[-per_entry_max:]
+
+    body = _shrink_to_fit(
+        entries=entries,
+        merge_sha=merge_sha,
+        run_url=run_url,
+        triggered_by=triggered_by,
+    )
+
+    post_comment(pr_number, body)
     return 0
 
 
