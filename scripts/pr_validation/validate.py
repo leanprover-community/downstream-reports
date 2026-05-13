@@ -1,54 +1,38 @@
 #!/usr/bin/env python3
 """Validate a single downstream against a mathlib4 PR.
 
-Two modes, selected by ``$MODE`` (default ``lkg``):
+Two modes, selected by ``--mode`` (default ``lkg``):
 
-* ``MODE=lkg`` — check out ``$LKG_COMMIT`` (the downstream's last-known-good
-  mathlib commit, supplied by ``build_matrix.py`` from the published
-  ``lkg/latest.json`` snapshot), cherry-pick the PR's commits onto it,
-  build mathlib's library target as a sanity check, then build the
-  downstream.  Yields a verdict independent of current mathlib master
-  health.  PR-touched source files miss the upstream olean cache and
-  rebuild on every run.
+* ``--mode lkg`` — check out ``--lkg-commit`` (the downstream's
+  last-known-good mathlib commit, supplied by ``build_matrix.py`` from
+  the published ``lkg/latest.json`` snapshot), cherry-pick the PR's
+  commits onto it, build mathlib's library target as a sanity check,
+  then build the downstream.  Yields a verdict independent of current
+  mathlib master health.  PR-touched source files miss the upstream
+  olean cache and rebuild on every run.
 
-* ``MODE=merge`` — clone mathlib4 at ``$MERGE_SHA`` (the would-be-merged
-  tree GitHub computed) and build the downstream against it.  Faster
-  because ``lake exe cache get`` for the merge commit is mostly a cache
-  hit; the verdict is sensitive to current master health.
+* ``--mode merge`` — clone mathlib4 at ``--merge-sha`` (the
+  would-be-merged tree GitHub computed) and build the downstream
+  against it.  Faster because ``lake exe cache get`` for the merge
+  commit is mostly a cache hit; the verdict is sensitive to current
+  master health.
 
-Inputs (env, all required unless noted):
-
-    MODE                    "lkg" (default) or "merge"
-    PR_NUMBER, MERGE_SHA    identifies the PR and its merge ref
-    LKG_COMMIT              required when MODE=lkg; mathlib SHA to rebase onto
-    UPSTREAM_REPO           owner/repo of the upstream we clone
-                            (default leanprover-community/mathlib4)
-    DOWNSTREAM,             identifies the downstream to test
-    DOWNSTREAM_REPO,
-    DEFAULT_BRANCH,
-    DEPENDENCY_NAME
-    DOWNSTREAM_REV          (optional) git refspec to check out on the
-                            downstream; defaults to $DEFAULT_BRANCH
-    REQUESTED_NAME          (optional) the literal token the user typed
-                            (short name or owner/repo slug); recorded on
-                            result.json when it differs from $DOWNSTREAM
-    FKB_COMMIT              (optional) first-known-bad mathlib commit for
-                            this downstream, propagated to result.json
-                            for the comment renderer's master-health
-                            framing
-    WORKDIR                 scratch directory for clones
-    OUTPUT_DIR              directory for result.json + build.log
-    TOOL_BIN                directory containing the lakedit binary
+See ``python3 scripts/pr_validation/validate.py --help`` for the full
+argument list.  The interface mirrors the audited pattern from
+``scripts/probe_downstream_regression_window.py`` and
+``scripts/select_downstream_regression_window.py``: every input is a
+named CLI flag so the call site in the workflow YAML lists what it's
+passing.
 
 Writes:
 
-    $OUTPUT_DIR/result.json
+    <output-dir>/result.json
         { status, stage, message, downstream, merge_sha, downstream_sha,
           mode, lkg_commit?, requested_name?, downstream_rev?,
           fkb_commit?, pr_base_sha?, pr_head_sha?, commits_replayed?,
           replayed_tree_sha? }
         status ∈ { pass, fail, infra_failure }
-    $OUTPUT_DIR/build.log
+    <output-dir>/build.log
         Combined log of every subprocess (mirrors the live workflow log).
 
 Exit code is 0 in all cases except a script-level error: a build failure
@@ -57,9 +41,9 @@ is the meaningful answer, not an infra failure.
 
 from __future__ import annotations
 
+import argparse
 import dataclasses
 import json
-import os
 import subprocess
 import sys
 from pathlib import Path
@@ -110,46 +94,41 @@ class Config:
     upstream_repo: str
 
     @classmethod
-    def from_env(cls, env: dict[str, str] | None = None) -> "Config":
-        """Build a Config from environment variables.
+    def from_args(cls, args: argparse.Namespace) -> "Config":
+        """Build a Config from a parsed argparse Namespace.
 
-        Required variables map 1:1 with the bash script's
-        ``: "${VAR:?}"`` guards.  Mode-specific guards (``LKG_COMMIT``
-        for ``MODE=lkg``, the ``merge|lkg`` mode itself) are enforced
-        here so a misconfigured workflow fails fast with a clear
-        message rather than several stages later.
+        Mode-specific guards (``--lkg-commit`` is required when
+        ``--mode lkg``) are enforced here so a misconfigured workflow
+        fails fast with a clear message rather than several stages
+        later.  ``argparse`` handles the rest of the required-flag
+        contract for us.
         """
-        e = env if env is not None else os.environ
-        mode = e.get("MODE") or MODE_LKG
-        if mode not in (MODE_LKG, MODE_MERGE):
-            raise ValueError(
-                f"unknown MODE={mode!r} (expected merge|lkg)"
-            )
-        lkg_commit = e.get("LKG_COMMIT", "")
-        if mode == MODE_LKG and not lkg_commit:
-            raise ValueError("MODE=lkg requires LKG_COMMIT")
-
-        downstream = _require(e, "DOWNSTREAM")
-        default_branch = _require(e, "DEFAULT_BRANCH")
+        if args.mode == MODE_LKG and not args.lkg_commit:
+            raise ValueError("--mode lkg requires --lkg-commit")
+        # When the user typed the short name, --requested-name mirrors
+        # --downstream (or is omitted); we always store it so
+        # result.json's optional field is set only when it carries new
+        # information.
+        requested_name = args.requested_name or args.downstream
+        # --downstream-rev defaults to --default-branch so the validate
+        # flow can always rely on a non-empty rev.
+        downstream_rev = args.downstream_rev or args.default_branch
         return cls(
-            pr_number=_require(e, "PR_NUMBER"),
-            merge_sha=_require(e, "MERGE_SHA"),
-            downstream=downstream,
-            # When the user typed the short name, REQUESTED_NAME==DOWNSTREAM
-            # (or unset); we always store it so result.json's optional
-            # field is set only when it carries new information.
-            requested_name=e.get("REQUESTED_NAME", "") or downstream,
-            downstream_repo=_require(e, "DOWNSTREAM_REPO"),
-            default_branch=default_branch,
-            dependency_name=_require(e, "DEPENDENCY_NAME"),
-            downstream_rev=e.get("DOWNSTREAM_REV") or default_branch,
-            workdir=Path(_require(e, "WORKDIR")),
-            output_dir=Path(_require(e, "OUTPUT_DIR")),
-            tool_bin=Path(_require(e, "TOOL_BIN")),
-            mode=mode,
-            lkg_commit=lkg_commit,
-            fkb_commit=e.get("FKB_COMMIT", ""),
-            upstream_repo=e.get("UPSTREAM_REPO") or DEFAULT_UPSTREAM_REPO,
+            pr_number=args.pr_number,
+            merge_sha=args.merge_sha,
+            downstream=args.downstream,
+            requested_name=requested_name,
+            downstream_repo=args.downstream_repo,
+            default_branch=args.default_branch,
+            dependency_name=args.dependency_name,
+            downstream_rev=downstream_rev,
+            workdir=args.workdir,
+            output_dir=args.output_dir,
+            tool_bin=args.tool_bin,
+            mode=args.mode,
+            lkg_commit=args.lkg_commit,
+            fkb_commit=args.fkb_commit,
+            upstream_repo=args.upstream_repo,
         )
 
     @property
@@ -161,11 +140,69 @@ class Config:
         return self.workdir / "downstream"
 
 
-def _require(env: dict[str, str], key: str) -> str:
-    value = env.get(key)
-    if not value:
-        raise ValueError(f"missing required env var: {key}")
-    return value
+def build_parser() -> argparse.ArgumentParser:
+    """Build the argparse parser for ``validate.py``.
+
+    Every input is a named flag; defaults match the bash script's old
+    fallbacks.  ``--lkg-commit`` and ``--fkb-commit`` are optional at
+    the argparse level (so merge-mode dispatches don't have to pass
+    empty strings); the mode-specific guard in ``Config.from_args``
+    enforces ``--lkg-commit`` for LKG runs.
+    """
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--pr-number", required=True)
+    parser.add_argument("--merge-sha", required=True)
+    parser.add_argument("--downstream", required=True)
+    parser.add_argument(
+        "--requested-name",
+        default="",
+        help=(
+            "Literal token the user typed (short name or owner/repo slug)."
+            " Recorded on result.json when it differs from --downstream."
+        ),
+    )
+    parser.add_argument("--downstream-repo", required=True)
+    parser.add_argument("--default-branch", required=True)
+    parser.add_argument("--dependency-name", required=True)
+    parser.add_argument(
+        "--downstream-rev",
+        default="",
+        help=(
+            "Git refspec for the downstream's checkout."
+            " Defaults to --default-branch when empty."
+        ),
+    )
+    parser.add_argument("--workdir", type=Path, required=True)
+    parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument("--tool-bin", type=Path, required=True)
+    parser.add_argument(
+        "--mode",
+        choices=[MODE_LKG, MODE_MERGE],
+        default=MODE_LKG,
+        help=(
+            f"{MODE_LKG}: rebase the PR onto --lkg-commit and build."
+            f" {MODE_MERGE}: build against --merge-sha as-is."
+        ),
+    )
+    parser.add_argument(
+        "--lkg-commit",
+        default="",
+        help="Mathlib SHA to rebase onto in LKG mode (required if --mode lkg).",
+    )
+    parser.add_argument(
+        "--fkb-commit",
+        default="",
+        help=(
+            "First-known-bad mathlib commit for this downstream"
+            " (propagated to result.json for the comment renderer)."
+        ),
+    )
+    parser.add_argument(
+        "--upstream-repo",
+        default=DEFAULT_UPSTREAM_REPO,
+        help="Mathlib4 fork to clone (defaults to the canonical repo).",
+    )
+    return parser
 
 
 @dataclasses.dataclass
@@ -842,8 +879,9 @@ def run(cfg: Config) -> None:
     # Unreachable: lake_update_and_build always exits via emit_and_exit.
 
 
-def main() -> int:
-    cfg = Config.from_env()
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
+    cfg = Config.from_args(args)
     run(cfg)
     return 0  # unreachable; satisfies the return-type checker
 

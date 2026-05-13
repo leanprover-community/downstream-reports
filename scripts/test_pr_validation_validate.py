@@ -3,7 +3,7 @@
 Tests for: scripts.pr_validation.validate
 
 Coverage scope:
-    - ``Config.from_env`` — the env-var contract (required vars, mode
+    - ``Config.from_args`` — the CLI-flag contract (required flags, mode
       validation, optional fallbacks).
     - ``build_result_record`` — the JSON shape on disk for each (status,
       mode, optional-field) combo.
@@ -27,17 +27,17 @@ Why this matters
 ``result.json`` artifacts that ``post_results.py`` then renders into
 PR comments.  Drift in the JSON shape (a missed field, a wrong
 default) silently breaks the rendered comment without a workflow
-error.  The pre-flight ``Config.from_env`` is what stops a misconfigured
-workflow from blasting through every stage before failing on a missing
-env var, and the stage→infra-failure mapping is what makes the comment
-say "PR conflicts with LKG" instead of "infra_failure (rebase_conflict)".
+error.  The pre-flight ``Config.from_args`` is what stops a
+misconfigured workflow from blasting through every stage before
+failing on a missing flag, and the stage→infra-failure mapping is
+what makes the comment say "PR conflicts with LKG" instead of
+"infra_failure (rebase_conflict)".
 """
 
 from __future__ import annotations
 
 import io
 import json
-import os
 import subprocess
 import sys
 import tempfile
@@ -56,56 +56,74 @@ from scripts.pr_validation.validate import (
     Config,
     Log,
     State,
+    build_parser,
     build_result_record,
     derive_pr_endpoints,
 )
 
 
 # ---------------------------------------------------------------------------
-# Env helpers
+# CLI fixture helpers
 # ---------------------------------------------------------------------------
 
 
-def _minimal_env(**overrides) -> dict[str, str]:
-    """A complete env that satisfies Config.from_env's required vars.
+# argparse flag → default value map.  Mode defaults to LKG (so
+# ``--lkg-commit`` is required); tests for the merge path override
+# ``--mode`` via ``_minimal_argv``.
+_DEFAULT_ARGS: dict[str, str] = {
+    "--pr-number": "38783",
+    "--merge-sha": SHA_A,
+    "--downstream": "FLT",
+    "--downstream-repo": "leanprover-community/FLT",
+    "--default-branch": "main",
+    "--dependency-name": "mathlib",
+    "--workdir": "/tmp/wd",
+    "--output-dir": "/tmp/out",
+    "--tool-bin": "/tmp/bin",
+    "--mode": MODE_LKG,
+    "--lkg-commit": SHA_C,
+}
 
-    Mode defaults to LKG (so ``LKG_COMMIT`` is required); tests for the
-    merge path pass ``MODE="merge"`` via ``**overrides``.
+
+def _minimal_argv(*, drop: list[str] = (), **overrides: str) -> list[str]:
+    """A complete argv that satisfies build_parser()'s required flags.
+
+    ``drop`` removes the named flags entirely (for "what if this is
+    missing" tests).  ``**overrides`` replaces the default value of any
+    flag (snake_case for Python ergonomics; mapped back to ``--flag``).
     """
-    env = {
-        "PR_NUMBER": "38783",
-        "MERGE_SHA": SHA_A,
-        "DOWNSTREAM": "FLT",
-        "DOWNSTREAM_REPO": "leanprover-community/FLT",
-        "DEFAULT_BRANCH": "main",
-        "DEPENDENCY_NAME": "mathlib",
-        "WORKDIR": "/tmp/wd",
-        "OUTPUT_DIR": "/tmp/out",
-        "TOOL_BIN": "/tmp/bin",
-        "MODE": MODE_LKG,
-        "LKG_COMMIT": SHA_C,
-    }
-    env.update(overrides)
-    return env
+    args = dict(_DEFAULT_ARGS)
+    for flag in drop:
+        args.pop(flag, None)
+    for name, value in overrides.items():
+        args[f"--{name.replace('_', '-')}"] = value
+    argv: list[str] = []
+    for flag, value in args.items():
+        argv.extend([flag, value])
+    return argv
+
+
+def _config_from(*, drop: list[str] = (), **overrides: str) -> Config:
+    """Build a Config by parsing a minimal argv with the requested tweaks."""
+    return Config.from_args(build_parser().parse_args(_minimal_argv(drop=drop, **overrides)))
 
 
 # ---------------------------------------------------------------------------
-# Config.from_env
+# Config.from_args
 # ---------------------------------------------------------------------------
 
 
-class TestConfigFromEnv:
-    """``Config.from_env`` reads + validates the env-var contract."""
+class TestConfigFromArgs:
+    """``Config.from_args`` reads + validates the parsed CLI argv."""
 
     def test_required_fields_round_trip(self) -> None:
-        """Every required var lands on the right Config attribute.
+        """Every required flag lands on the right Config attribute.
 
-        These map 1:1 with the bash script's ``: "${VAR:?}"`` guards;
-        the test pins that mapping so a typo in the env var name
+        Pins the flag-to-attribute mapping so a typo in either name
         surfaces as a unit-test failure rather than a CI-only one.
         """
         # Arrange / Act
-        cfg = Config.from_env(_minimal_env())
+        cfg = _config_from()
 
         # Assert
         assert cfg.pr_number == "38783"
@@ -121,125 +139,102 @@ class TestConfigFromEnv:
         assert cfg.lkg_commit == SHA_C
 
     def test_mode_defaults_to_lkg(self) -> None:
-        """An empty MODE defaults to LKG (the user-facing default).
+        """An omitted ``--mode`` defaults to LKG (the user-facing default).
 
-        Matches the bash script's ``MODE="${MODE:-lkg}"`` so the
-        downstream-reports workflow can omit MODE entirely for the
-        common case.
+        Lets the workflow omit ``--mode`` for the common case; build_matrix.py
+        always sets it explicitly, but a manual ``workflow_dispatch`` can
+        rely on the default.
         """
-        # Arrange
-        env = _minimal_env()
-        del env["MODE"]
-
-        # Act
-        cfg = Config.from_env(env)
+        # Arrange / Act
+        cfg = _config_from(drop=["--mode"])
 
         # Assert
         assert cfg.mode == MODE_LKG
 
     def test_unknown_mode_rejected(self) -> None:
-        """A MODE that isn't merge|lkg raises before any work happens."""
-        # Arrange
-        env = _minimal_env(MODE="weird")
-
-        # Act / Assert
-        with pytest.raises(ValueError, match="unknown MODE"):
-            Config.from_env(env)
+        """A ``--mode`` value outside ``{lkg, merge}`` is rejected by argparse."""
+        # Arrange / Act / Assert
+        with pytest.raises(SystemExit):
+            build_parser().parse_args(_minimal_argv(mode="weird"))
 
     def test_lkg_requires_lkg_commit(self) -> None:
-        """``MODE=lkg`` without ``LKG_COMMIT`` fails fast with a clear message.
+        """``--mode lkg`` without ``--lkg-commit`` fails fast with a clear message.
 
         Catches the most common misconfiguration: a manual
-        ``workflow_dispatch`` that forgets to pass LKG_COMMIT.
-        Without this check the bash script would clone mathlib4 first
-        and then crash several stages in.
+        ``workflow_dispatch`` that forgets to pass ``--lkg-commit``.
+        Without this check we'd clone mathlib4 first and then crash
+        several stages in.
         """
-        # Arrange
-        env = _minimal_env()
-        del env["LKG_COMMIT"]
-
-        # Act / Assert
-        with pytest.raises(ValueError, match="LKG_COMMIT"):
-            Config.from_env(env)
+        # Arrange / Act / Assert
+        with pytest.raises(ValueError, match="--lkg-commit"):
+            _config_from(lkg_commit="")
 
     def test_merge_mode_lkg_commit_optional(self) -> None:
-        """``MODE=merge`` doesn't require LKG_COMMIT.
+        """``--mode merge`` doesn't require ``--lkg-commit``.
 
         Merge mode builds against the would-be-merged tree directly;
-        no rebase anchor needed.  This is what lets the freshly-
-        onboarded ``newcomer`` downstream still validate via
-        ``--merge-branch``.
+        no rebase anchor needed.  This is what lets a freshly-
+        onboarded downstream still validate via ``--merge-branch``.
         """
-        # Arrange
-        env = _minimal_env(MODE=MODE_MERGE)
-        del env["LKG_COMMIT"]
-
-        # Act
-        cfg = Config.from_env(env)
+        # Arrange / Act
+        cfg = _config_from(mode=MODE_MERGE, lkg_commit="")
 
         # Assert
         assert cfg.mode == MODE_MERGE
         assert cfg.lkg_commit == ""
 
     def test_downstream_rev_defaults_to_default_branch(self) -> None:
-        """When DOWNSTREAM_REV is unset, the rev falls back to DEFAULT_BRANCH.
+        """An empty ``--downstream-rev`` falls back to ``--default-branch``.
 
-        The bash script does ``DOWNSTREAM_REV="${DOWNSTREAM_REV:-$DEFAULT_BRANCH}"``
-        so the validate flow can always rely on a non-empty rev.
+        The matrix builder passes ``--downstream-rev ""`` when the user
+        didn't supply an ``@<rev>``, so the validate flow can always
+        rely on a non-empty rev.
         """
         # Arrange / Act
-        cfg = Config.from_env(_minimal_env())
+        cfg = _config_from()
 
         # Assert
         assert cfg.downstream_rev == "main"
 
     def test_requested_name_defaults_to_downstream(self) -> None:
-        """When REQUESTED_NAME is unset, it mirrors the canonical downstream name.
+        """An empty ``--requested-name`` mirrors the canonical downstream name.
 
-        The matrix builder always sets ``requested_name`` so the env
-        var is normally present; for direct dispatches that skip it,
-        the fallback keeps the result.json's optional-field
-        contract intact.
+        The matrix builder always sets it; direct dispatches that skip
+        the flag get this fallback so result.json's optional-field
+        contract stays intact.
         """
         # Arrange / Act
-        cfg = Config.from_env(_minimal_env())
+        cfg = _config_from()
 
         # Assert
         assert cfg.requested_name == "FLT"
 
     def test_requested_name_preserved_when_different(self) -> None:
-        """A slug-style REQUESTED_NAME survives onto Config for result.json."""
-        # Arrange
-        env = _minimal_env(REQUESTED_NAME="leanprover-community/FLT")
-
-        # Act
-        cfg = Config.from_env(env)
+        """A slug-style ``--requested-name`` survives onto Config for result.json."""
+        # Arrange / Act
+        cfg = _config_from(requested_name="leanprover-community/FLT")
 
         # Assert
         assert cfg.requested_name == "leanprover-community/FLT"
 
     def test_upstream_repo_defaults_to_canonical_mathlib(self) -> None:
-        """When UPSTREAM_REPO is unset, we clone leanprover-community/mathlib4.
+        """An omitted ``--upstream-repo`` clones leanprover-community/mathlib4.
 
         That's the only mathlib4 fork we expect to fetch
         ``refs/pull/N/merge`` from; an explicit override is supported
         for testing fixtures.
         """
         # Arrange / Act
-        cfg = Config.from_env(_minimal_env())
+        cfg = _config_from()
 
         # Assert
         assert cfg.upstream_repo == "leanprover-community/mathlib4"
 
-    def test_missing_required_field_reports_which(self) -> None:
-        """A missing required var names which one in the error."""
-        # Arrange
-        env = _minimal_env()
-        del env["MERGE_SHA"]
-
-        # Act / Assert
-        with pytest.raises(ValueError, match="MERGE_SHA"):
-            Config.from_env(env)
+    def test_missing_required_flag_is_rejected_by_argparse(self) -> None:
+        """A missing required flag fails at the argparse level."""
+        # Arrange / Act / Assert
+        with pytest.raises(SystemExit):
+            build_parser().parse_args(_minimal_argv(drop=["--merge-sha"]))
 
 
 # ---------------------------------------------------------------------------
@@ -250,8 +245,8 @@ class TestConfigFromEnv:
 class TestBuildResultRecord:
     """``build_result_record`` produces the JSON written to result.json."""
 
-    def _cfg(self, **overrides) -> Config:
-        return Config.from_env(_minimal_env(**overrides))
+    def _cfg(self, **overrides: str) -> Config:
+        return _config_from(**overrides)
 
     def test_minimal_pass_record_in_lkg_mode(self) -> None:
         """A clean lkg-mode pass produces the expected baseline shape.
@@ -284,7 +279,7 @@ class TestBuildResultRecord:
     def test_merge_mode_pass_omits_lkg_commit(self) -> None:
         """Merge-mode records have no ``lkg_commit`` field."""
         # Arrange
-        cfg = self._cfg(MODE=MODE_MERGE, LKG_COMMIT="")
+        cfg = self._cfg(mode=MODE_MERGE, lkg_commit="")
         state = State(downstream_sha=SHA_D)
 
         # Act
@@ -299,7 +294,7 @@ class TestBuildResultRecord:
     def test_fkb_attaches_when_set(self) -> None:
         """A non-empty FKB_COMMIT lands on result.json for the comment renderer."""
         # Arrange
-        cfg = self._cfg(FKB_COMMIT=SHA_F)
+        cfg = self._cfg(fkb_commit=SHA_F)
         state = State(downstream_sha=SHA_D)
 
         # Act
@@ -313,7 +308,7 @@ class TestBuildResultRecord:
     def test_fkb_absent_when_empty(self) -> None:
         """An empty FKB_COMMIT omits the field rather than recording ""."""
         # Arrange
-        cfg = self._cfg(FKB_COMMIT="")
+        cfg = self._cfg(fkb_commit="")
         state = State(downstream_sha=SHA_D)
 
         # Act
@@ -332,7 +327,7 @@ class TestBuildResultRecord:
         falsy → fall back to ``downstream``.
         """
         # Arrange — short-name request
-        cfg_short = self._cfg(REQUESTED_NAME="FLT")
+        cfg_short = self._cfg(requested_name="FLT")
         state = State(downstream_sha=SHA_D)
 
         # Act
@@ -344,7 +339,7 @@ class TestBuildResultRecord:
         assert "requested_name" not in record_short
 
         # Arrange — slug request
-        cfg_slug = self._cfg(REQUESTED_NAME="leanprover-community/FLT")
+        cfg_slug = self._cfg(requested_name="leanprover-community/FLT")
 
         # Act
         record_slug = build_result_record(
@@ -371,7 +366,7 @@ class TestBuildResultRecord:
         assert "downstream_rev" not in record
 
         # Arrange — explicit rev
-        cfg_pinned = self._cfg(DOWNSTREAM_REV="v1.2.3")
+        cfg_pinned = self._cfg(downstream_rev="v1.2.3")
 
         # Act
         record = build_result_record(
@@ -426,7 +421,7 @@ class TestBuildResultRecord:
         assert record["replayed_tree_sha"] == "3" * 40
 
         # Arrange — merge
-        cfg_merge = self._cfg(MODE=MODE_MERGE, LKG_COMMIT="")
+        cfg_merge = self._cfg(mode=MODE_MERGE, lkg_commit="")
 
         # Act
         record = build_result_record(
@@ -654,8 +649,7 @@ class TestFailInfra:
         """The on-disk record has status=infra_failure with the supplied stage and message."""
         # Arrange
         with tempfile.TemporaryDirectory() as tmp:
-            env = _minimal_env(OUTPUT_DIR=tmp)
-            cfg = Config.from_env(env)
+            cfg = _config_from(output_dir=tmp)
             state = State()
             sink = io.StringIO()
             with Log(Path("/dev/null"), sink=sink) as log:
@@ -691,7 +685,7 @@ class TestFailInfra:
         """
         # Arrange
         with tempfile.TemporaryDirectory() as tmp:
-            cfg = Config.from_env(_minimal_env(OUTPUT_DIR=tmp))
+            cfg = _config_from(output_dir=tmp)
             state = State()
             sink = io.StringIO()
 
@@ -719,7 +713,7 @@ class TestFailInfra:
         """
         # Arrange
         with tempfile.TemporaryDirectory() as tmp:
-            cfg = Config.from_env(_minimal_env(OUTPUT_DIR=tmp))
+            cfg = _config_from(output_dir=tmp)
             state = State()
             sink = io.StringIO()
 

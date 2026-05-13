@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Summarise a single downstream's validation result for the GitHub Actions UI.
 
-Reads ``$OUTPUT_DIR/result.json`` and writes:
+Reads ``<output-dir>/result.json`` and writes:
   - a short header + status to stdout (visible in the job log)
   - the same to ``$GITHUB_STEP_SUMMARY`` (visible on the run page)
   - the filtered tail of build.log when status != pass
@@ -12,6 +12,7 @@ error. Only a script-level error (missing result.json) raises.
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import sys
@@ -40,9 +41,17 @@ _STAGE_HEADLINES = {
 }
 
 
-def main() -> int:
-    downstream = os.environ["DOWNSTREAM"]
-    output_dir = Path(os.environ["OUTPUT_DIR"])
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--downstream", required=True)
+    parser.add_argument("--output-dir", type=Path, required=True)
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
+    downstream = args.downstream
+    output_dir = args.output_dir
 
     result_path = output_dir / "result.json"
     log_path = output_dir / "build.log"

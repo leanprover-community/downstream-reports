@@ -132,42 +132,37 @@ jobs:
         run: bash scripts/pr_validation/install_lakedit.sh
 
       - name: Run validation
-        env:
-          PR_NUMBER:       ${{ inputs.pr_number }}
-          MERGE_SHA:       ${{ inputs.merge_sha }}
-          DOWNSTREAM:      ${{ matrix.name }}
-          # The literal token the user typed (short name or owner/repo
-          # slug). Stored on result.json so the dispatch comment's
-          # displayed entry label mirrors the request; prose still uses
-          # the canonical `DOWNSTREAM` name.
-          REQUESTED_NAME:  ${{ matrix.requested_name }}
-          DOWNSTREAM_REPO: ${{ matrix.repo }}
-          DEFAULT_BRANCH:  ${{ matrix.default_branch }}
-          DEPENDENCY_NAME: ${{ matrix.dependency_name }}
-          # `matrix.rev` is `''` when the user didn't supply an `@<rev>`;
-          # validate.py then falls back to $DEFAULT_BRANCH.
-          DOWNSTREAM_REV:  ${{ matrix.rev }}
-          # `mode` is always set by build_matrix.py ("merge" or "lkg");
-          # `lkg_commit` is only set when mode=lkg. `fkb_commit` is set
-          # (regardless of mode) when the LKG snapshot records a first-
-          # known-bad commit for this downstream — the comment renderer
-          # uses it for definitive master-health framing.
-          MODE:            ${{ matrix.mode }}
-          LKG_COMMIT:      ${{ matrix.lkg_commit || '' }}
-          FKB_COMMIT:      ${{ matrix.fkb_commit || '' }}
-          WORKDIR:         ${{ runner.temp }}/pr-validation
-          # Per-matrix output dir is keyed on (name, rev_slug, mode) so two
-          # entries that differ in either dimension don't collide on disk.
-          OUTPUT_DIR:      ${{ runner.temp }}/artifacts/result-${{ matrix.name }}-${{ matrix.rev_slug }}-${{ matrix.mode }}
-          TOOL_BIN:        ${{ runner.temp }}/tool-bin
-        run: python3 scripts/pr_validation/validate.py
+        # `matrix.rev` / `matrix.lkg_commit` / `matrix.fkb_commit` are
+        # `''` when build_matrix.py didn't set them (no `@<rev>` from the
+        # user, merge mode without LKG, no recorded master regression).
+        # validate.py accepts empty strings and falls back appropriately:
+        # --downstream-rev empty → use --default-branch; --lkg-commit
+        # empty is rejected by Config.from_args when --mode lkg.
+        # --requested-name carries the literal user-typed token (short
+        # name or owner/repo slug) for the displayed entry label.
+        run: |
+          python3 scripts/pr_validation/validate.py \
+            --pr-number "${{ inputs.pr_number }}" \
+            --merge-sha "${{ inputs.merge_sha }}" \
+            --downstream "${{ matrix.name }}" \
+            --requested-name "${{ matrix.requested_name }}" \
+            --downstream-repo "${{ matrix.repo }}" \
+            --default-branch "${{ matrix.default_branch }}" \
+            --dependency-name "${{ matrix.dependency_name }}" \
+            --downstream-rev "${{ matrix.rev }}" \
+            --mode "${{ matrix.mode }}" \
+            --lkg-commit "${{ matrix.lkg_commit || '' }}" \
+            --fkb-commit "${{ matrix.fkb_commit || '' }}" \
+            --workdir "${{ runner.temp }}/pr-validation" \
+            --output-dir "${{ runner.temp }}/artifacts/result-${{ matrix.name }}-${{ matrix.rev_slug }}-${{ matrix.mode }}" \
+            --tool-bin "${{ runner.temp }}/tool-bin"
 
       - name: Summarize result
         if: always()
-        env:
-          DOWNSTREAM:  ${{ matrix.name }}
-          OUTPUT_DIR:  ${{ runner.temp }}/artifacts/result-${{ matrix.name }}-${{ matrix.rev_slug }}-${{ matrix.mode }}
-        run: python3 scripts/pr_validation/summarize.py
+        run: |
+          python3 scripts/pr_validation/summarize.py \
+            --downstream "${{ matrix.name }}" \
+            --output-dir "${{ runner.temp }}/artifacts/result-${{ matrix.name }}-${{ matrix.rev_slug }}-${{ matrix.mode }}"
 
       - name: Upload result
         if: always()
