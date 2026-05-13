@@ -1,54 +1,77 @@
 #!/usr/bin/env python3
-"""Tests for scripts/pr_validation/post_results.py rendering helpers.
+"""
+Tests for: scripts.pr_validation.post_results
 
-Two layers are covered:
+Coverage scope:
+    - ``entry_label`` — round-trips the `!downstream-check` grammar
+      (bare name / `@<rev>` / ` --merge-branch`) so the displayed
+      entry token matches the user's request.
+    - ``verdict_summary`` — one-line gloss for each (mode, status,
+      stage, FKB?) tuple that the summary table cell can carry.
+    - ``render_entry_section`` — one downstream's ``##`` section:
+      header + optional framing subtitle + ``Tested:`` / ``Attempted:``
+      recipe + optional inline log.
+    - ``render_dispatch_body`` — assembly of the single dispatch-level
+      comment (mention line, title, optional summary table, stacked
+      sections).
+    - ``_shrink_to_fit`` — the budgeter that progressively trims log
+      tails until the body fits under GitHub's PR-comment limit.
 
-* :func:`render_entry_section` — one downstream's verdict block; the unit
-  used inside the dispatch body.
-* :func:`render_dispatch_body` — the full single-comment-per-dispatch
-  assembly with optional @-mention, title, summary table, and stacked
-  sections.
+Out of scope:
+    - ``post_comment`` — the gh-api invocation is exercised manually
+      during smoke runs rather than mocked here.
+    - The actual `lake build` log content past the snippets we use as
+      log_tail fixtures; ``log_filter`` covers the filtering side.
 
-The GitHub REST plumbing around these is exercised manually during smoke
-runs rather than with `gh api` mocks.
+Why this matters
+----------------
+post_results.py is the only place that turns a pile of result.json
+artifacts into a human-readable verdict on the PR.  A regression in
+the framing subtitle would silently mislead the PR author about
+whether a failure was master's or the PR's fault; a regression in the
+size budget would overflow GitHub's 65 536-char comment limit and
+either crash the report job or chop the failure log mid-line.  The
+entry-label round-trip is what makes a slug request render *as* a slug
+in the table — otherwise the comment quietly switches to the
+canonical short name and surprises the user.
 """
 
 from __future__ import annotations
 
-import importlib.util
 import sys
-import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-# Same import shape as test_pr_validation_build_matrix.py: pr_validation/ is
-# not a Python package, so load the module directly. log_filter is imported by
-# post_results via a top-level `from log_filter import …`, so we need the
-# pr_validation directory on sys.path before loading.
-_PR_VALIDATION_DIR = Path(__file__).resolve().parent / "pr_validation"
-sys.path.insert(0, str(_PR_VALIDATION_DIR))
-_POST_RESULTS_PATH = _PR_VALIDATION_DIR / "post_results.py"
-_spec = importlib.util.spec_from_file_location(
-    "pr_validation_post_results", _POST_RESULTS_PATH
-)
-post_results = importlib.util.module_from_spec(_spec)
-assert _spec.loader is not None
-_spec.loader.exec_module(post_results)
+from scripts.conftest import SHA_A, SHA_B, SHA_C, SHA_D, SHA_F
+from scripts.pr_validation import post_results
 
 
 # ---------------------------------------------------------------------------
-# Helpers
+# Fixtures
 # ---------------------------------------------------------------------------
 
-_MERGE_SHA = "a" * 40
-_HEAD_SHA = "b" * 40
-_LKG_SHA = "c" * 40
-_DS_SHA = "d" * 40
+# Semantic aliases for the SHA constants we share with the rest of the
+# suite.  These names read naturally inside assertions about what the
+# comment links to.
+_MERGE_SHA = SHA_A
+_HEAD_SHA = SHA_B
+_LKG_SHA = SHA_C
+_DS_SHA = SHA_D
+_FKB_SHA = SHA_F
+
+# PR commit-range endpoints (base..head).  These are local to the
+# post_results suite — they're not generic merge SHAs but always
+# represent the two parents of a PR's merge commit.
+_PR_BASE = "1" * 40
+_PR_HEAD = "2" * 40
+_REPLAYED = "3" * 40
+
 _RUN_URL = "https://github.com/leanprover-community/downstream-reports/actions/runs/1"
 
 
 def _make_result(**overrides) -> dict:
+    """Build a result.json-shaped dict with the merge-mode pass defaults."""
     base = {
         "status": "pass",
         "stage": "build",
@@ -91,32 +114,39 @@ def _make_entry(result: dict, log_tail: str = "") -> dict:
 # ---------------------------------------------------------------------------
 
 
-class EntryLabelTests(unittest.TestCase):
-    """`entry_label` round-trips the `!downstream-check` grammar."""
+class TestEntryLabel:
+    """``entry_label`` round-trips the `!downstream-check` grammar."""
 
     def test_lkg_bare(self) -> None:
-        """Scenario: LKG mode with no rev is the bare downstream name."""
-        self.assertEqual(post_results.entry_label("FLT", "lkg"), "FLT")
+        """LKG mode with no rev is the bare downstream name.
+
+        LKG is the implicit default, so the entry label collapses to
+        just the name to match what the user typed.
+        """
+        # Arrange / Act / Assert
+        assert post_results.entry_label("FLT", "lkg") == "FLT"
 
     def test_lkg_with_rev(self) -> None:
-        """Scenario: a rev attaches as `name@rev`."""
-        self.assertEqual(
-            post_results.entry_label("FLT", "lkg", rev="v1.2.3"),
-            "FLT@v1.2.3",
-        )
+        """A rev attaches as ``name@rev``."""
+        # Arrange / Act / Assert
+        assert post_results.entry_label("FLT", "lkg", rev="v1.2.3") == "FLT@v1.2.3"
 
     def test_merge_bare(self) -> None:
-        """Scenario: merge mode appends the explicit `--merge-branch` flag."""
-        self.assertEqual(
-            post_results.entry_label("FLT", "merge"),
-            "FLT --merge-branch",
-        )
+        """Merge mode appends the explicit `--merge-branch` flag.
+
+        The flag is preserved in the label because the user explicitly
+        opted into merge mode; eliding it would make the displayed
+        entry indistinguishable from the default LKG variant.
+        """
+        # Arrange / Act / Assert
+        assert post_results.entry_label("FLT", "merge") == "FLT --merge-branch"
 
     def test_merge_with_rev(self) -> None:
-        """Scenario: rev + merge yields `name@rev --merge-branch`."""
-        self.assertEqual(
-            post_results.entry_label("FLT", "merge", rev="v1.2.3"),
-            "FLT@v1.2.3 --merge-branch",
+        """Rev + merge yields ``name@rev --merge-branch``."""
+        # Arrange / Act / Assert
+        assert (
+            post_results.entry_label("FLT", "merge", rev="v1.2.3")
+            == "FLT@v1.2.3 --merge-branch"
         )
 
 
@@ -125,27 +155,38 @@ class EntryLabelTests(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 
-class MergeModeRenderingTests(unittest.TestCase):
+class TestMergeModeRendering:
     """Merge-mode entry sections carry the `--merge-branch` token in the heading."""
 
     def test_pass_header(self) -> None:
-        """Scenario: a merge-mode pass renders the `## ✅` header with `--merge-branch`; no master caveat."""
+        """A merge-mode pass renders the ``## ✅`` header with `--merge-branch`; no master caveat.
+
+        A clean merge-mode pass is unambiguous: the PR builds against the
+        merged tree.  No framing subtitle is needed since there's no
+        ambiguity about whose fault any non-existent failure would be.
+        """
+        # Arrange / Act
         body = _render(_make_result(status="pass"))
-        self.assertIn(
-            "## ✅ FLT --merge-branch builds against this PR", body
-        )
-        # A clean merge-mode pass is unambiguous — no subtitle disclaimer.
-        self.assertNotIn("did not baseline against master", body)
-        self.assertNotIn("mathlib master is currently", body)
+
+        # Assert
+        assert "## ✅ FLT --merge-branch builds against this PR" in body
+        assert "did not baseline against master" not in body
+        assert "mathlib master is currently" not in body
 
     def test_fail_inlines_log_tail(self) -> None:
-        """Scenario: merge-mode fail inlines the build.log tail in a <details> block."""
+        """Merge-mode fail inlines the build.log tail in a ``<details>`` block.
+
+        The log tail is what makes a failure verdict actionable; we
+        always inline it for failed builds so the PR author doesn't
+        have to click through to the artifact.
+        """
+        # Arrange / Act
         body = _render(_make_result(status="fail"))
-        self.assertIn(
-            "## ❌ FLT --merge-branch fails against this PR", body
-        )
-        self.assertIn("<details><summary>failure log</summary>", body)
-        self.assertIn("some build error", body)
+
+        # Assert
+        assert "## ❌ FLT --merge-branch fails against this PR" in body
+        assert "<details><summary>failure log</summary>" in body
+        assert "some build error" in body
 
 
 # ---------------------------------------------------------------------------
@@ -153,45 +194,64 @@ class MergeModeRenderingTests(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 
-class LkgModeRenderingTests(unittest.TestCase):
+class TestLkgModeRendering:
     """Headers, subtitle, and caveats for the mode=lkg variants."""
 
     def test_lkg_pass_header_and_no_subtitle_without_fkb(self) -> None:
-        """Scenario: a clean lkg-mode pass with no FKB skips the framing subtitle."""
-        body = _render(
-            _make_result(status="pass", mode="lkg", lkg_commit=_LKG_SHA)
-        )
-        self.assertIn(
-            "## ✅ FLT builds against this PR rebased onto LKG", body
-        )
-        # The LKG SHA is still linked in the Tested: paragraph.
-        self.assertIn(_LKG_SHA[:7], body)
-        # No subtitle — clean pass + healthy master is unambiguous.
-        self.assertNotIn("independent of current mathlib master health", body)
+        """A clean lkg-mode pass with no FKB skips the framing subtitle.
+
+        Pass + healthy master = unambiguous verdict; the recipe + section
+        header already convey "rebased onto LKG" without needing extra
+        prose.  The skip is what makes the dispatch comment readable on
+        a happy-path multi-entry dispatch.
+        """
+        # Arrange / Act
+        body = _render(_make_result(status="pass", mode="lkg", lkg_commit=_LKG_SHA))
+
+        # Assert
+        assert "## ✅ FLT builds against this PR rebased onto LKG" in body
+        assert _LKG_SHA[:7] in body
+        assert "independent of current mathlib master health" not in body
 
     def test_lkg_fail_header(self) -> None:
-        """Scenario: lkg-mode fail header carries the rebased-onto-LKG suffix."""
-        body = _render(
-            _make_result(status="fail", mode="lkg", lkg_commit=_LKG_SHA)
-        )
-        self.assertIn(
-            "## ❌ FLT fails against this PR rebased onto LKG", body
-        )
-        self.assertIn("<details><summary>failure log</summary>", body)
+        """LKG-mode fail header carries the rebased-onto-LKG suffix.
+
+        The suffix makes the verdict's framing immediately legible:
+        "this fail is what your PR did to LKG", not "this fail is
+        master's fault leaking through".
+        """
+        # Arrange / Act
+        body = _render(_make_result(status="fail", mode="lkg", lkg_commit=_LKG_SHA))
+
+        # Assert
+        assert "## ❌ FLT fails against this PR rebased onto LKG" in body
+        assert "<details><summary>failure log</summary>" in body
 
     def test_lkg_fail_keeps_framing(self) -> None:
-        """Scenario: lkg fail still emits the rebased-on-LKG subtitle so the verdict is interpretable."""
-        body = _render(
-            _make_result(status="fail", mode="lkg", lkg_commit=_LKG_SHA)
-        )
-        self.assertIn(
-            "replayed the PR's changes on top of a mathlib revision"
-            " compatible with FLT",
-            body,
+        """LKG fail still emits the rebased-on-LKG subtitle so the verdict is interpretable.
+
+        Unlike the pass case, fails always keep the framing — a reader
+        needs to know "this fail is PR-attributable" rather than try to
+        infer that from the rest of the comment.
+        """
+        # Arrange / Act
+        body = _render(_make_result(status="fail", mode="lkg", lkg_commit=_LKG_SHA))
+
+        # Assert
+        assert (
+            "replayed the PR's changes on top of a mathlib revision compatible with FLT"
+            in body
         )
 
     def test_rebase_conflict_header_and_explainer(self) -> None:
-        """Scenario: rebase_conflict infra-failure renders a dedicated headline."""
+        """`rebase_conflict` infra-failure renders a dedicated headline + actionable explainer.
+
+        This stage means the PR's commits don't apply cleanly on top of
+        LKG, which the PR author can usually fix by rebasing.  We swap
+        out the generic infra-failure boilerplate for a targeted
+        message explaining the cause.
+        """
+        # Arrange / Act
         body = _render(
             _make_result(
                 status="infra_failure",
@@ -199,27 +259,25 @@ class LkgModeRenderingTests(unittest.TestCase):
                 mode="lkg",
                 lkg_commit=_LKG_SHA,
                 message=(
-                    "PR commits do not apply on top of LKG "
-                    f"{_LKG_SHA}; this PR likely depends on post-LKG "
-                    "mathlib changes"
+                    f"PR commits do not apply on top of LKG {_LKG_SHA}; "
+                    "this PR likely depends on post-LKG mathlib changes"
                 ),
             )
         )
-        self.assertIn(
-            "## ⚠️ FLT: could not validate (PR conflicts with LKG)",
-            body,
-        )
-        self.assertIn(
-            "do not apply cleanly on top of FLT's last-known-good", body
-        )
-        # Generic "infrastructure failure" boilerplate must NOT appear; this
-        # is an actionable signal, not pure infra noise.
-        self.assertNotIn(
-            "This is an infrastructure failure; it does not imply", body
-        )
+
+        # Assert
+        assert "## ⚠️ FLT: could not validate (PR conflicts with LKG)" in body
+        assert "do not apply cleanly on top of FLT's last-known-good" in body
+        assert "This is an infrastructure failure; it does not imply" not in body
 
     def test_mathlib_build_at_lkg_header_and_log(self) -> None:
-        """Scenario: mathlib_build_at_lkg surfaces the headline and inlines the build log."""
+        """`mathlib_build_at_lkg` surfaces the headline and inlines the build log.
+
+        Inlining the log here (unlike most infra failures) lets the PR
+        author distinguish "my changes broke mathlib's library build"
+        from a transient infra flake.
+        """
+        # Arrange / Act
         body = _render(
             _make_result(
                 status="infra_failure",
@@ -229,12 +287,13 @@ class LkgModeRenderingTests(unittest.TestCase):
                 message="mathlib failed to build with this PR rebased onto LKG",
             )
         )
-        self.assertIn(
-            "## ⚠️ FLT: could not validate (mathlib build failed at LKG)",
-            body,
+
+        # Assert
+        assert (
+            "## ⚠️ FLT: could not validate (mathlib build failed at LKG)" in body
         )
-        self.assertIn("<details><summary>mathlib build log</summary>", body)
-        self.assertIn("some build error", body)
+        assert "<details><summary>mathlib build log</summary>" in body
+        assert "some build error" in body
 
 
 # ---------------------------------------------------------------------------
@@ -242,16 +301,19 @@ class LkgModeRenderingTests(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 
-_PR_BASE = "1" * 40
-_PR_HEAD = "2" * 40
-_REPLAYED = "3" * 40
-
-
-class TestTreeRecipeTests(unittest.TestCase):
+class TestTestTreeRecipe:
     """The 'Tested:' paragraph spells out the rebase recipe."""
 
     def test_lkg_recipe_includes_count_compare_link_and_lkg(self) -> None:
-        """Scenario: lkg pass renders commit count, compare URL, and LKG commit link."""
+        """LKG pass renders commit count, compare URL, and LKG commit link.
+
+        The recipe is what makes the verdict reproducible by hand: a
+        reader can follow the compare link to see exactly what
+        commits were replayed and the LKG link to see the anchor
+        commit.  The post-cherry-pick synthetic tree SHA is local to
+        the runner and intentionally omitted.
+        """
+        # Arrange / Act
         body = _render(
             _make_result(
                 status="pass",
@@ -263,38 +325,45 @@ class TestTreeRecipeTests(unittest.TestCase):
                 replayed_tree_sha=_REPLAYED,
             )
         )
-        # The Tested anchor users skim for.
-        self.assertIn("**Tested:**", body)
-        # Commit count is named explicitly.
-        self.assertIn("4 PR commit(s)", body)
-        # Compare URL with both endpoints' SHAs in the path.
-        self.assertIn(f"/compare/{_PR_BASE}..{_PR_HEAD}", body)
-        # LKG commit link.
-        self.assertIn(f"/commit/{_LKG_SHA}", body)
-        # The post-cherry-pick synthetic tree SHA lives only on the runner
-        # disk, so the recipe omits it; readers see the LKG anchor and the
-        # PR compare URL, both of which point at refs they can browse.
-        self.assertNotIn(_REPLAYED[:7], body)
+
+        # Assert
+        assert "**Tested:**" in body
+        assert "4 PR commit(s)" in body
+        assert f"/compare/{_PR_BASE}..{_PR_HEAD}" in body
+        assert f"/commit/{_LKG_SHA}" in body
+        assert _REPLAYED[:7] not in body
 
     def test_lkg_recipe_omits_compare_link_when_endpoints_unknown(self) -> None:
-        """Scenario: a pre-cherry-pick infra failure surfaces the LKG anchor under an `Attempted:` label."""
+        """A pre-cherry-pick infra failure surfaces the LKG anchor under an `Attempted:` label.
+
+        When the validate step failed before resolving PR endpoints
+        (e.g. a fetch failure), we have an LKG to anchor on but no
+        commit range to compare.  The recipe describes the intent in
+        gerund form to make clear the build did not complete.
+        """
+        # Arrange / Act
         body = _render(
             _make_result(
                 status="infra_failure",
                 stage="fetch",
                 mode="lkg",
                 lkg_commit=_LKG_SHA,
-                # No pr_base_sha / pr_head_sha — fetch failed before resolution.
             )
         )
-        # The run stopped before any build happened; the recipe describes
-        # the intent rather than claiming success.
-        self.assertIn("**Attempted:**", body)
-        self.assertIn(f"/commit/{_LKG_SHA}", body)
-        self.assertNotIn("/compare/", body)
+
+        # Assert
+        assert "**Attempted:**" in body
+        assert f"/commit/{_LKG_SHA}" in body
+        assert "/compare/" not in body
 
     def test_merge_recipe_includes_head_base_and_count(self) -> None:
-        """Scenario: merge mode shows the merge tree's head + base + commit count."""
+        """Merge mode shows the merge tree's head + base + commit count.
+
+        The merge SHA alone is opaque — surfacing the head + base
+        commits lets the PR author audit which tree GitHub actually
+        merged.
+        """
+        # Arrange / Act
         body = _render(
             _make_result(
                 status="pass",
@@ -304,14 +373,22 @@ class TestTreeRecipeTests(unittest.TestCase):
                 commits_replayed=4,
             )
         )
-        self.assertIn("**Tested:**", body)
-        self.assertIn("the PR's merge tree", body)
-        self.assertIn(f"/commit/{_PR_HEAD}", body)
-        self.assertIn(f"/commit/{_PR_BASE}", body)
-        self.assertIn("4 commit(s) over base", body)
+
+        # Assert
+        assert "**Tested:**" in body
+        assert "the PR's merge tree" in body
+        assert f"/commit/{_PR_HEAD}" in body
+        assert f"/commit/{_PR_BASE}" in body
+        assert "4 commit(s) over base" in body
 
     def test_lkg_infra_failure_uses_attempted_label_and_gerunds(self) -> None:
-        """Scenario: lkg-mode infra failure renders the recipe in gerund form under Attempted:."""
+        """LKG-mode infra failure renders the recipe in gerund form under `Attempted:`.
+
+        Past-tense forms like "cherry-picked onto X, built against Y"
+        would lie about what happened on an infra failure where no
+        build completed.  The gerund switch keeps the recipe honest.
+        """
+        # Arrange / Act
         body = _render(
             _make_result(
                 status="infra_failure",
@@ -323,16 +400,22 @@ class TestTreeRecipeTests(unittest.TestCase):
                 commits_replayed=2,
             )
         )
-        self.assertIn("**Attempted:**", body)
-        self.assertIn("cherry-picking 2 PR commit(s)", body)
-        self.assertIn("and building against", body)
-        # The past-tense forms describe a completed build and must not
-        # appear when the build did not complete.
-        self.assertNotIn("**Tested:**", body)
-        self.assertNotIn("cherry-picked onto", body)
+
+        # Assert
+        assert "**Attempted:**" in body
+        assert "cherry-picking 2 PR commit(s)" in body
+        assert "and building against" in body
+        assert "**Tested:**" not in body
+        assert "cherry-picked onto" not in body
 
     def test_merge_infra_failure_uses_attempted_label(self) -> None:
-        """Scenario: merge-mode infra failure renders the recipe in gerund form."""
+        """Merge-mode infra failure renders the recipe in gerund form.
+
+        Subject-verb order in merge mode flips: we lead with
+        "building <ds>" because the downstream is the target of the
+        action (vs LKG mode where the commits are the subject).
+        """
+        # Arrange / Act
         body = _render(
             _make_result(
                 status="infra_failure",
@@ -341,19 +424,26 @@ class TestTreeRecipeTests(unittest.TestCase):
                 pr_base_sha=_PR_BASE,
                 pr_head_sha=_PR_HEAD,
                 commits_replayed=1,
-                # No downstream_sha — the clone step never produced one.
                 downstream_sha=None,
             )
         )
-        self.assertIn("**Attempted:**", body)
-        # Subject-verb order in merge mode flips: we lead with `building <ds>`
-        # because the downstream is the target of the action.
-        self.assertRegex(body, r"\bbuilding\b.*\bagainst the PR's merge tree\b")
-        self.assertNotIn("**Tested:**", body)
-        self.assertNotIn("built against", body)
+
+        # Assert
+        import re
+
+        assert "**Attempted:**" in body
+        assert re.search(r"\bbuilding\b.*\bagainst the PR's merge tree\b", body)
+        assert "**Tested:**" not in body
+        assert "built against" not in body
 
     def test_subtitle_appears_above_tested_line(self) -> None:
-        """Scenario: the 'replayed the PR's changes' subtitle reads before the Tested: line."""
+        """The 'replayed the PR's changes' subtitle reads before the ``Tested:`` line.
+
+        Section flow is: header → subtitle (framing) → recipe → log.
+        Reversing the subtitle and recipe would make the recipe read
+        ahead of the framing that gives it meaning.
+        """
+        # Arrange / Act
         body = _render(
             _make_result(
                 status="fail",
@@ -364,17 +454,25 @@ class TestTreeRecipeTests(unittest.TestCase):
                 commits_replayed=2,
             )
         )
+
+        # Assert
         subtitle_idx = body.find("replayed the PR's changes on top of")
         tested_idx = body.find("**Tested:**")
         log_idx = body.find("<details><summary>failure log")
-        self.assertGreater(subtitle_idx, 0)
-        self.assertGreater(tested_idx, 0)
-        self.assertGreater(log_idx, 0)
-        self.assertLess(subtitle_idx, tested_idx, "Subtitle should precede Tested:")
-        self.assertLess(tested_idx, log_idx, "Tested: should precede the failure log")
+        assert subtitle_idx > 0
+        assert tested_idx > 0
+        assert log_idx > 0
+        assert subtitle_idx < tested_idx, "Subtitle should precede Tested:"
+        assert tested_idx < log_idx, "Tested: should precede the failure log"
 
     def test_recipe_surfaces_requested_rev(self) -> None:
-        """Scenario: when the result records `downstream_rev`, the recipe link uses it as label."""
+        """When the result records ``downstream_rev``, the recipe link uses it as label.
+
+        The recipe link's URL always points at the resolved SHA so the
+        reader gets the exact tested tree; the link's label uses the
+        user's requested rev so they see what they asked for.
+        """
+        # Arrange / Act
         body = _render(
             _make_result(
                 status="pass",
@@ -386,27 +484,32 @@ class TestTreeRecipeTests(unittest.TestCase):
                 downstream_rev="v1.2.3",
             )
         )
-        # Link label includes the rev, not just the short SHA.
-        self.assertIn(
+
+        # Assert
+        assert (
             "[`leanprover-community/FLT@v1.2.3`]"
-            f"(https://github.com/leanprover-community/FLT/commit/{_DS_SHA})",
-            body,
+            f"(https://github.com/leanprover-community/FLT/commit/{_DS_SHA})"
+            in body
         )
 
 
 # ---------------------------------------------------------------------------
-# Self-contained body invariants
+# FKB-aware framing
 # ---------------------------------------------------------------------------
 
 
-_FKB_SHA = "f" * 40
-
-
-class FkbAwareFramingTests(unittest.TestCase):
+class TestFkbAwareFraming:
     """When the snapshot records a first_known_bad_commit, the subtitle states master health definitively."""
 
     def test_merge_fail_with_fkb_names_the_regression(self) -> None:
-        """Scenario: merge fail + FKB set links to the regression commit and recommends LKG mode."""
+        """Merge fail + FKB set links to the regression commit and recommends LKG mode.
+
+        FKB is positive knowledge that master is already broken for this
+        downstream.  Surfacing that turns a "your PR broke X" message
+        into "master broke X first, and the PR can't help that" — saving
+        the PR author from chasing a phantom.
+        """
+        # Arrange / Act
         body = _render(
             _make_result(
                 status="fail",
@@ -417,12 +520,20 @@ class FkbAwareFramingTests(unittest.TestCase):
                 fkb_commit=_FKB_SHA,
             )
         )
-        self.assertIn("mathlib master is currently incompatible with FLT", body)
-        self.assertIn(f"/commit/{_FKB_SHA}", body)
-        self.assertIn("Drop `--merge-branch`", body)
+
+        # Assert
+        assert "mathlib master is currently incompatible with FLT" in body
+        assert f"/commit/{_FKB_SHA}" in body
+        assert "Drop `--merge-branch`" in body
 
     def test_merge_fail_without_fkb_attributes_failure_to_pr(self) -> None:
-        """Scenario: merge fail with no FKB recorded says master is healthy and points at the PR."""
+        """Merge fail with no FKB recorded says master is healthy and points at the PR.
+
+        No FKB = the snapshot positively records master as building
+        with X.  The failure is therefore PR-attributable and we say so
+        unambiguously.
+        """
+        # Arrange / Act
         body = _render(
             _make_result(
                 status="fail",
@@ -432,13 +543,18 @@ class FkbAwareFramingTests(unittest.TestCase):
                 commits_replayed=1,
             )
         )
-        self.assertIn(
-            "mathlib master is currently known to build with FLT", body
-        )
-        self.assertIn("attributable to the PR", body)
+
+        # Assert
+        assert "mathlib master is currently known to build with FLT" in body
+        assert "attributable to the PR" in body
 
     def test_merge_pass_has_no_master_caveat(self) -> None:
-        """Scenario: a successful merge-mode build needs no subtitle disclaimer."""
+        """A successful merge-mode build needs no subtitle disclaimer.
+
+        A pass is a pass — master health is irrelevant when the
+        downstream actually built.
+        """
+        # Arrange / Act
         body = _render(
             _make_result(
                 status="pass",
@@ -448,11 +564,21 @@ class FkbAwareFramingTests(unittest.TestCase):
                 commits_replayed=1,
             )
         )
-        self.assertNotIn("mathlib master is currently", body)
-        self.assertNotIn("did not baseline against master", body)
+
+        # Assert
+        assert "mathlib master is currently" not in body
+        assert "did not baseline against master" not in body
 
     def test_lkg_pass_with_fkb_explains_why_lkg_matters(self) -> None:
-        """Scenario: lkg pass + FKB set names the master regression to sharpen the verdict."""
+        """LKG pass + FKB set names the master regression to sharpen the verdict.
+
+        Without the framing, an LKG pass reads as "build worked", which
+        a reader might assume is good news about master.  The FKB
+        caveat clarifies: the verdict is about the PR's effect on X,
+        not master's compatibility with X (which the FKB shows is
+        currently broken).
+        """
+        # Arrange / Act
         body = _render(
             _make_result(
                 status="pass",
@@ -461,24 +587,25 @@ class FkbAwareFramingTests(unittest.TestCase):
                 fkb_commit=_FKB_SHA,
             )
         )
-        self.assertIn(
-            "Current mathlib master is incompatible with FLT", body
-        )
-        self.assertIn(f"/commit/{_FKB_SHA}", body)
-        self.assertIn("purely be about the PR's effect on FLT", body)
+
+        # Assert
+        assert "Current mathlib master is incompatible with FLT" in body
+        assert f"/commit/{_FKB_SHA}" in body
+        assert "purely be about the PR's effect on FLT" in body
 
     def test_lkg_pass_without_fkb_skips_subtitle(self) -> None:
-        """Scenario: lkg pass with no FKB skips the subtitle entirely (clean verdict)."""
-        body = _render(
-            _make_result(
-                status="pass",
-                mode="lkg",
-                lkg_commit=_LKG_SHA,
-            )
-        )
-        # No subtitle at all — the recipe + section header speak for themselves.
-        self.assertNotIn("independent of current mathlib master health", body)
-        self.assertNotIn("Current mathlib master is incompatible", body)
+        """LKG pass with no FKB skips the subtitle entirely (clean verdict).
+
+        The cleanest case — recipe + section header speak for
+        themselves; an extra "this was independent of master health"
+        subtitle would just be noise.
+        """
+        # Arrange / Act
+        body = _render(_make_result(status="pass", mode="lkg", lkg_commit=_LKG_SHA))
+
+        # Assert
+        assert "independent of current mathlib master health" not in body
+        assert "Current mathlib master is incompatible" not in body
 
 
 # ---------------------------------------------------------------------------
@@ -486,8 +613,8 @@ class FkbAwareFramingTests(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 
-class DispatchBodyTests(unittest.TestCase):
-    """`render_dispatch_body` assembles all entries into one comment."""
+class TestDispatchBody:
+    """``render_dispatch_body`` assembles all entries into one comment."""
 
     def _render_dispatch(self, entries: list[dict], **kwargs) -> str:
         return post_results.render_dispatch_body(
@@ -498,67 +625,102 @@ class DispatchBodyTests(unittest.TestCase):
         )
 
     def test_title_links_merge_sha_and_run(self) -> None:
-        """Scenario: the dispatch title carries the merge SHA + run link."""
+        """The dispatch title carries the merge SHA + run link.
+
+        Both anchors are what a reader needs to navigate from the
+        comment back to the source-of-truth GitHub views (the merge
+        tree and the workflow run that produced the verdicts).
+        """
+        # Arrange / Act
         body = self._render_dispatch([_make_entry(_make_result(status="pass"))])
-        self.assertIn("# Downstream validation against PR merge", body)
-        self.assertIn(f"/commit/{_MERGE_SHA}", body)
-        self.assertIn(_RUN_URL, body)
+
+        # Assert
+        assert "# Downstream validation against PR merge" in body
+        assert f"/commit/{_MERGE_SHA}" in body
+        assert _RUN_URL in body
 
     def test_single_entry_skips_summary_table(self) -> None:
-        """Scenario: a one-entry dispatch needs no table — the section is the whole story."""
+        """A one-entry dispatch needs no table — the section is the whole story.
+
+        A two-row table for a single entry is visual noise; the
+        section header already carries the verdict at a glance.
+        """
+        # Arrange / Act
         body = self._render_dispatch([_make_entry(_make_result(status="pass"))])
-        self.assertNotIn("| Entry | Verdict |", body)
+
+        # Assert
+        assert "| Entry | Verdict |" not in body
 
     def test_multiple_entries_render_summary_table(self) -> None:
-        """Scenario: 2+ entries render a leading table with one row each, in stable order."""
+        """2+ entries render a leading table with one row each, in stable order.
+
+        The table is the first thing a reader sees; it lets them
+        triage at a glance ("3 of 4 passed, the one fail is
+        master-attributable") before diving into per-entry sections.
+        """
+        # Arrange
         entries = [
             _make_entry(
                 _make_result(
-                    downstream="Toric", status="pass", mode="lkg",
+                    downstream="Toric",
+                    status="pass",
+                    mode="lkg",
                     lkg_commit=_LKG_SHA,
                 )
             ),
             _make_entry(
-                _make_result(
-                    downstream="Toric", status="pass", mode="merge",
-                )
+                _make_result(downstream="Toric", status="pass", mode="merge")
             ),
             _make_entry(
                 _make_result(
-                    downstream="carleson", status="fail", mode="merge",
+                    downstream="carleson",
+                    status="fail",
+                    mode="merge",
                     fkb_commit=_FKB_SHA,
                 ),
                 log_tail="some build error",
             ),
         ]
+
+        # Act
         body = self._render_dispatch(entries)
-        self.assertIn("| Entry | Verdict |", body)
-        self.assertIn("|---|---|", body)
-        # Entry label (backticked) shows up for each row.
-        self.assertIn("`Toric`", body)
-        self.assertIn("`Toric --merge-branch`", body)
-        self.assertIn("`carleson --merge-branch`", body)
+
+        # Assert
+        assert "| Entry | Verdict |" in body
+        assert "|---|---|" in body
+        assert "`Toric`" in body
+        assert "`Toric --merge-branch`" in body
+        assert "`carleson --merge-branch`" in body
         # The table precedes the per-entry sections.
         table_idx = body.find("| Entry | Verdict |")
         first_section_idx = body.find("## ")
-        self.assertGreater(first_section_idx, table_idx)
+        assert first_section_idx > table_idx
 
     def test_each_entry_renders_as_a_section(self) -> None:
-        """Scenario: every entry produces its own `## ` section in the body."""
+        """Every entry produces its own ``##`` section in the body."""
+        # Arrange
         entries = [
             _make_entry(
                 _make_result(downstream="A", status="pass", mode="lkg", lkg_commit=_LKG_SHA)
             ),
-            _make_entry(
-                _make_result(downstream="B", status="pass", mode="merge")
-            ),
+            _make_entry(_make_result(downstream="B", status="pass", mode="merge")),
         ]
+
+        # Act
         body = self._render_dispatch(entries)
-        self.assertIn("## ✅ A builds against this PR rebased onto LKG", body)
-        self.assertIn("## ✅ B --merge-branch builds against this PR", body)
+
+        # Assert
+        assert "## ✅ A builds against this PR rebased onto LKG" in body
+        assert "## ✅ B --merge-branch builds against this PR" in body
 
     def test_mention_renders_once_at_top(self) -> None:
-        """Scenario: `triggered_by` produces a single `_Requested by @<user>._` line above the title."""
+        """``triggered_by`` produces a single ``_Requested by @<user>._`` line above the title.
+
+        One mention per dispatch — readers get one notification when
+        their dispatch finishes, not one per matrix entry.
+        """
+        # Arrange
+        # Act
         body = self._render_dispatch(
             [
                 _make_entry(_make_result(status="pass", downstream="A")),
@@ -566,20 +728,23 @@ class DispatchBodyTests(unittest.TestCase):
             ],
             triggered_by="marcelolynch",
         )
-        # Exactly one mention line.
-        self.assertEqual(body.count("_Requested by @marcelolynch._"), 1)
+
+        # Assert
+        assert body.count("_Requested by @marcelolynch._") == 1
         mention_idx = body.find("_Requested by @marcelolynch._")
         title_idx = body.find("# Downstream validation")
-        self.assertGreaterEqual(mention_idx, 0)
-        self.assertLess(mention_idx, title_idx)
+        assert mention_idx >= 0
+        assert mention_idx < title_idx
 
     def test_no_mention_when_triggered_by_empty(self) -> None:
-        """Scenario: empty `triggered_by` omits the mention line entirely."""
+        """Empty ``triggered_by`` omits the mention line entirely."""
+        # Arrange / Act
         body = self._render_dispatch(
-            [_make_entry(_make_result(status="pass"))],
-            triggered_by="",
+            [_make_entry(_make_result(status="pass"))], triggered_by=""
         )
-        self.assertNotIn("_Requested by", body)
+
+        # Assert
+        assert "_Requested by" not in body
 
 
 # ---------------------------------------------------------------------------
@@ -587,88 +752,107 @@ class DispatchBodyTests(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 
-class VerdictSummaryTests(unittest.TestCase):
-    """`verdict_summary` produces the one-line gloss for each table row."""
+class TestVerdictSummary:
+    """``verdict_summary`` produces the one-line gloss for each table row."""
 
     def test_lkg_pass(self) -> None:
-        """Scenario: an lkg-mode pass advertises the LKG rebase."""
-        self.assertEqual(
+        """An lkg-mode pass advertises the LKG rebase.
+
+        The "(rebased onto LKG)" suffix tells the reader at a glance
+        that the verdict is master-health-independent.
+        """
+        # Arrange / Act / Assert
+        assert (
             post_results.verdict_summary(
                 _make_result(status="pass", mode="lkg", lkg_commit=_LKG_SHA)
-            ),
-            "✅ builds (rebased onto LKG)",
+            )
+            == "✅ builds (rebased onto LKG)"
         )
 
     def test_merge_pass(self) -> None:
-        """Scenario: a merge-mode pass is the plain verdict."""
-        self.assertEqual(
-            post_results.verdict_summary(_make_result(status="pass", mode="merge")),
-            "✅ builds",
+        """A merge-mode pass is the plain verdict."""
+        # Arrange / Act / Assert
+        assert (
+            post_results.verdict_summary(_make_result(status="pass", mode="merge"))
+            == "✅ builds"
         )
 
     def test_lkg_fail_attributes_to_pr(self) -> None:
-        """Scenario: an lkg-mode fail is unambiguously the PR's fault."""
-        self.assertEqual(
+        """An lkg-mode fail is unambiguously the PR's fault.
+
+        LKG mode rebased onto known-good mathlib, so any failure must
+        be the PR's effect; the gloss states that directly.
+        """
+        # Arrange / Act / Assert
+        assert (
             post_results.verdict_summary(
                 _make_result(status="fail", mode="lkg", lkg_commit=_LKG_SHA)
-            ),
-            "❌ fails (attributable to the PR)",
+            )
+            == "❌ fails (attributable to the PR)"
         )
 
     def test_merge_fail_with_fkb_names_regression(self) -> None:
-        """Scenario: a merge fail with FKB recorded calls out the master regression."""
+        """A merge fail with FKB recorded calls out the master regression."""
+        # Arrange / Act
         summary = post_results.verdict_summary(
             _make_result(status="fail", mode="merge", fkb_commit=_FKB_SHA)
         )
-        self.assertIn("master incompatibility at", summary)
-        self.assertIn(f"/commit/{_FKB_SHA}", summary)
+
+        # Assert
+        assert "master incompatibility at" in summary
+        assert f"/commit/{_FKB_SHA}" in summary
 
     def test_merge_fail_without_fkb_attributes_to_pr(self) -> None:
-        """Scenario: a merge fail with no FKB attributes to the PR."""
-        self.assertEqual(
-            post_results.verdict_summary(
-                _make_result(status="fail", mode="merge")
-            ),
-            "❌ fails (attributable to the PR)",
+        """A merge fail with no FKB attributes to the PR."""
+        # Arrange / Act / Assert
+        assert (
+            post_results.verdict_summary(_make_result(status="fail", mode="merge"))
+            == "❌ fails (attributable to the PR)"
         )
 
     def test_rebase_conflict_gloss(self) -> None:
-        """Scenario: rebase_conflict gets a dedicated warning gloss."""
-        self.assertEqual(
+        """`rebase_conflict` gets a dedicated warning gloss."""
+        # Arrange / Act / Assert
+        assert (
             post_results.verdict_summary(
                 _make_result(
-                    status="infra_failure",
-                    stage="rebase_conflict",
-                    mode="lkg",
+                    status="infra_failure", stage="rebase_conflict", mode="lkg"
                 )
-            ),
-            "⚠️ could not validate (PR conflicts with LKG)",
+            )
+            == "⚠️ could not validate (PR conflicts with LKG)"
         )
 
     def test_mathlib_build_at_lkg_gloss(self) -> None:
-        """Scenario: mathlib_build_at_lkg has its own gloss."""
-        self.assertEqual(
+        """`mathlib_build_at_lkg` has its own gloss."""
+        # Arrange / Act / Assert
+        assert (
             post_results.verdict_summary(
                 _make_result(
                     status="infra_failure",
                     stage="mathlib_build_at_lkg",
                     mode="lkg",
                 )
-            ),
-            "⚠️ could not validate (mathlib build failed at LKG)",
+            )
+            == "⚠️ could not validate (mathlib build failed at LKG)"
         )
 
     def test_generic_infra_failure_names_stage(self) -> None:
-        """Scenario: a generic infra failure names the offending stage."""
-        self.assertEqual(
+        """A generic infra failure names the offending stage.
+
+        The stage is the actionable signal — a `clone_downstream`
+        failure tells the maintainer to check the downstream repo's
+        availability, while `lake_update` points at a manifest issue.
+        """
+        # Arrange / Act / Assert
+        assert (
             post_results.verdict_summary(
                 _make_result(
                     status="infra_failure",
                     stage="clone_downstream",
                     mode="merge",
                 )
-            ),
-            "⚠️ could not validate (clone_downstream)",
+            )
+            == "⚠️ could not validate (clone_downstream)"
         )
 
 
@@ -677,35 +861,58 @@ class VerdictSummaryTests(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 
-class SizeBudgetTests(unittest.TestCase):
+class TestSizeBudget:
     """The dispatch body fits under the GitHub PR-comment limit."""
 
     def test_body_within_limit_for_typical_dispatch(self) -> None:
-        """Scenario: a 4-entry dispatch with two failures stays under the comment limit."""
-        # 8k of repeated junk per failure log is realistic.
+        """A 4-entry dispatch with two failures stays under the comment limit.
+
+        Two ~8K logs + two passes is a representative dispatch.  The
+        body must fit under 60K (the budgeter's cap; 65 536 is
+        GitHub's hard limit, the budgeter leaves headroom for the
+        request envelope).
+        """
+        # Arrange
         log = ("oops oops " * 1000)[:8_000]
         entries = [
-            _make_entry(_make_result(downstream="A", status="pass", mode="lkg", lkg_commit=_LKG_SHA)),
             _make_entry(
-                _make_result(downstream="A", status="fail", mode="merge", fkb_commit=_FKB_SHA),
+                _make_result(downstream="A", status="pass", mode="lkg", lkg_commit=_LKG_SHA)
+            ),
+            _make_entry(
+                _make_result(
+                    downstream="A", status="fail", mode="merge", fkb_commit=_FKB_SHA
+                ),
                 log_tail=log,
             ),
-            _make_entry(_make_result(downstream="B", status="pass", mode="lkg", lkg_commit=_LKG_SHA)),
+            _make_entry(
+                _make_result(downstream="B", status="pass", mode="lkg", lkg_commit=_LKG_SHA)
+            ),
             _make_entry(
                 _make_result(downstream="B", status="fail", mode="merge"),
                 log_tail=log,
             ),
         ]
+
+        # Act
         body = post_results._shrink_to_fit(
             entries=entries,
             merge_sha=_MERGE_SHA,
             run_url=_RUN_URL,
             triggered_by="marcelolynch",
         )
-        self.assertLessEqual(len(body), post_results.COMMENT_MAX_CHARS)
+
+        # Assert
+        assert len(body) <= post_results.COMMENT_MAX_CHARS
 
     def test_oversized_logs_shrink_until_body_fits(self) -> None:
-        """Scenario: pathologically large logs are halved until the body fits the limit."""
+        """Pathologically large logs are halved until the body fits the limit.
+
+        Two 200K logs is several times the comment budget.  The
+        shrink-to-fit loop must halve the longest log repeatedly until
+        the assembled body fits — and the per-entry section headers
+        must survive so the reader still sees which entries failed.
+        """
+        # Arrange
         huge_log = "x" * 200_000
         entries = [
             _make_entry(
@@ -717,30 +924,33 @@ class SizeBudgetTests(unittest.TestCase):
                 log_tail=huge_log,
             ),
         ]
+
+        # Act
         body = post_results._shrink_to_fit(
             entries=entries,
             merge_sha=_MERGE_SHA,
             run_url=_RUN_URL,
             triggered_by="",
         )
-        self.assertLessEqual(len(body), post_results.COMMENT_MAX_CHARS)
-        # Both sections still render with their headers.
-        self.assertIn("## ❌ A --merge-branch fails", body)
-        self.assertIn("## ❌ B --merge-branch fails", body)
+
+        # Assert
+        assert len(body) <= post_results.COMMENT_MAX_CHARS
+        assert "## ❌ A --merge-branch fails" in body
+        assert "## ❌ B --merge-branch fails" in body
 
 
 # ---------------------------------------------------------------------------
-# Self-contained body invariants
+# Requested-name flow (slug / short-name dichotomy)
 # ---------------------------------------------------------------------------
 
 
-class RequestedNameTests(unittest.TestCase):
-    """When `requested_name` is set, it surfaces as the displayed entry token.
+class TestRequestedName:
+    """When ``requested_name`` is set, it surfaces as the displayed entry token.
 
-    The literal token the user typed (short name or `owner/repo` slug)
-    flows through validate.sh into result.json. post_results.py uses it
-    for the displayed entry label only; prose stays on the canonical
-    downstream name.
+    The literal token the user typed (short name or ``owner/repo``
+    slug) flows through validate.sh into result.json.  post_results
+    uses it for the displayed entry label only; prose stays on the
+    canonical downstream name.
     """
 
     def _render_section(self, **result_overrides) -> str:
@@ -755,24 +965,30 @@ class RequestedNameTests(unittest.TestCase):
         )
 
     def test_slug_request_shows_in_section_header(self) -> None:
-        """Scenario: a section rendered for a slug request displays the slug in the header."""
+        """A section rendered for a slug request displays the slug in the header.
+
+        Header mirrors the user's request; prose (the recipe sentence
+        below) continues to use the canonical name so prose stays
+        readable even when the slug form is awkward in running text.
+        """
+        # Arrange / Act
         body = self._render_section(
             status="pass",
             mode="lkg",
             lkg_commit=_LKG_SHA,
             requested_name="leanprover-community/FLT",
         )
-        self.assertIn(
-            "## ✅ leanprover-community/FLT builds against this PR rebased onto LKG",
-            body,
+
+        # Assert
+        assert (
+            "## ✅ leanprover-community/FLT builds against this PR rebased onto LKG"
+            in body
         )
-        # Canonical name still appears in prose (the framing subtitle
-        # would name it, but here FKB is null so the subtitle is skipped;
-        # the recipe sentence does use it).
-        self.assertIn("FLT's last-known-good", body)
+        assert "FLT's last-known-good" in body
 
     def test_slug_request_shows_in_summary_table(self) -> None:
-        """Scenario: the summary table cell shows the user's literal slug, not the canonical name."""
+        """The summary table cell shows the user's literal slug, not the canonical name."""
+        # Arrange / Act
         body = post_results.render_dispatch_body(
             entries=[
                 _make_entry(
@@ -784,30 +1000,48 @@ class RequestedNameTests(unittest.TestCase):
                         requested_name="leanprover-community/FLT",
                     )
                 ),
-                _make_entry(_make_result(downstream="Toric", status="pass", mode="lkg", lkg_commit=_LKG_SHA)),
+                _make_entry(
+                    _make_result(
+                        downstream="Toric",
+                        status="pass",
+                        mode="lkg",
+                        lkg_commit=_LKG_SHA,
+                    )
+                ),
             ],
             merge_sha=_MERGE_SHA,
             run_url=_RUN_URL,
         )
-        self.assertIn("`leanprover-community/FLT`", body)
+
+        # Assert
+        assert "`leanprover-community/FLT`" in body
 
     def test_no_requested_name_falls_back_to_downstream(self) -> None:
-        """Scenario: result.json without `requested_name` (the common case) shows the canonical name."""
-        body = self._render_section(
-            status="pass",
-            mode="lkg",
-            lkg_commit=_LKG_SHA,
-        )
-        self.assertIn(
-            "## ✅ FLT builds against this PR rebased onto LKG", body
-        )
+        """result.json without ``requested_name`` (the common case) shows the canonical name."""
+        # Arrange / Act
+        body = self._render_section(status="pass", mode="lkg", lkg_commit=_LKG_SHA)
+
+        # Assert
+        assert "## ✅ FLT builds against this PR rebased onto LKG" in body
 
 
-class SelfContainedBodyTests(unittest.TestCase):
-    """No hidden markers or cross-dispatch scaffolding leak into a rendered section."""
+# ---------------------------------------------------------------------------
+# Self-contained body invariants
+# ---------------------------------------------------------------------------
+
+
+class TestSelfContainedBody:
+    """No hidden markers or cross-dispatch scaffolding leak into a rendered section.
+
+    The dispatch-level comment is always POSTed fresh; an accidentally-
+    leaked marker or history block would either trigger the wrong
+    edit-in-place behaviour or visibly bloat the comment with
+    leftovers from earlier design iterations.
+    """
 
     def test_section_contains_no_hidden_html_marker(self) -> None:
-        """Scenario: render_entry_section emits no `<!-- pr-check-downstream:* -->` blocks."""
+        """``render_entry_section`` emits no ``<!-- pr-check-downstream:* -->`` blocks."""
+        # Arrange / Act
         body = _render(
             _make_result(
                 status="pass",
@@ -816,14 +1050,15 @@ class SelfContainedBodyTests(unittest.TestCase):
                 downstream_rev="v1.2.3",
             )
         )
-        self.assertNotIn("<!-- pr-check-downstream:result:", body)
-        self.assertNotIn("<!-- pr-check-downstream:history-data", body)
+
+        # Assert
+        assert "<!-- pr-check-downstream:result:" not in body
+        assert "<!-- pr-check-downstream:history-data" not in body
 
     def test_section_renders_a_single_run_without_a_history_block(self) -> None:
-        """Scenario: the section contains the current verdict only — no `Previous runs` list."""
+        """The section contains the current verdict only — no `Previous runs` list."""
+        # Arrange / Act
         body = _render(_make_result(status="fail"))
-        self.assertNotIn("**Previous runs**", body)
 
-
-if __name__ == "__main__":
-    unittest.main()
+        # Assert
+        assert "**Previous runs**" not in body

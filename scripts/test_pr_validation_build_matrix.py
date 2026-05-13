@@ -1,29 +1,48 @@
 #!/usr/bin/env python3
-"""Tests for scripts/pr_validation/build_matrix.py."""
+"""
+Tests for: scripts.pr_validation.build_matrix
+
+Coverage scope:
+    - ``_parse_entry`` — the comment-grammar parser for one entry
+      (``<name-or-slug>[@<rev>] [--merge-branch]``).
+    - ``_slugify_rev`` — the rev → filesystem-safe slug used in artifact
+      names and the workflow job display title.
+    - ``main`` end-to-end — inventory resolution (both short name and
+      ``owner/repo`` slug forms), LKG snapshot enrichment, FKB
+      attachment, dedup semantics, error paths.
+
+Out of scope:
+    - The published LKG snapshot itself.  Tests point at on-disk JSON
+      fixtures via ``--lkg-snapshot-url`` (``file://`` URI) so the
+      production URL is never reached.
+    - The downstream side of the validation (validate.sh, post_results).
+      Those have their own files.
+
+Why this matters
+----------------
+``build_matrix.py`` is the single source of truth for downstream-name
+resolution: ``mathlib-ci`` passes the user's literal token through
+verbatim, and this script decides whether ``leanprover-community/FLT``
+and ``FLT`` are the same matrix row.  A regression that misroutes the
+two forms would either silently build the wrong downstream or report
+"unknown downstream" for a perfectly valid request.  The LKG / FKB
+attachment is what powers the dispatch comment's master-health
+framing — missing it would make every fail look like the PR's fault
+even when master is already broken.
+"""
 
 from __future__ import annotations
 
-import importlib.util
 import json
 import sys
 import tempfile
-import unittest
 from pathlib import Path
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-# build_matrix lives outside the `scripts.` package proper (no __init__ in
-# pr_validation), so import the module by path.
-_BUILD_MATRIX_PATH = (
-    Path(__file__).resolve().parent / "pr_validation" / "build_matrix.py"
-)
-_spec = importlib.util.spec_from_file_location(
-    "pr_validation_build_matrix", _BUILD_MATRIX_PATH
-)
-build_matrix = importlib.util.module_from_spec(_spec)
-assert _spec.loader is not None
-_spec.loader.exec_module(build_matrix)
+from scripts.conftest import SHA_F
+from scripts.pr_validation import build_matrix
 
 
 # ---------------------------------------------------------------------------
@@ -57,6 +76,9 @@ _INVENTORY_JSON = {
     ],
 }
 
+# LKG = "f" * 40 (SHA_F from conftest), FKB = "b" * 40, "zero" = "0" * 40.
+# We use the conftest constant where the value carries semantic meaning
+# (a healthy LKG); the others stay literal because they're local fixtures.
 _LKG_SNAPSHOT_JSON = {
     "schema_version": 1,
     "exported_at": "2026-05-01T00:00:00Z",
@@ -66,7 +88,7 @@ _LKG_SNAPSHOT_JSON = {
         "FLT": {
             "repo": "leanprover-community/FLT",
             "dependency_name": "mathlib",
-            "last_known_good_commit": "f" * 40,
+            "last_known_good_commit": SHA_F,
             "first_known_bad_commit": None,
         },
         "Toric": {
@@ -124,51 +146,88 @@ def _run_main(
 # ---------------------------------------------------------------------------
 
 
-class ParseEntryTests(unittest.TestCase):
-    """build_matrix._parse_entry covers the comment grammar."""
+class TestParseEntry:
+    """`_parse_entry` covers the comment grammar.
+
+    Each test pins one axis of the
+    ``<name-or-slug>[@<rev>] [--merge-branch]`` grammar against a
+    representative entry; together they form a complete table over the
+    grammar's three optional tokens.
+    """
 
     def test_bare_name_defaults_to_lkg_mode_and_no_rev(self) -> None:
-        """Scenario: a bare `<name>` defaults to LKG mode, no rev."""
-        self.assertEqual(
-            build_matrix._parse_entry("FLT"), ("FLT", None, "lkg")
-        )
+        """A bare ``<name>`` defaults to LKG mode with ``rev=None``.
+
+        LKG is the user-facing default since the rebase-onto-LKG flow
+        gives a verdict independent of current master health; this test
+        pins that default at the parser level.
+        """
+        # Arrange / Act / Assert
+        assert build_matrix._parse_entry("FLT") == ("FLT", None, "lkg")
 
     def test_rev_suffix_attaches_to_entry(self) -> None:
-        """Scenario: `<name>@<rev>` captures the rev separately from the name."""
-        self.assertEqual(
-            build_matrix._parse_entry("FLT@v1.2.3"),
-            ("FLT", "v1.2.3", "lkg"),
+        """`<name>@<rev>` captures the rev separately from the name."""
+        # Arrange / Act / Assert
+        assert build_matrix._parse_entry("FLT@v1.2.3") == (
+            "FLT",
+            "v1.2.3",
+            "lkg",
         )
 
     def test_merge_branch_flag_flips_mode(self) -> None:
-        """Scenario: trailing `--merge-branch` flips that entry to merge mode."""
-        self.assertEqual(
-            build_matrix._parse_entry("FLT --merge-branch"),
-            ("FLT", None, "merge"),
+        """Trailing `--merge-branch` flips that entry to merge mode."""
+        # Arrange / Act / Assert
+        assert build_matrix._parse_entry("FLT --merge-branch") == (
+            "FLT",
+            None,
+            "merge",
         )
 
     def test_rev_and_merge_branch_combine(self) -> None:
-        """Scenario: rev + flag work together."""
-        self.assertEqual(
-            build_matrix._parse_entry("FLT@v1.2.3 --merge-branch"),
-            ("FLT", "v1.2.3", "merge"),
+        """Rev + flag work together (the grammar's most expressive form)."""
+        # Arrange / Act / Assert
+        assert build_matrix._parse_entry("FLT@v1.2.3 --merge-branch") == (
+            "FLT",
+            "v1.2.3",
+            "merge",
         )
 
     def test_unknown_flag_raises(self) -> None:
-        """Scenario: any flag other than --merge-branch is rejected."""
-        with self.assertRaises(ValueError) as ctx:
+        """Any flag other than `--merge-branch` is rejected.
+
+        Strict grammar prevents the dispatcher from silently ignoring a
+        token the user almost certainly meant to be acted on (e.g. a
+        misspelling of `--merge-branch`).
+        """
+        # Arrange
+        # Act
+        try:
             build_matrix._parse_entry("FLT --bogus")
-        self.assertIn("--merge-branch", str(ctx.exception))
+        except ValueError as exc:
+            # Assert
+            assert "--merge-branch" in str(exc)
+        else:
+            raise AssertionError("expected ValueError")
 
     def test_empty_name_raises(self) -> None:
-        """Scenario: `@v1` (no bare name) is rejected."""
-        with self.assertRaises(ValueError):
+        """`@v1` (no bare name) is rejected."""
+        # Arrange / Act / Assert
+        try:
             build_matrix._parse_entry("@v1")
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("expected ValueError")
 
     def test_empty_rev_after_at_raises(self) -> None:
-        """Scenario: `FLT@` (with an `@` and nothing after) is rejected."""
-        with self.assertRaises(ValueError):
+        """`FLT@` (with an `@` and nothing after) is rejected."""
+        # Arrange / Act / Assert
+        try:
             build_matrix._parse_entry("FLT@")
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("expected ValueError")
 
 
 # ---------------------------------------------------------------------------
@@ -176,30 +235,35 @@ class ParseEntryTests(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 
-class SlugifyTests(unittest.TestCase):
-    """_slugify_rev maps revs to filesystem-safe slugs."""
+class TestSlugifyRev:
+    """`_slugify_rev` maps revs to filesystem-safe slugs.
+
+    The slug ends up in artifact names and the workflow job display
+    title; anything outside ``[A-Za-z0-9._-]`` collapses to ``_`` so
+    GitHub doesn't reject the names.
+    """
 
     def test_none_yields_default(self) -> None:
-        """Scenario: no rev → the literal sentinel 'default'."""
-        self.assertEqual(build_matrix._slugify_rev(None), "default")
-        self.assertEqual(build_matrix._slugify_rev(""), "default")
+        """No rev → the literal sentinel ``default``."""
+        # Arrange / Act / Assert
+        assert build_matrix._slugify_rev(None) == "default"
+        assert build_matrix._slugify_rev("") == "default"
 
     def test_simple_branch_unchanged(self) -> None:
-        """Scenario: `main`, `v1.2.3` pass through with no rewrite."""
-        self.assertEqual(build_matrix._slugify_rev("main"), "main")
-        self.assertEqual(build_matrix._slugify_rev("v1.2.3"), "v1.2.3")
+        """`main`, `v1.2.3` pass through with no rewrite."""
+        # Arrange / Act / Assert
+        assert build_matrix._slugify_rev("main") == "main"
+        assert build_matrix._slugify_rev("v1.2.3") == "v1.2.3"
 
     def test_slashes_replaced(self) -> None:
-        """Scenario: `feature/foo` is sanitised so the slug is safe for paths."""
-        self.assertEqual(
-            build_matrix._slugify_rev("feature/foo"), "feature_foo"
-        )
+        """`feature/foo` is sanitised so the slug is safe for artifact paths."""
+        # Arrange / Act / Assert
+        assert build_matrix._slugify_rev("feature/foo") == "feature_foo"
 
     def test_special_chars_collapsed(self) -> None:
-        """Scenario: runs of unsafe chars collapse into a single underscore."""
-        self.assertEqual(
-            build_matrix._slugify_rev("foo bar*baz"), "foo_bar_baz"
-        )
+        """Runs of unsafe chars collapse into a single underscore."""
+        # Arrange / Act / Assert
+        assert build_matrix._slugify_rev("foo bar*baz") == "foo_bar_baz"
 
 
 # ---------------------------------------------------------------------------
@@ -207,261 +271,402 @@ class SlugifyTests(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 
-class BuildMatrixCLITests(unittest.TestCase):
-    """End-to-end exercise of build_matrix.main()."""
+class TestBuildMatrixCLI:
+    """End-to-end exercise of ``build_matrix.main()``.
 
-    def setUp(self) -> None:
+    Each test sets up a temp dir with the on-disk inventory + (when
+    relevant) the LKG snapshot, runs main with patched argv, and reads
+    the resulting matrix.json to assert on its shape.
+    """
+
+    def setup_method(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self._tmp.cleanup)
         self.tmpdir = Path(self._tmp.name)
         self.inventory = _write_inventory(self.tmpdir)
         self.output = self.tmpdir / "matrix.json"
+
+    def teardown_method(self) -> None:
+        self._tmp.cleanup()
 
     def _read_matrix(self) -> list[dict]:
         return json.loads(self.output.read_text())["include"]
 
     def test_bare_name_picks_lkg_and_fetches_snapshot(self) -> None:
-        """Scenario: a bare name defaults to LKG mode and the snapshot is fetched."""
+        """A bare name defaults to LKG mode and the snapshot is fetched.
+
+        LKG mode requires the snapshot's ``last_known_good_commit`` to
+        rebase onto; ``main`` must fetch the snapshot whenever any entry
+        is in LKG mode.
+        """
+        # Arrange
         snapshot = _write_snapshot(self.tmpdir)
+
+        # Act
         rc = _run_main(
             inventory=self.inventory,
             names="FLT",
             output=self.output,
             snapshot_url=snapshot.as_uri(),
         )
-        self.assertEqual(rc, 0)
+
+        # Assert
+        assert rc == 0
         include = self._read_matrix()
-        self.assertEqual(len(include), 1)
+        assert len(include) == 1
         entry = include[0]
-        self.assertEqual(entry["name"], "FLT")
-        self.assertEqual(entry["mode"], "lkg")
-        self.assertEqual(entry["rev"], "")
-        self.assertEqual(entry["rev_slug"], "default")
-        self.assertEqual(entry["lkg_commit"], "f" * 40)
+        assert entry["name"] == "FLT"
+        assert entry["mode"] == "lkg"
+        assert entry["rev"] == ""
+        assert entry["rev_slug"] == "default"
+        assert entry["lkg_commit"] == SHA_F
 
     def test_merge_branch_entry_has_no_lkg_commit_field(self) -> None:
-        """Scenario: a `--merge-branch` entry resolves without a `lkg_commit` field."""
+        """A `--merge-branch` entry resolves without a `lkg_commit` field.
+
+        Merge mode builds against the PR's would-be-merged tree directly
+        and doesn't need the LKG anchor; the field's absence is the
+        validate step's signal to take the merge-mode code path.
+        """
+        # Arrange
         snapshot = _write_snapshot(self.tmpdir)
+
+        # Act
         rc = _run_main(
             inventory=self.inventory,
             names="FLT --merge-branch",
             output=self.output,
             snapshot_url=snapshot.as_uri(),
         )
-        self.assertEqual(rc, 0)
+
+        # Assert
+        assert rc == 0
         entry = self._read_matrix()[0]
-        self.assertEqual(entry["mode"], "merge")
-        self.assertNotIn("lkg_commit", entry)
+        assert entry["mode"] == "merge"
+        assert "lkg_commit" not in entry
 
     def test_merge_only_dispatch_tolerates_snapshot_fetch_failure(self) -> None:
-        """Scenario: a merge-only dispatch still succeeds when the LKG snapshot is unreachable."""
+        """A merge-only dispatch still succeeds when the LKG snapshot is unreachable.
+
+        With no LKG-mode entries the snapshot is FKB-enrichment-only; we
+        warn and proceed.  This keeps the workflow usable even if the
+        published static-site URL temporarily 404s.
+        """
+        # Arrange / Act
         rc = _run_main(
             inventory=self.inventory,
             names="FLT --merge-branch",
             output=self.output,
             snapshot_url="file:///nonexistent/path/lkg.json",
         )
-        # No LKG-mode entries, so the snapshot is enrichment-only and we
-        # proceed with a warning.
-        self.assertEqual(rc, 0)
+
+        # Assert
+        assert rc == 0
         entry = self._read_matrix()[0]
-        self.assertNotIn("fkb_commit", entry)
+        assert "fkb_commit" not in entry
 
     def test_fkb_attached_when_snapshot_records_it(self) -> None:
-        """Scenario: an entry with a snapshot FKB gets `fkb_commit` on its matrix row (both modes)."""
+        """An entry with a snapshot FKB gets ``fkb_commit`` on its matrix row (both modes).
+
+        FKB enrichment applies independent of mode — the comment
+        renderer uses it for definitive master-health framing in both
+        LKG and merge passes / fails.
+        """
+        # Arrange
         snapshot = _write_snapshot(self.tmpdir)
+
+        # Act
         rc = _run_main(
             inventory=self.inventory,
             names="Toric, Toric --merge-branch",
             output=self.output,
             snapshot_url=snapshot.as_uri(),
         )
-        self.assertEqual(rc, 0)
+
+        # Assert
+        assert rc == 0
         include = self._read_matrix()
-        # FKB enrichment applies to both modes when the snapshot records it.
         for entry in include:
-            self.assertEqual(entry["fkb_commit"], "b" * 40)
+            assert entry["fkb_commit"] == "b" * 40
 
     def test_fkb_absent_when_snapshot_has_no_regression(self) -> None:
-        """Scenario: a downstream with `first_known_bad_commit: null` gets no `fkb_commit` field."""
+        """A downstream with ``first_known_bad_commit: null`` gets no ``fkb_commit`` field.
+
+        Master is healthy for this downstream; the comment renderer
+        should not invent an FKB caveat.  Field's absence triggers the
+        "master is currently known to build with X" framing.
+        """
+        # Arrange
         snapshot = _write_snapshot(self.tmpdir)
+
+        # Act
         rc = _run_main(
             inventory=self.inventory,
             names="FLT",
             output=self.output,
             snapshot_url=snapshot.as_uri(),
         )
-        self.assertEqual(rc, 0)
-        self.assertNotIn("fkb_commit", self._read_matrix()[0])
+
+        # Assert
+        assert rc == 0
+        assert "fkb_commit" not in self._read_matrix()[0]
 
     def test_rev_attached_to_entry(self) -> None:
-        """Scenario: `FLT@v1.2.3` produces rev + slug fields on the matrix entry."""
+        """`FLT@v1.2.3` produces rev + slug fields on the matrix entry."""
+        # Arrange
         snapshot = _write_snapshot(self.tmpdir)
+
+        # Act
         rc = _run_main(
             inventory=self.inventory,
             names="FLT@v1.2.3",
             output=self.output,
             snapshot_url=snapshot.as_uri(),
         )
-        self.assertEqual(rc, 0)
+
+        # Assert
+        assert rc == 0
         entry = self._read_matrix()[0]
-        self.assertEqual(entry["rev"], "v1.2.3")
-        self.assertEqual(entry["rev_slug"], "v1.2.3")
+        assert entry["rev"] == "v1.2.3"
+        assert entry["rev_slug"] == "v1.2.3"
 
     def test_mixed_request_distinct_entries(self) -> None:
-        """Scenario: rev + flag combos that resolve differently get distinct matrix entries."""
+        """Rev + flag combos that resolve differently get distinct matrix entries.
+
+        ``(name, rev, mode)`` is the dedup key, so ``FLT`` and
+        ``FLT@main --merge-branch`` are two rows in the same dispatch.
+        Stable order matches the user's input order.
+        """
+        # Arrange
         snapshot = _write_snapshot(self.tmpdir)
+
+        # Act
         rc = _run_main(
             inventory=self.inventory,
             names="FLT, FLT@main --merge-branch, Toric",
             output=self.output,
             snapshot_url=snapshot.as_uri(),
         )
-        self.assertEqual(rc, 0)
+
+        # Assert
+        assert rc == 0
         include = self._read_matrix()
         triples = [(e["name"], e["rev"], e["mode"]) for e in include]
-        self.assertEqual(
-            triples,
-            [
-                ("FLT", "", "lkg"),
-                ("FLT", "main", "merge"),
-                ("Toric", "", "lkg"),
-            ],
-        )
+        assert triples == [
+            ("FLT", "", "lkg"),
+            ("FLT", "main", "merge"),
+            ("Toric", "", "lkg"),
+        ]
 
     def test_duplicate_identical_entries_dedup(self) -> None:
-        """Scenario: identical entries (same name, rev, mode) are silently collapsed."""
+        """Identical entries (same name, rev, mode) are silently collapsed."""
+        # Arrange
         snapshot = _write_snapshot(self.tmpdir)
+
+        # Act
         rc = _run_main(
             inventory=self.inventory,
             names="FLT, FLT, FLT@main, FLT@main",
             output=self.output,
             snapshot_url=snapshot.as_uri(),
         )
-        self.assertEqual(rc, 0)
+
+        # Assert
+        assert rc == 0
         names = [(e["name"], e["rev"]) for e in self._read_matrix()]
-        self.assertEqual(names, [("FLT", ""), ("FLT", "main")])
+        assert names == [("FLT", ""), ("FLT", "main")]
 
     def test_unknown_name_returns_nonzero(self) -> None:
-        """Scenario: a name not in the inventory is rejected before snapshot fetch."""
+        """A name not in the inventory is rejected before snapshot fetch.
+
+        The snapshot fetch is the most expensive part of ``main`` (HTTP
+        round-trip).  Rejecting unknown names first keeps a typo cheap.
+        """
+        # Arrange / Act
         with patch.object(build_matrix, "_fetch_lkg_snapshot") as fetch_mock:
             rc = _run_main(
                 inventory=self.inventory,
                 names="MissingProject",
                 output=self.output,
             )
-        self.assertEqual(rc, 1)
+
+        # Assert
+        assert rc == 1
         fetch_mock.assert_not_called()
 
     def test_slug_form_resolves_to_inventory_entry(self) -> None:
-        """Scenario: an `owner/repo` slug resolves to the same canonical entry as the short name."""
+        """An ``owner/repo`` slug resolves to the same canonical entry as the short name.
+
+        The canonical name flows into all internal fields (artifacts,
+        prose, dedup) while the user's literal slug survives on
+        ``requested_name`` for the displayed entry label.
+        """
+        # Arrange
         snapshot = _write_snapshot(self.tmpdir)
+
+        # Act
         rc = _run_main(
             inventory=self.inventory,
             names="leanprover-community/FLT",
             output=self.output,
             snapshot_url=snapshot.as_uri(),
         )
-        self.assertEqual(rc, 0)
+
+        # Assert
+        assert rc == 0
         entry = self._read_matrix()[0]
-        # Canonical name flows into all internal fields…
-        self.assertEqual(entry["name"], "FLT")
-        self.assertEqual(entry["repo"], "leanprover-community/FLT")
-        # …and the user's literal token is preserved for display.
-        self.assertEqual(entry["requested_name"], "leanprover-community/FLT")
+        assert entry["name"] == "FLT"
+        assert entry["repo"] == "leanprover-community/FLT"
+        assert entry["requested_name"] == "leanprover-community/FLT"
 
     def test_slug_match_is_case_insensitive(self) -> None:
-        """Scenario: GitHub slugs are case-insensitive, so we accept any casing."""
+        """GitHub slugs are case-insensitive, so we accept any casing.
+
+        GitHub URLs treat ``LeanProver-Community/flt`` and
+        ``leanprover-community/FLT`` as the same repo; the resolver
+        mirrors that semantics so users don't have to remember exact
+        case.
+        """
+        # Arrange
         snapshot = _write_snapshot(self.tmpdir)
+
+        # Act
         rc = _run_main(
             inventory=self.inventory,
             names="LeanProver-Community/flt",
             output=self.output,
             snapshot_url=snapshot.as_uri(),
         )
-        self.assertEqual(rc, 0)
+
+        # Assert
+        assert rc == 0
         entry = self._read_matrix()[0]
-        self.assertEqual(entry["name"], "FLT")
-        self.assertEqual(
-            entry["requested_name"], "LeanProver-Community/flt"
-        )
+        assert entry["name"] == "FLT"
+        assert entry["requested_name"] == "LeanProver-Community/flt"
 
     def test_short_name_and_slug_collapse_into_one_row(self) -> None:
-        """Scenario: `FLT` and `leanprover-community/FLT` resolve to the same matrix row."""
+        """`FLT` and `leanprover-community/FLT` resolve to the same matrix row.
+
+        Dedup runs on the canonical name, so the two forms can't trigger
+        the same build twice; the first form the user typed wins as the
+        displayed token.
+        """
+        # Arrange
         snapshot = _write_snapshot(self.tmpdir)
+
+        # Act
         rc = _run_main(
             inventory=self.inventory,
             names="FLT, leanprover-community/FLT",
             output=self.output,
             snapshot_url=snapshot.as_uri(),
         )
-        self.assertEqual(rc, 0)
+
+        # Assert
+        assert rc == 0
         include = self._read_matrix()
-        self.assertEqual(len(include), 1)
-        # The first form (the short name) wins as the display token.
-        self.assertEqual(include[0]["requested_name"], "FLT")
+        assert len(include) == 1
+        assert include[0]["requested_name"] == "FLT"
 
     def test_requested_name_omitted_when_equal_to_canonical(self) -> None:
-        """Scenario: when the user typed the short name, `requested_name` mirrors `name`."""
+        """When the user typed the short name, ``requested_name`` mirrors ``name``.
+
+        The display path falls back to ``downstream`` (the canonical
+        name) when ``requested_name`` is unset, so we only need to
+        record the slug form; the short-name case is recorded for
+        symmetry but doesn't affect display.
+        """
+        # Arrange
         snapshot = _write_snapshot(self.tmpdir)
+
+        # Act
         rc = _run_main(
             inventory=self.inventory,
             names="FLT",
             output=self.output,
             snapshot_url=snapshot.as_uri(),
         )
-        self.assertEqual(rc, 0)
+
+        # Assert
+        assert rc == 0
         entry = self._read_matrix()[0]
-        self.assertEqual(entry["requested_name"], "FLT")
+        assert entry["requested_name"] == "FLT"
 
     def test_unknown_slug_returns_nonzero(self) -> None:
-        """Scenario: a slug that matches no inventory entry is rejected with both lookup forms named."""
+        """A slug that matches no inventory entry is rejected."""
+        # Arrange / Act
         rc = _run_main(
             inventory=self.inventory,
             names="some-org/nonexistent",
             output=self.output,
         )
-        self.assertEqual(rc, 1)
+
+        # Assert
+        assert rc == 1
 
     def test_unknown_flag_returns_nonzero(self) -> None:
-        """Scenario: any flag other than --merge-branch is rejected."""
+        """Any flag other than `--merge-branch` is rejected at the CLI level."""
+        # Arrange / Act
         rc = _run_main(
             inventory=self.inventory,
             names="FLT --bogus",
             output=self.output,
         )
-        self.assertEqual(rc, 1)
+
+        # Assert
+        assert rc == 1
 
     def test_missing_lkg_for_lkg_mode_returns_nonzero(self) -> None:
-        """Scenario: an LKG-mode entry whose snapshot has null LKG fails fast."""
+        """An LKG-mode entry whose snapshot has null LKG fails fast.
+
+        The rebase-onto-LKG flow can't proceed without a real LKG SHA;
+        we surface this as an error instead of silently fast-forwarding
+        to ``HEAD``.
+        """
+        # Arrange
         snapshot = _write_snapshot(self.tmpdir)
+
+        # Act
         rc = _run_main(
             inventory=self.inventory,
             names="newcomer",
             output=self.output,
             snapshot_url=snapshot.as_uri(),
         )
-        self.assertEqual(rc, 1)
+
+        # Assert
+        assert rc == 1
 
     def test_missing_lkg_acceptable_in_merge_mode(self) -> None:
-        """Scenario: `--merge-branch` doesn't care about the LKG snapshot."""
+        """`--merge-branch` doesn't care about the LKG snapshot.
+
+        Merge mode doesn't need a rebase anchor; users can still
+        validate a freshly-onboarded downstream that has no recorded
+        LKG yet.
+        """
+        # Arrange / Act
         rc = _run_main(
             inventory=self.inventory,
             names="newcomer --merge-branch",
             output=self.output,
         )
-        self.assertEqual(rc, 0)
+
+        # Assert
+        assert rc == 0
 
     def test_snapshot_fetch_failure_returns_nonzero(self) -> None:
-        """Scenario: LKG snapshot fetch transport error surfaces a clean error."""
+        """LKG snapshot fetch transport error surfaces a clean error.
+
+        When *any* entry is in LKG mode, the snapshot is a hard
+        requirement.  A 404 / network failure must fail the plan job
+        explicitly rather than silently dispatch with empty LKG fields.
+        """
+        # Arrange / Act
         rc = _run_main(
             inventory=self.inventory,
             names="FLT",
             output=self.output,
             snapshot_url="file:///nonexistent/path/lkg.json",
         )
-        self.assertEqual(rc, 1)
 
-
-if __name__ == "__main__":
-    unittest.main()
+        # Assert
+        assert rc == 1

@@ -17,7 +17,12 @@ import os
 import sys
 from pathlib import Path
 
-from log_filter import read_log_tail
+# Same dual-mode bootstrap as `scripts/probe_downstream_regression_window.py:25`
+# so this module is importable as `scripts.pr_validation.summarize` *and*
+# runnable directly via `python3 scripts/pr_validation/summarize.py`.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
+
+from scripts.pr_validation.log_filter import read_log_tail
 
 LOG_MAX_CHARS = 500_000  # GitHub step-summary limit is 1 MB per step
 
