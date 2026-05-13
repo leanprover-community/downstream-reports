@@ -259,7 +259,7 @@ def render_body(
         )
     else:
         framing = (
-            "> ⚠️ This run did not baseline against master. If master is"
+            "> This run did not baseline against master. If master is"
             " currently broken for this downstream, the failure may not be"
             " attributable to this PR. See the latest downstream report for"
             " downstream health."
