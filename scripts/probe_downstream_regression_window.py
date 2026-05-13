@@ -136,6 +136,12 @@ def run_culprit_probe(
     artifacts rather than requiring a back-link to an older run.
 
     Artifacts are written to output_dir/culprit-probe/tool-state/logs/culprit/.
+
+    Errors during the probe are intentionally swallowed: the body wraps
+    ``run_validation_attempt`` in a bare ``except Exception`` so any
+    subprocess error is logged to stdout and the skip result is still
+    emitted by the caller.  Pinned by
+    ``test_run_downstream_regression.TryCulpritProbeTests.test_does_not_propagate_exception``.
     """
     try:
         run_validation_attempt(

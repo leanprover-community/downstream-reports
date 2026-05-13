@@ -21,7 +21,27 @@ WARM_STATUSES = frozenset({"already_warm", "warmed"})
 
 
 def collect_warm_shas(summary: list[dict]) -> list[str]:
-    """Return the deduplicated SHAs whose status is terminal-warm."""
+    """Return the deduplicated SHAs whose status is terminal-warm.
+
+    A status is terminal-warm iff it is in ``WARM_STATUSES``
+    (``already_warm`` — the probe found a populated cache; or
+    ``warmed`` — we built and uploaded).  Other statuses (the
+    ``*_failed`` variants, ``no_result``, intermediate states like
+    ``staged``) are excluded — recording a non-terminal status as
+    warm would lie to the next planning pass about cache state.
+
+    Entries whose ``sha`` field is missing, ``None``, or empty are
+    silently skipped.  This is defensive against malformed summary
+    rows: the schema *should* always carry a SHA, but if the
+    ``warm-mathlib-cache.yml`` shell-level summary builder ever emits
+    a bad row we prefer to skip it rather than crash the
+    ``finalize`` job and lose the rest of the warmth recording.
+
+    Dedup is "first occurrence wins" — preserving input order keeps
+    the recorded list deterministic for log readability.
+
+    Pinned end-to-end by ``test_record_warm_shas.py``.
+    """
     seen: set[str] = set()
     out: list[str] = []
     for entry in summary:

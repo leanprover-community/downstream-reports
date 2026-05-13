@@ -236,6 +236,20 @@ class StorageBackend(Protocol):
         Returns ``{(downstream, downstream_commit): {...}}`` where each value
         contains at minimum: ``outcome``, ``episode_state``, ``first_known_bad``,
         ``target_commit``, ``failure_stage``, ``repo``, ``run_url``, ``job_url``.
+
+        Ordering: when a ``(downstream, downstream_commit)`` pair has
+        multiple matching runs, the **newest** result (highest
+        ``created_at``) wins.  Older runs are by definition stale; the
+        on-demand select step depends on this newest-wins tie-break to
+        decide whether the most recent attempt at a commit was a pass
+        or a fail.
+
+        Error outcomes are excluded — a run that errored is not a
+        conclusive prior result, and we want to retry it on the next
+        run rather than treat it as already-tested.
+
+        Pinned by
+        ``test_storage.TestFilesystemBackendLoadPriorResults``.
         """
         ...
 
