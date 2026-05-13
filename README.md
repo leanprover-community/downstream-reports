@@ -35,8 +35,11 @@ projects can use to consume the LKG data and automate mathlib bumps:
 | [`track-incompatibility`](.github/actions/track-incompatibility) | Opens / maintains a persistent issue and (optionally) a fix PR while a `first-known-bad` regression is active; closes both when it clears. |
 
 See [`docs/actions.md`](docs/actions.md) for the full input/output reference,
-the recommended **canonical example** that combines them all, and notes on
-running the workflow on a sub-daily cron.
+the recommended **canonical example** that combines them all, the
+[**authentication setup**](docs/actions.md#set-up-authentication) (default
+`GITHUB_TOKEN` vs GitHub App — the latter is needed if you want bump PRs to
+trigger your downstream's own CI), and notes on running the workflow on a
+sub-daily cron.
 
 ## Keeping your downstream up to date with the public last-known-good (LKG) data
 

@@ -25,6 +25,147 @@ below.
 
 ---
 
+## Set up authentication
+
+> [!NOTE]
+> The composite actions push branches, create / update PRs, and (for
+> `track-incompatibility`) open issues. They all need a token with the right
+> scopes. There are two ways to provide one — the built-in `GITHUB_TOKEN` is
+> the simplest, but a GitHub App is recommended when you want your
+> downstream's own CI to run on the bump PRs.
+
+### Option A — Default `GITHUB_TOKEN` (simplest, with a CI caveat)
+
+GitHub Actions injects a `GITHUB_TOKEN` into every workflow run; the composite
+actions pick it up via the `token` input's default (`${{ github.token }}`).
+Two configuration steps are required before this works:
+
+1. **Grant the necessary permissions in the workflow.** Add a `permissions:`
+   block at job (or workflow) scope. For `bump-to-latest` + `open-bump-pr`:
+
+   ```yaml
+   permissions:
+     contents: write
+     pull-requests: write
+   ```
+
+   When using `track-incompatibility` with the issue side enabled, also add
+   `issues: write`.
+
+2. **Enable PR creation at the repo level.** GitHub blocks Actions from
+   opening pull requests by default. Toggle this on under **Settings →
+   Actions → General → Workflow permissions** by ticking **"Allow GitHub
+   Actions to create and approve pull requests"**. Without it, `open-bump-pr`
+   (and `track-incompatibility`'s fix-PR side) fail with
+   `GitHub Actions is not permitted to create or approve pull requests`. This
+   setting is org-level too — an org-wide block overrides the repo toggle.
+
+With those two boxes ticked the [canonical example](#canonical-example) works
+as-is.
+
+> [!WARNING]
+> **Bump PRs opened with `GITHUB_TOKEN` do NOT trigger your downstream's CI.**
+>
+> GitHub deliberately suppresses workflow triggers (`push`, `pull_request`, …)
+> for events caused by the default `GITHUB_TOKEN`, to prevent runaway
+> recursion. PRs opened by these actions under `GITHUB_TOKEN` show up
+> authored by `github-actions[bot]` but **do not run any of the workflows
+> configured on your repo** — `pull_request` / `push` checks stay blank.
+>
+> The bump and `lake build` are still verified inside `bump-to-latest`'s own
+> job, so the PR is safe to merge. But if you rely on additional CI (lints,
+> downstream-of-downstream tests, deploy previews, …) before merging, use a
+> GitHub App token ([Option B](#option-b--github-app-installation-token-recommended-for-ci-on-pr))
+> instead.
+
+### Option B — GitHub App installation token (recommended for CI-on-PR)
+
+A GitHub App acts as its own identity, so pushes and PRs it creates trigger
+workflows the same way a human commit would. The cost is a one-time setup;
+the benefit is full CI coverage on bump PRs and a stable bot identity.
+
+1. **Create the App.** Settings → Developer settings → GitHub Apps → New
+   GitHub App. Grant **repository** permissions:
+   - `Contents: Read and write`
+   - `Pull requests: Read and write`
+   - `Issues: Read and write` — only if you use `track-incompatibility`'s
+     issue side
+   - `Metadata: Read-only` — auto-granted
+
+   No webhooks or user-level permissions are needed.
+
+2. **Install it** on the downstream repo (or on the owning org, scoped to
+   that repo).
+
+3. **Store the credentials.** From the App's settings page generate a private
+   key (PEM) and save it as a repository secret — `MY_BOT_PRIVATE_KEY` below.
+   Save the numeric App ID as a repository (or org) variable —
+   `MY_BOT_APP_ID` below.
+
+4. **Mint an installation token per run** with
+   [`actions/create-github-app-token`](https://github.com/actions/create-github-app-token)
+   and pass it to the composite actions via their `token` input:
+
+   ```yaml
+   jobs:
+     bump:
+       runs-on: ubuntu-latest
+       permissions:
+         contents: write
+         pull-requests: write
+       steps:
+         - uses: actions/create-github-app-token@v1
+           id: app-token
+           with:
+             app-id: ${{ vars.MY_BOT_APP_ID }}
+             private-key: ${{ secrets.MY_BOT_PRIVATE_KEY }}
+
+         - uses: actions/checkout@v6
+           with:
+             token: ${{ steps.app-token.outputs.token }}
+
+         - name: Bump to latest
+           id: bump
+           uses: leanprover-community/downstream-reports/.github/actions/bump-to-latest@main
+
+         - name: Open or update PR
+           if: steps.bump.outputs.updated == 'true'
+           uses: leanprover-community/downstream-reports/.github/actions/open-bump-pr@main
+           with:
+             title:           ${{ steps.bump.outputs.pr-title }}
+             message:         ${{ steps.bump.outputs.bump-description }}
+             commit-message:  ${{ steps.bump.outputs.commit-message }}
+             token:           ${{ steps.app-token.outputs.token }}
+             git-user-name:   my-bot[bot]
+             git-user-email:  ${{ vars.MY_BOT_APP_ID }}+my-bot[bot]@users.noreply.github.com
+   ```
+
+   The same `token: ${{ steps.app-token.outputs.token }}` works on
+   `track-incompatibility`. That action splits PR-side and issue-side
+   credentials (`token` vs `issue-token`) — usually only `token` needs the
+   App, since `issues: write` granted via the workflow `permissions:` block
+   is not subject to the repo-wide PR-creation override.
+
+The "Allow GitHub Actions to create and approve pull requests" repo toggle
+is **not** required when using an App token — it only governs the default
+`GITHUB_TOKEN`.
+
+#### Personal access token (PAT) 
+
+A classic or fine-grained PAT can be substituted for the App token: store
+it as a secret and pass it via the same `token` input. Two trade-offs vs an
+App:
+
+- It's bound to a single human user, so that user authors the PRs and is
+  shown as the actor that triggered subsequent CI runs.
+- It counts against that user's per-hour API rate limit, shared with all
+  their other GitHub activity.
+
+Apps are preferred for shared / organisational repos and for anything
+long-lived; PATs are fine for personal sandboxes.
+
+---
+
 ## Canonical example
 
 A two-job workflow that opens an LKG-bump PR (so the project can advance to
@@ -410,38 +551,7 @@ When `query-type: last-good-release`:
 - `commit` is the resolved SHA, for consumers that need byte-equality comparison against the `rev` field in `lake-manifest.json`.
 - Both fields are empty when no semver release precedes the downstream's current LKG.
 
-**With a GitHub App token** (to open PRs as a bot account rather than `github-actions[bot]`):
-
-```yaml
-jobs:
-  bump:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-      pull-requests: write
-    steps:
-      - uses: actions/create-github-app-token@v1
-        id: app-token
-        with:
-          app-id: ${{ vars.MY_BOT_APP_ID }}
-          private-key: ${{ secrets.MY_BOT_PRIVATE_KEY }}
-
-      - uses: actions/checkout@v6
-        with:
-          token: ${{ steps.app-token.outputs.token }}
-
-      - name: Bump to latest
-        id: bump
-        uses: leanprover-community/downstream-reports/.github/actions/bump-to-latest@main
-
-      - name: Open PR
-        if: steps.bump.outputs.updated == 'true'
-        uses: leanprover-community/downstream-reports/.github/actions/open-bump-pr@main
-        with:
-          title:           ${{ steps.bump.outputs.pr-title }}
-          message:         ${{ steps.bump.outputs.bump-description }}
-          commit-message:  ${{ steps.bump.outputs.commit-message }}
-          token:           ${{ steps.app-token.outputs.token }}
-          git-user-name:   my-bot[bot]
-          git-user-email:  ${{ vars.MY_BOT_APP_ID }}+my-bot[bot]@users.noreply.github.com
-```
+**With a GitHub App token** (so bump PRs trigger your downstream's CI and are
+attributed to a bot account rather than `github-actions[bot]`) — see
+[Authentication → Option B](#option-b--github-app-installation-token-recommended-for-ci-on-pr)
+for the full setup and example.
