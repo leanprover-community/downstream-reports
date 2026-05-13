@@ -78,15 +78,17 @@ class MergeModeRenderingTests(unittest.TestCase):
     def test_pass_header(self) -> None:
         """Scenario: merge-mode pass uses the historical headline."""
         body = _render(_make_result(status="pass"))
-        self.assertIn("### ✅ FLT — builds against this PR", body)
+        self.assertIn("### ✅ FLT builds against this PR", body)
         self.assertNotIn("rebased onto LKG", body)
         # Master-baseline caveat is still shown for merge-mode runs.
         self.assertIn("did not baseline against master", body)
+        # Header has no em-dash separator.
+        self.assertNotIn("FLT — ", body)
 
     def test_fail_inlines_log_tail(self) -> None:
         """Scenario: merge-mode fail inlines the build.log tail in a <details> block."""
         body = _render(_make_result(status="fail"))
-        self.assertIn("### ❌ FLT — fails against this PR", body)
+        self.assertIn("### ❌ FLT fails against this PR", body)
         self.assertIn("<details><summary>failure log</summary>", body)
         self.assertIn("some build error", body)
 
@@ -99,34 +101,39 @@ class MergeModeRenderingTests(unittest.TestCase):
 class LkgModeRenderingTests(unittest.TestCase):
     """Headers, tested-line, and caveats for the new mode=lkg variants."""
 
-    def test_lkg_pass_header_and_caveat(self) -> None:
-        """Scenario: lkg-mode pass calls out the rebase explicitly."""
+    def test_lkg_pass_header_and_subtitle(self) -> None:
+        """Scenario: lkg-mode pass — header has no em-dash; subtitle uses the friendly framing."""
         body = _render(
             _make_result(status="pass", mode="lkg", lkg_commit=_LKG_SHA)
         )
         self.assertIn(
-            "### ✅ FLT — builds against this PR rebased onto LKG", body
+            "### ✅ FLT builds against this PR rebased onto LKG", body
         )
-        # Master caveat is replaced by the rebase note.
+        # Master caveat does not apply to LKG mode.
         self.assertNotIn("did not baseline against master", body)
+        # New friendly subtitle wording.
         self.assertIn(
-            "rebased the PR's commits onto", body,
+            "replayed the PR's changes on top of a mathlib revision"
+            " compatible with FLT",
+            body,
         )
-        # The LKG SHA is linked, not the merge SHA.
+        # Old wording must not leak.
+        self.assertNotIn("rebased the PR's commits onto", body)
+        # The LKG SHA is still linked in the Tested: paragraph.
         self.assertIn(_LKG_SHA[:7], body)
 
     def test_lkg_fail_header(self) -> None:
-        """Scenario: lkg-mode fail surfaces the rebase context in the header."""
+        """Scenario: lkg-mode fail surfaces the rebase context in the header (no em-dash)."""
         body = _render(
             _make_result(status="fail", mode="lkg", lkg_commit=_LKG_SHA)
         )
         self.assertIn(
-            "### ❌ FLT — fails against this PR rebased onto LKG", body
+            "### ❌ FLT fails against this PR rebased onto LKG", body
         )
         self.assertIn("<details><summary>failure log</summary>", body)
 
     def test_rebase_conflict_header_and_explainer(self) -> None:
-        """Scenario: rebase_conflict infra-failure surfaces a dedicated headline."""
+        """Scenario: rebase_conflict infra-failure surfaces a dedicated headline (colon, not em-dash)."""
         body = _render(
             _make_result(
                 status="infra_failure",
@@ -141,7 +148,7 @@ class LkgModeRenderingTests(unittest.TestCase):
             )
         )
         self.assertIn(
-            "### ⚠️ FLT — could not validate (PR conflicts with LKG)",
+            "### ⚠️ FLT: could not validate (PR conflicts with LKG)",
             body,
         )
         self.assertIn(
@@ -165,7 +172,7 @@ class LkgModeRenderingTests(unittest.TestCase):
             )
         )
         self.assertIn(
-            "### ⚠️ FLT — could not validate (mathlib build failed at LKG)",
+            "### ⚠️ FLT: could not validate (mathlib build failed at LKG)",
             body,
         )
         self.assertIn("<details><summary>mathlib build log</summary>", body)
@@ -183,10 +190,10 @@ _REPLAYED = "3" * 40
 
 
 class TestTreeRecipeTests(unittest.TestCase):
-    """The 'What this run tested' paragraph spells out the rebase recipe."""
+    """The 'Tested:' paragraph spells out the rebase recipe."""
 
-    def test_lkg_recipe_includes_count_compare_link_and_replayed_tree(self) -> None:
-        """Scenario: lkg pass renders commit count, compare URL, LKG link, replayed-tree link."""
+    def test_lkg_recipe_includes_count_compare_link_and_lkg(self) -> None:
+        """Scenario: lkg pass renders commit count, compare URL, LKG link."""
         body = _render(
             _make_result(
                 status="pass",
@@ -198,17 +205,19 @@ class TestTreeRecipeTests(unittest.TestCase):
                 replayed_tree_sha=_REPLAYED,
             )
         )
-        # The literal "What this run tested" header is the anchor users skim for.
-        self.assertIn("**What this run tested:**", body)
+        # The Tested anchor users skim for.
+        self.assertIn("**Tested:**", body)
+        self.assertNotIn("**What this run tested:**", body)
         # Commit count is named explicitly.
         self.assertIn("4 PR commit(s)", body)
         # Compare URL with both endpoints' SHAs in the path.
         self.assertIn(f"/compare/{_PR_BASE}..{_PR_HEAD}", body)
         # LKG commit link.
         self.assertIn(f"/commit/{_LKG_SHA}", body)
-        # Resulting tree SHA appears explicitly so the run is reproducible.
-        self.assertIn("resulting tree", body)
-        self.assertIn(_REPLAYED[:7], body)
+        # Resulting tree SHA is no longer shown — it was a local synthetic
+        # commit that doesn't exist anywhere a reader could follow it.
+        self.assertNotIn("resulting tree", body)
+        self.assertNotIn(_REPLAYED[:7], body)
 
     def test_lkg_recipe_omits_compare_link_when_endpoints_unknown(self) -> None:
         """Scenario: a pre-cherry-pick infra failure still surfaces the LKG anchor without compare URL."""
@@ -221,7 +230,7 @@ class TestTreeRecipeTests(unittest.TestCase):
                 # No pr_base_sha / pr_head_sha — fetch failed before resolution.
             )
         )
-        self.assertIn("**What this run tested:**", body)
+        self.assertIn("**Tested:**", body)
         self.assertIn(f"/commit/{_LKG_SHA}", body)
         self.assertNotIn("/compare/", body)
 
@@ -236,14 +245,14 @@ class TestTreeRecipeTests(unittest.TestCase):
                 commits_replayed=4,
             )
         )
-        self.assertIn("**What this run tested:**", body)
+        self.assertIn("**Tested:**", body)
         self.assertIn("the PR's merge tree", body)
         self.assertIn(f"/commit/{_PR_HEAD}", body)
         self.assertIn(f"/commit/{_PR_BASE}", body)
         self.assertIn("4 commit(s) over base", body)
 
-    def test_explainer_appears_above_failure_log(self) -> None:
-        """Scenario: the 'rebased onto LKG' explainer reads before the failure log, not after it."""
+    def test_subtitle_appears_above_tested_line(self) -> None:
+        """Scenario: the 'replayed the PR's changes' subtitle reads before the Tested: line."""
         body = _render(
             _make_result(
                 status="fail",
@@ -254,15 +263,14 @@ class TestTreeRecipeTests(unittest.TestCase):
                 commits_replayed=2,
             )
         )
-        explainer_idx = body.find("rebased the PR's commits onto")
+        subtitle_idx = body.find("replayed the PR's changes on top of")
+        tested_idx = body.find("**Tested:**")
         log_idx = body.find("<details><summary>failure log")
-        self.assertGreater(explainer_idx, 0)
+        self.assertGreater(subtitle_idx, 0)
+        self.assertGreater(tested_idx, 0)
         self.assertGreater(log_idx, 0)
-        self.assertLess(
-            explainer_idx,
-            log_idx,
-            "Explainer should appear before the failure log so it's not missed.",
-        )
+        self.assertLess(subtitle_idx, tested_idx, "Subtitle should precede Tested:")
+        self.assertLess(tested_idx, log_idx, "Tested: should precede the failure log")
 
     def test_recipe_surfaces_requested_rev(self) -> None:
         """Scenario: when the result records `downstream_rev`, the recipe link uses it as label."""

@@ -147,8 +147,6 @@ def render_test_tree_paragraph(
                 f" cherry-picked onto {name}'s last-known-good mathlib"
                 f" commit {commit_link(lkg)}"
             )
-            if replayed and replayed != lkg:
-                recipe += f" → resulting tree {commit_link(replayed)}"
         elif lkg:
             # Fast-forward merge or pre-cherry-pick infra failure: still
             # surface the LKG anchor.
@@ -173,7 +171,7 @@ def render_test_tree_paragraph(
             recipe = f"the PR's merge tree {commit_link(merge_sha)}"
 
     return (
-        f"**What this run tested:** {recipe}, {ds_phrase}."
+        f"**Tested:** {recipe}, {ds_phrase}."
         f" [run]({run_url})"
     )
 
@@ -201,17 +199,17 @@ def render_body(
     rebased_suffix = " rebased onto LKG" if mode == "lkg" else ""
 
     if status == "pass":
-        header = f"### ✅ {name} — builds against this PR{rebased_suffix}"
+        header = f"### ✅ {name} builds against this PR{rebased_suffix}"
     elif status == "fail":
-        header = f"### ❌ {name} — fails against this PR{rebased_suffix}"
+        header = f"### ❌ {name} fails against this PR{rebased_suffix}"
     elif mode == "lkg" and stage == "rebase_conflict":
-        header = f"### ⚠️ {name} — could not validate (PR conflicts with LKG)"
+        header = f"### ⚠️ {name}: could not validate (PR conflicts with LKG)"
     elif mode == "lkg" and stage == "mathlib_build_at_lkg":
         header = (
-            f"### ⚠️ {name} — could not validate (mathlib build failed at LKG)"
+            f"### ⚠️ {name}: could not validate (mathlib build failed at LKG)"
         )
     else:  # generic infra_failure
-        header = f"### ⚠️ {name} — could not validate (infra: {stage})"
+        header = f"### ⚠️ {name}: could not validate (infra: {stage})"
 
     test_tree = render_test_tree_paragraph(
         name=name,
@@ -222,13 +220,13 @@ def render_body(
         run_url=run_url,
     )
 
-    # The framing/explainer paragraph goes immediately after the recipe so a
-    # skimmer reads "what was tested" → "what this verdict means" → details.
+    # The framing/explainer reads as a subtitle right under the header so a
+    # skimmer learns "what this verdict means" before scanning the recipe.
     if mode == "lkg":
         framing = (
-            "> This run rebased the PR's commits onto"
-            f" {name}'s last-known-good mathlib commit, so the verdict is"
-            " independent of current mathlib master health."
+            f"> This run replayed the PR's changes on top of a mathlib"
+            f" revision compatible with {name}, so the verdict is"
+            f" independent of current mathlib master health."
         )
     else:
         framing = (
@@ -238,7 +236,7 @@ def render_body(
             " downstream health."
         )
 
-    parts = [header, "", test_tree, "", framing, ""]
+    parts = [header, "", framing, "", test_tree, ""]
 
     if status == "fail" and log_tail:
         parts.extend(
