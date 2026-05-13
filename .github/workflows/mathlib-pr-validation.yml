@@ -145,7 +145,7 @@ jobs:
           DEFAULT_BRANCH:  ${{ matrix.default_branch }}
           DEPENDENCY_NAME: ${{ matrix.dependency_name }}
           # `matrix.rev` is `''` when the user didn't supply an `@<rev>`;
-          # validate.sh then falls back to $DEFAULT_BRANCH.
+          # validate.py then falls back to $DEFAULT_BRANCH.
           DOWNSTREAM_REV:  ${{ matrix.rev }}
           # `mode` is always set by build_matrix.py ("merge" or "lkg");
           # `lkg_commit` is only set when mode=lkg. `fkb_commit` is set
@@ -160,7 +160,7 @@ jobs:
           # entries that differ in either dimension don't collide on disk.
           OUTPUT_DIR:      ${{ runner.temp }}/artifacts/result-${{ matrix.name }}-${{ matrix.rev_slug }}-${{ matrix.mode }}
           TOOL_BIN:        ${{ runner.temp }}/tool-bin
-        run: bash scripts/pr_validation/validate.sh
+        run: python3 scripts/pr_validation/validate.py
 
       - name: Summarize result
         if: always()

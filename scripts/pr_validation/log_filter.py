@@ -18,7 +18,7 @@ _DROP_PREFIXES = (
     "✔",        # successful build targets
     "trace: .>",  # lake trace lines
     "info: ",   # lake update / elan progress (cloning, toolchain updates, etc.)
-    # GitHub Actions log directives emitted by validate.sh's section /
+    # GitHub Actions log directives emitted by validate.py's section /
     # endsection / annotation helpers. These are workflow-UI markers; in a
     # Markdown PR comment they show up as literal text and add nothing.
     "::group::",

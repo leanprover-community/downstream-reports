@@ -946,7 +946,7 @@ class TestRequestedName:
     """When ``requested_name`` is set, it surfaces as the displayed entry token.
 
     The literal token the user typed (short name or ``owner/repo``
-    slug) flows through validate.sh into result.json.  post_results
+    slug) flows through validate.py into result.json.  post_results
     uses it for the displayed entry label only; prose stays on the
     canonical downstream name.
     """

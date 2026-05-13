@@ -15,7 +15,7 @@ Out of scope:
     - The published LKG snapshot itself.  Tests point at on-disk JSON
       fixtures via ``--lkg-snapshot-url`` (``file://`` URI) so the
       production URL is never reached.
-    - The downstream side of the validation (validate.sh, post_results).
+    - The downstream side of the validation (validate.py, post_results).
       Those have their own files.
 
 Why this matters

@@ -73,9 +73,9 @@ class TestIsNoiseLine:
         self._assert_noise("info: mathlib: running post-update hooks")
 
     def test_drops_gh_actions_directives(self) -> None:
-        """`::group::` / `::endgroup::` / `::notice` / `::warning` / `::error` markers leak from validate.sh.
+        """`::group::` / `::endgroup::` / `::notice` / `::warning` / `::error` markers leak from validate.py.
 
-        validate.sh wraps each phase in ``::group::`` blocks and emits
+        validate.py wraps each phase in ``::group::`` blocks and emits
         ``::notice::`` / ``::warning::`` annotations so the live workflow
         log reads well.  Those tokens are scaffolding from the runner's
         point of view; the PR comment only wants the underlying log.
@@ -185,7 +185,7 @@ class TestReadLogTail:
     def test_returns_empty_when_log_missing(self) -> None:
         """Missing log path returns the empty string (no exception).
 
-        validate.sh emits ``result.json`` even on infra failures that
+        validate.py emits ``result.json`` even on infra failures that
         never produced a ``build.log``; the renderer must tolerate the
         log being absent rather than crash the report job.
         """

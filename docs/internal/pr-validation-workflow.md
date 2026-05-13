@@ -367,7 +367,7 @@ jobs:
           WORKDIR:      ${{ runner.temp }}/pr-validation
           OUTPUT_DIR:   ${{ runner.temp }}/artifacts/${{ matrix.name }}
           TOOL_BIN:     ${{ runner.temp }}/tool-bin
-        run: bash scripts/pr_validation/validate.sh
+        run: python3 scripts/pr_validation/validate.py
 
       - name: Upload result
         if: always()
@@ -418,7 +418,7 @@ New directory `hopscotch-reports/scripts/pr_validation/`:
   ref into `$WORKDIR/hopscotch`, runs `lake build lakedit`, copies the binary
   to `$TOOL_BIN/lakedit`. Caches by hopscotch SHA in a stable path so reruns
   on the same self-hosted runner are fast.
-- `validate.sh` — see next section.
+- `validate.py` — see next section.
 - `post_results.py` — reads every `result.json` in the validate matrix and
   POSTs a **single** dispatch-level comment on the PR. The body opens with
   an optional `_Requested by @<user>._` mention, the dispatch title, a
@@ -427,69 +427,51 @@ New directory `hopscotch-reports/scripts/pr_validation/`:
   failure log. One mention per dispatch keeps notifications quiet; the
   build logs themselves remain available via the `result-*` run artifacts.
 
-### `validate.sh` body
+### `validate.py` structure
 
-```bash
-set -euo pipefail
+The script is pure Python orchestration around shell-outs to `git`,
+`lake`, and `lakedit`. It decomposes into seven stage functions with a
+shared `Config` (env-derived, frozen) and `State` (mutable, populated
+as stages progress):
 
-mkdir -p "$WORKDIR" "$OUTPUT_DIR"
-RESULT="$OUTPUT_DIR/result.json"
-LOG="$OUTPUT_DIR/build.log"
+| Stage | What it does | Infra-failure label |
+|---|---|---|
+| 1. `clone_mathlib` | `git clone --no-checkout $UPSTREAM_REPO` | `clone` |
+| 2. `resolve_mathlib_tree` | fetch merge SHA (+ LKG when applicable), derive PR_BASE/PR_HEAD via `git rev-parse <merge>^{1,2}`, check out the working tree (merge SHA for merge mode; LKG + cherry-pick for LKG mode) | `fetch` / `checkout` / `rev_parse` / `rebase_conflict` |
+| 3. `warm_cache` | `lake exe cache get` (best-effort; failure is logged but not fatal) | — |
+| 4. `sanity_build_mathlib` | LKG mode only: `lake build Mathlib` to catch "PR depends on post-LKG mathlib changes" before it bleeds into a downstream build error | `mathlib_build_at_lkg` |
+| 5. `clone_downstream` | `git clone --no-checkout` the downstream + `fetch origin $DOWNSTREAM_REV` + `checkout FETCH_HEAD`. Same path works for branches, tags, and reachable SHAs | `clone_downstream` / `fetch_downstream` / `checkout_downstream` |
+| 6. `lakedit_set` | `lakedit set $DEPENDENCY_NAME --path $ML --project-dir $DS` | `lakedit` |
+| 7. `lake_update_and_build` | `lake update $DEPENDENCY_NAME` then `lake build` on the downstream | `lake_update` (update) / `build` (build pass or fail) |
 
-emit() {  # status, stage, message
-  python3 -c '
-import json, os, sys
-json.dump({"status": sys.argv[1], "stage": sys.argv[2], "message": sys.argv[3],
-           "downstream": os.environ["DOWNSTREAM"],
-           "merge_sha": os.environ["MERGE_SHA"]},
-          open(os.environ["RESULT"], "w"))
-' "$1" "$2" "$3"
-}
+Cross-cutting concerns:
 
-# ---- 1. Clone mathlib4 at the merge SHA --------------------------------------
-# We always clone leanprover-community/mathlib4 (the base repo). The merge
-# SHA is the GitHub-managed `refs/pull/N/merge` ref, which lives on the
-# base even when the PR was opened from a fork; the merge commit's two
-# parents are the PR's base and head, so the fork is never needed.
-ML="$WORKDIR/mathlib4"
-UPSTREAM_REPO="${UPSTREAM_REPO:-leanprover-community/mathlib4}"
-rm -rf "$ML"
-git clone --no-checkout "https://github.com/$UPSTREAM_REPO.git" "$ML" \
-  || { emit infra_failure clone "could not clone $UPSTREAM_REPO"; exit 1; }
-git -C "$ML" fetch origin "$MERGE_SHA" \
-  || { emit infra_failure fetch "merge SHA $MERGE_SHA not fetchable; PR may have conflicts"; exit 1; }
-git -C "$ML" checkout --detach "$MERGE_SHA"
-
-# ---- 2. Warm the olean cache --------------------------------------------------
-( cd "$ML" && lake exe cache get ) >> "$LOG" 2>&1 || true   # best-effort
-
-# ---- 3. Clone the downstream --------------------------------------------------
-DS="$WORKDIR/downstream"
-rm -rf "$DS"
-git clone --depth=1 --branch "$DEFAULT_BRANCH" \
-  "https://github.com/$DOWNSTREAM_REPO.git" "$DS" \
-  || { emit infra_failure clone_downstream "could not clone $DOWNSTREAM_REPO"; exit 1; }
-
-# ---- 4. lakedit set <dep> --path ---------------------------------------------
-"$TOOL_BIN/lakedit" set "$DEPENDENCY_NAME" --path "$ML" --project-dir "$DS" \
-  >> "$LOG" 2>&1 \
-  || { emit infra_failure lakedit "lakedit failed; see log"; exit 1; }
-
-# ---- 5. lake update + lake build ---------------------------------------------
-( cd "$DS" && lake update "$DEPENDENCY_NAME" ) >> "$LOG" 2>&1 \
-  || { emit infra_failure lake_update "lake update failed; see log"; exit 1; }
-
-if ( cd "$DS" && lake build ) >> "$LOG" 2>&1; then
-  emit pass build "downstream builds against PR merge ref"
-else
-  emit fail build "lake build failed; see log"
-  # exit 0 — the failure is the meaningful result, not an infra error.
-fi
-```
+- **`Log` (class)** is the single chokepoint for live streaming. Every
+  line emitted by the script (headers, annotations, subprocess output)
+  is written to both stdout (the live workflow log) and `build.log`
+  (the artifact). Subprocesses run via `log.run([...])`, which captures
+  each subprocess's stdout+stderr line-by-line and mirrors it to both
+  sinks. `log.print(...)` does the same for the script's own output.
+- **`fail_infra`** closes the current `::group::`, emits a
+  `::error::` (or `::warning::` for `rebase_conflict` /
+  `mathlib_build_at_lkg`) annotation, writes `result.json` with
+  `status="infra_failure"` + the stage label, and exits 0.
+- **`build_result_record`** is the JSON-shape contract. Optional
+  fields (`fkb_commit`, `downstream_rev`, `requested_name`, PR
+  endpoints, `commits_replayed`, `replayed_tree_sha`) are only
+  included when they carry information beyond their default — keeps
+  result.json compact and lets `post_results.py`'s
+  `result.get(...)` falsy-fallbacks work.
 
 `status` is one of `pass`, `fail`, `infra_failure`. The reporter renders these
 distinctly so users can tell "your PR breaks FLT" from "the runner couldn't
 clone FLT."
+
+`scripts/test_pr_validation_validate.py` covers `Config.from_env`,
+`build_result_record`, `derive_pr_endpoints`, the `Log` streaming
+contract, and `fail_infra`. The stage functions themselves are
+exercised by the smoke-dispatch runs against real PRs rather than
+mocked subprocess invocations.
 
 ## Result comment shape
 
