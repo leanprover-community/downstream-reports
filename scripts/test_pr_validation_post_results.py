@@ -734,6 +734,75 @@ class SizeBudgetTests(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 
+class RequestedNameTests(unittest.TestCase):
+    """When `requested_name` is set, it surfaces as the displayed entry token.
+
+    The literal token the user typed (short name or `owner/repo` slug)
+    flows through validate.sh into result.json. post_results.py uses it
+    for the displayed entry label only; prose stays on the canonical
+    downstream name.
+    """
+
+    def _render_section(self, **result_overrides) -> str:
+        return post_results.render_entry_section(
+            name="FLT",
+            repo="leanprover-community/FLT",
+            default_branch="main",
+            result=_make_result(**result_overrides),
+            merge_sha=_MERGE_SHA,
+            run_url=_RUN_URL,
+            log_tail="",
+        )
+
+    def test_slug_request_shows_in_section_header(self) -> None:
+        """Scenario: a section rendered for a slug request displays the slug in the header."""
+        body = self._render_section(
+            status="pass",
+            mode="lkg",
+            lkg_commit=_LKG_SHA,
+            requested_name="leanprover-community/FLT",
+        )
+        self.assertIn(
+            "## ✅ leanprover-community/FLT builds against this PR rebased onto LKG",
+            body,
+        )
+        # Canonical name still appears in prose (the framing subtitle
+        # would name it, but here FKB is null so the subtitle is skipped;
+        # the recipe sentence does use it).
+        self.assertIn("FLT's last-known-good", body)
+
+    def test_slug_request_shows_in_summary_table(self) -> None:
+        """Scenario: the summary table cell shows the user's literal slug, not the canonical name."""
+        body = post_results.render_dispatch_body(
+            entries=[
+                _make_entry(
+                    _make_result(
+                        downstream="FLT",
+                        status="pass",
+                        mode="lkg",
+                        lkg_commit=_LKG_SHA,
+                        requested_name="leanprover-community/FLT",
+                    )
+                ),
+                _make_entry(_make_result(downstream="Toric", status="pass", mode="lkg", lkg_commit=_LKG_SHA)),
+            ],
+            merge_sha=_MERGE_SHA,
+            run_url=_RUN_URL,
+        )
+        self.assertIn("`leanprover-community/FLT`", body)
+
+    def test_no_requested_name_falls_back_to_downstream(self) -> None:
+        """Scenario: result.json without `requested_name` (the common case) shows the canonical name."""
+        body = self._render_section(
+            status="pass",
+            mode="lkg",
+            lkg_commit=_LKG_SHA,
+        )
+        self.assertIn(
+            "## ✅ FLT builds against this PR rebased onto LKG", body
+        )
+
+
 class SelfContainedBodyTests(unittest.TestCase):
     """No hidden markers or cross-dispatch scaffolding leak into a rendered section."""
 

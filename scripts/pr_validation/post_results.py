@@ -158,13 +158,27 @@ def verdict_summary(result: dict[str, Any]) -> str:
     return f"⚠️ could not validate ({stage})"
 
 
+def _display_name(result: dict[str, Any]) -> str:
+    """Token the user typed for this entry (short name or owner/repo slug).
+
+    Falls back to the canonical ``downstream`` name when the user wrote
+    that form already. Used for the rendered entry label only — every
+    other place uses the canonical name from ``result["downstream"]``.
+    """
+    return (
+        result.get("requested_name")
+        or result.get("downstream")
+        or "(unknown)"
+    )
+
+
 def _section_header(result: dict[str, Any]) -> str:
-    name = result.get("downstream") or "(unknown)"
+    display = _display_name(result)
     mode = result.get("mode") or "merge"
     status = result.get("status", "infra_failure")
     stage = result.get("stage", "unknown")
     rev = result.get("downstream_rev")
-    el = entry_label(name, mode, rev)
+    el = entry_label(display, mode, rev)
     rebased_suffix = " rebased onto LKG" if mode == "lkg" else ""
     if status == "pass":
         return f"## ✅ {el} builds against this PR{rebased_suffix}"
@@ -498,10 +512,10 @@ def _summary_row(
     so the user-grammar token stands out, the verdict carries the icon and
     a one-line gloss with linked SHAs when meaningful.
     """
-    name = result.get("downstream") or "(unknown)"
+    display = _display_name(result)
     mode = result.get("mode") or "merge"
     rev = result.get("downstream_rev")
-    el = entry_label(name, mode, rev)
+    el = entry_label(display, mode, rev)
     return f"`{el}`", verdict_summary(result)
 
 

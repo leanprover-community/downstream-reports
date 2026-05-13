@@ -200,19 +200,18 @@ jobs:
       - name: Get mathlib-ci
         uses: ./workflow-actions/.github/actions/get-mathlib-ci
 
-      - name: Validate downstreams against inventory
+      - name: Validate downstream entries
         id: validate
         env:
           DS: ${{ steps.parse.outputs.downstreams || inputs.downstreams }}
-          ASSOC: ${{ github.event.comment.author_association }}
         run: |
           "$CI_SCRIPTS_DIR/pr_check_downstream/validate_names.sh" \
             --names "$DS" \
-            --author-association "$ASSOC" \
             --output "$GITHUB_OUTPUT"
           # Sets: resolved_names (final comma list), merge_sha (resolved
           # from refs/pull/N/merge — lives on the base repo even for fork
-          # PRs, so no head-repo plumbing is needed).
+          # PRs, so no head-repo plumbing is needed). Author-association
+          # gating happens upstream in this same workflow.
 
       - name: Mint App token (for hopscotch-reports)
         id: app_token
@@ -253,12 +252,14 @@ the same repo — we only need the App token for the cross-repo dispatch.
 
 New directory `mathlib-ci/scripts/pr_check_downstream/`:
 
-- `validate_names.sh` — fetches the inventory from
-  `https://raw.githubusercontent.com/leanprover-community/downstream-reports/main/ci/inventory/downstreams.json`,
-  validates each comma-separated entry (`<name>[@<rev>] [--merge-branch]`),
-  resolves `refs/pull/N/merge` via `gh api`, emits the normalised entry
-  list + merge SHA. Authorisation is gated upstream in the mathlib4
-  workflow.
+- `validate_names.sh` — validates the grammar of each comma-separated
+  entry (`<name-or-slug>[@<rev>] [--merge-branch]`), dedups, and
+  resolves `refs/pull/N/merge` via `gh api`. Bare tokens are passed
+  through verbatim: the dispatched workflow's `build_matrix.py` holds
+  the inventory and is the single source of truth for name resolution,
+  so this side stays inventory-agnostic and accepts both short names
+  and `owner/repo` slugs. Authorisation is gated upstream in the
+  mathlib4 workflow.
 - `post_ack_comment.sh` — POSTs one ack per dispatch. Multiple
   `!downstream-check` comments on the same PR therefore leave separate
   ack lines, each pinned by its own dispatch run link, so the audit
@@ -584,16 +585,16 @@ only for the App private key.
 Single line, first line of the comment:
 
 ```
-!downstream-check <name>[@<rev>] [--merge-branch][, <name>[@<rev>] [--merge-branch] ...]
+!downstream-check <name-or-slug>[@<rev>] [--merge-branch][, <name-or-slug>[@<rev>] [--merge-branch] ...]
 ```
 
 Each comma-separated entry:
 
-| Token            | Required? | Meaning                                                                                                                                                                                                                            |
-|------------------|-----------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `<name>`         | yes       | Must match an `inventory.downstreams[*].name` (case-sensitive).                                                                                                                                                                    |
-| `@<rev>`         | no        | Any git refspec — branch, tag, or commit SHA — for the downstream's checkout. Defaults to the inventory's `default_branch` when absent.                                                                                            |
-| `--merge-branch` | no        | Flips that one entry from the default LKG mode to merge mode (test against the PR's would-be-merged tree instead of cherry-picking onto the LKG). Per-entry, so mixing `FLT --merge-branch, Toric` runs each in a different mode. |
+| Token             | Required? | Meaning                                                                                                                                                                                                                            |
+|-------------------|-----------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `<name-or-slug>`  | yes       | Either the inventory short name (case-sensitive match against `inventory.downstreams[*].name`) or the GitHub `owner/repo` slug (case-insensitive match against `inventory.downstreams[*].repo`).                                   |
+| `@<rev>`          | no        | Any git refspec — branch, tag, or commit SHA — for the downstream's checkout. Defaults to the inventory's `default_branch` when absent.                                                                                            |
+| `--merge-branch`  | no        | Flips that one entry from the default LKG mode to merge mode (test against the PR's would-be-merged tree instead of cherry-picking onto the LKG). Per-entry, so mixing `FLT --merge-branch, Toric` runs each in a different mode. |
 
 Other rules:
 
@@ -602,6 +603,11 @@ Other rules:
 - Anything after the first line is ignored — the comment can carry
   contextual prose under the directive.
 - There is no `all` / `all@*` shorthand. Enumerate names explicitly.
+- mathlib-ci is grammar-only: the bare token is passed through verbatim
+  to the dispatched workflow's `build_matrix.py`, which holds the
+  inventory and reports unknown names from there. The two forms always
+  resolve to the same canonical matrix row; the user-typed literal
+  survives on `requested_name` for the displayed entry label.
 
 ## LKG vs merge mode
 

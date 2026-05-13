@@ -7,10 +7,14 @@ the validate job needs.
 
 Comment grammar (each comma-separated entry):
 
-    <name>[@<rev>] [--merge-branch]
+    <name-or-slug>[@<rev>] [--merge-branch]
 
-* `<name>` (required) — must match an `inventory.downstreams[*].name`
-  (case-sensitive).
+* `<name-or-slug>` (required) — either the downstream's short inventory
+  name (case-sensitive match against `inventory.downstreams[*].name`)
+  or its GitHub `owner/repo` slug (case-insensitive match against
+  `inventory.downstreams[*].repo`). The bare token is resolved against
+  the inventory here; the mathlib-ci side passes it through verbatim
+  so this script is the single source of truth for name resolution.
 * `@<rev>` (optional) — any git refspec for the downstream checkout
   (branch / tag / commit SHA). Defaults to the inventory's
   `default_branch`.
@@ -20,10 +24,7 @@ Comment grammar (each comma-separated entry):
   last-known-good mathlib commit).
 
 This script is invoked by the plan job in
-``.github/workflows/mathlib-pr-validation.yml``. The dispatching
-mathlib4 workflow has already parsed and validated the entries; we
-re-validate here as defence in depth because the dispatched payload is
-untrusted input.
+``.github/workflows/mathlib-pr-validation.yml``.
 """
 
 from __future__ import annotations
@@ -184,7 +185,14 @@ def main() -> int:
     with args.inventory.open() as handle:
         inventory = json.load(handle)
 
+    # Two lookups: short inventory name (case-sensitive, the historical
+    # form) and GitHub `owner/repo` slug (case-insensitive, mirroring
+    # GitHub URL semantics). Each entry's bare token is matched against
+    # either, in that order.
     by_name = {entry["name"]: entry for entry in inventory["downstreams"]}
+    by_slug = {
+        entry["repo"].lower(): entry for entry in inventory["downstreams"]
+    }
 
     raw_entries = [t.strip() for t in args.names.split(",") if t.strip()]
     if not raw_entries:
@@ -199,32 +207,47 @@ def main() -> int:
             print(f"error: {exc}", file=sys.stderr)
             return 1
 
-    # Dedup on (name, rev, mode) — distinct fields are intentionally allowed
-    # (e.g. `FLT, FLT@main` runs twice if the user wrote two entries; `FLT,
-    # FLT --merge-branch` runs twice in distinct modes). Exact duplicates
-    # are silently collapsed.
-    seen: set[tuple[str, str | None, str]] = set()
-    deduped: list[tuple[str, str | None, str]] = []
-    for triple in parsed:
-        if triple in seen:
+    # Resolve each bare token to a canonical inventory entry before dedup
+    # so `FLT` and `leanprover-community/FLT` collapse to the same row.
+    # We preserve the user's literal token as `requested_name` for display.
+    resolved: list[tuple[str, dict[str, Any], str | None, str]] = []
+    unknown: list[str] = []
+    for requested_name, rev, mode in parsed:
+        entry_meta = by_name.get(requested_name) or by_slug.get(
+            requested_name.lower()
+        )
+        if entry_meta is None:
+            unknown.append(requested_name)
             continue
-        seen.add(triple)
-        deduped.append(triple)
-
-    unknown = sorted({name for name, _, _ in deduped if name not in by_name})
+        resolved.append((requested_name, entry_meta, rev, mode))
     if unknown:
         print(
-            f"error: unknown downstream(s): {', '.join(unknown)}",
+            "error: unknown downstream(s): "
+            + ", ".join(sorted(set(unknown)))
+            + " (must match an inventory short name or owner/repo slug)",
             file=sys.stderr,
         )
         return 1
+
+    # Dedup on (canonical-name, rev, mode). Two requests that resolve to
+    # the same downstream (e.g. `FLT` and `leanprover-community/FLT`) with
+    # the same rev + mode collapse to one matrix row; the first form the
+    # user typed wins as `requested_name`.
+    seen: set[tuple[str, str | None, str]] = set()
+    deduped: list[tuple[str, dict[str, Any], str | None, str]] = []
+    for requested_name, entry_meta, rev, mode in resolved:
+        key = (entry_meta["name"], rev, mode)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append((requested_name, entry_meta, rev, mode))
 
     # We always try to fetch the LKG snapshot. LKG mode entries need
     # `last_known_good_commit` from it (hard requirement); both modes use
     # `first_known_bad_commit` to surface a definitive master-health
     # caveat in the comment (best-effort enrichment — proceed without it
     # when the snapshot is unreachable).
-    needs_lkg = any(mode == _MODE_LKG for _, _, mode in deduped)
+    needs_lkg = any(mode == _MODE_LKG for _, _, _, mode in deduped)
     snapshot: dict[str, Any] | None = None
     try:
         snapshot = _fetch_lkg_snapshot(args.lkg_snapshot_url)
@@ -238,10 +261,15 @@ def main() -> int:
         )
 
     include: list[dict[str, Any]] = []
-    for name, rev, mode in deduped:
-        entry_meta = by_name[name]
+    for requested_name, entry_meta, rev, mode in deduped:
+        name = entry_meta["name"]
         item: dict[str, Any] = {
-            "name": entry_meta["name"],
+            "name": name,
+            # The literal token the user typed (short name or slug). Used
+            # by post_results.py for the displayed entry label so the
+            # rendered comment mirrors the request; all internal keying
+            # (artifacts, prose, dedup) uses the canonical `name`.
+            "requested_name": requested_name,
             "repo": entry_meta["repo"],
             "default_branch": entry_meta["default_branch"],
             "dependency_name": entry_meta.get("dependency_name", "mathlib"),

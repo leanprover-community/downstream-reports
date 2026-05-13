@@ -133,6 +133,11 @@ jobs:
           PR_NUMBER:       ${{ inputs.pr_number }}
           MERGE_SHA:       ${{ inputs.merge_sha }}
           DOWNSTREAM:      ${{ matrix.name }}
+          # The literal token the user typed (short name or owner/repo
+          # slug). Stored on result.json so the dispatch comment's
+          # displayed entry label mirrors the request; prose still uses
+          # the canonical `DOWNSTREAM` name.
+          REQUESTED_NAME:  ${{ matrix.requested_name }}
           DOWNSTREAM_REPO: ${{ matrix.repo }}
           DEFAULT_BRANCH:  ${{ matrix.default_branch }}
           DEPENDENCY_NAME: ${{ matrix.dependency_name }}

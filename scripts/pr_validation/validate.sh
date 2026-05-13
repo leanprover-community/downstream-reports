@@ -127,6 +127,7 @@ emit() {  # status, stage, message  -- writes result.json
   DOWNSTREAM_REV_OUT="$DOWNSTREAM_REV" \
   DEFAULT_BRANCH_OUT="$DEFAULT_BRANCH" \
   FKB_COMMIT_OUT="${FKB_COMMIT:-}" \
+  REQUESTED_NAME_OUT="${REQUESTED_NAME:-}" \
   python3 - "$1" "$2" "$3" "$DOWNSTREAM_SHA" "$MODE" "$LKG_COMMIT" <<'PY'
 import json, os, sys
 status, stage, message, downstream_sha, mode, lkg_commit = sys.argv[1:7]
@@ -139,6 +140,14 @@ record = {
     "downstream_sha": downstream_sha or None,
     "mode": mode,
 }
+# The literal token the user typed for this entry (short name or
+# `owner/repo` slug). Only recorded when it differs from the canonical
+# downstream name — that keeps result.json compact for the common case
+# where the user just typed the short name. post_results.py uses it to
+# render the displayed entry label; prose continues to use `downstream`.
+requested = os.environ.get("REQUESTED_NAME_OUT") or ""
+if requested and requested != record["downstream"]:
+    record["requested_name"] = requested
 if mode == "lkg":
     record["lkg_commit"] = lkg_commit or None
 # fkb_commit, when set, indicates the LKG snapshot records a regression

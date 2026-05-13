@@ -353,6 +353,76 @@ class BuildMatrixCLITests(unittest.TestCase):
         self.assertEqual(rc, 1)
         fetch_mock.assert_not_called()
 
+    def test_slug_form_resolves_to_inventory_entry(self) -> None:
+        """Scenario: an `owner/repo` slug resolves to the same canonical entry as the short name."""
+        snapshot = _write_snapshot(self.tmpdir)
+        rc = _run_main(
+            inventory=self.inventory,
+            names="leanprover-community/FLT",
+            output=self.output,
+            snapshot_url=snapshot.as_uri(),
+        )
+        self.assertEqual(rc, 0)
+        entry = self._read_matrix()[0]
+        # Canonical name flows into all internal fields…
+        self.assertEqual(entry["name"], "FLT")
+        self.assertEqual(entry["repo"], "leanprover-community/FLT")
+        # …and the user's literal token is preserved for display.
+        self.assertEqual(entry["requested_name"], "leanprover-community/FLT")
+
+    def test_slug_match_is_case_insensitive(self) -> None:
+        """Scenario: GitHub slugs are case-insensitive, so we accept any casing."""
+        snapshot = _write_snapshot(self.tmpdir)
+        rc = _run_main(
+            inventory=self.inventory,
+            names="LeanProver-Community/flt",
+            output=self.output,
+            snapshot_url=snapshot.as_uri(),
+        )
+        self.assertEqual(rc, 0)
+        entry = self._read_matrix()[0]
+        self.assertEqual(entry["name"], "FLT")
+        self.assertEqual(
+            entry["requested_name"], "LeanProver-Community/flt"
+        )
+
+    def test_short_name_and_slug_collapse_into_one_row(self) -> None:
+        """Scenario: `FLT` and `leanprover-community/FLT` resolve to the same matrix row."""
+        snapshot = _write_snapshot(self.tmpdir)
+        rc = _run_main(
+            inventory=self.inventory,
+            names="FLT, leanprover-community/FLT",
+            output=self.output,
+            snapshot_url=snapshot.as_uri(),
+        )
+        self.assertEqual(rc, 0)
+        include = self._read_matrix()
+        self.assertEqual(len(include), 1)
+        # The first form (the short name) wins as the display token.
+        self.assertEqual(include[0]["requested_name"], "FLT")
+
+    def test_requested_name_omitted_when_equal_to_canonical(self) -> None:
+        """Scenario: when the user typed the short name, `requested_name` mirrors `name`."""
+        snapshot = _write_snapshot(self.tmpdir)
+        rc = _run_main(
+            inventory=self.inventory,
+            names="FLT",
+            output=self.output,
+            snapshot_url=snapshot.as_uri(),
+        )
+        self.assertEqual(rc, 0)
+        entry = self._read_matrix()[0]
+        self.assertEqual(entry["requested_name"], "FLT")
+
+    def test_unknown_slug_returns_nonzero(self) -> None:
+        """Scenario: a slug that matches no inventory entry is rejected with both lookup forms named."""
+        rc = _run_main(
+            inventory=self.inventory,
+            names="some-org/nonexistent",
+            output=self.output,
+        )
+        self.assertEqual(rc, 1)
+
     def test_unknown_flag_returns_nonzero(self) -> None:
         """Scenario: any flag other than --merge-branch is rejected."""
         rc = _run_main(
