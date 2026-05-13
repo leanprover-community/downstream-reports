@@ -27,14 +27,17 @@
       "repo": "YaelDillies/toric",
       "default_branch": "master",
       "dependency_name": "mathlib",
-      "enabled": true
+      "enabled": true,
+      "warm_cache": true
     },
     {
       "name": "cslib",
       "repo": "leanprover/cslib",
       "default_branch": "main",
       "dependency_name": "mathlib",
-      "enabled": true
+      "enabled": true,
+      "warm_cache": true,
+      "watch_manifest": true
     },
     {
       "name": "FLT",
@@ -42,7 +45,9 @@
       "default_branch": "main",
       "dependency_name": "mathlib",
       "skip_known_bad_bisect": false,
-      "enabled": true
+      "enabled": true,
+      "warm_cache": true,
+      "watch_manifest": true
     },
     {
       "name": "infinity-cosmos",
@@ -70,75 +75,93 @@
       "repo": "kbuzzard/ClassFieldTheory",
       "default_branch": "main",
       "dependency_name": "mathlib",
-      "enabled": true
+      "enabled": true,
+      "warm_cache": true
     },
     {
       "name": "gibbs-measure",
       "repo": "YaelDillies/gibbs-measure",
       "default_branch": "main",
       "dependency_name": "mathlib",
-      "enabled": true
-    },
-    {
-      "name": "mean-fourier",
-      "repo": "YaelDillies/mean-fourier",
-      "default_branch": "master",
-      "dependency_name": "mathlib",
-      "enabled": true
+      "enabled": true,
+      "warm_cache": true
     },
     {
       "name": "forbidden-matrix",
       "repo": "YaelDillies/forbidden-matrix",
       "default_branch": "master",
       "dependency_name": "mathlib",
-      "enabled": true
+      "enabled": true,
+      "warm_cache": true
     },
     {
       "name": "BrauerGroup_new",
       "repo": "Whysoserioushah/BrauerGroup_new",
       "default_branch": "main",
       "dependency_name": "mathlib",
-      "enabled": true
+      "enabled": true,
+      "warm_cache": true
     },
     {
       "name": "add-combi",
-      "repo": "YaelDillies/add-combi",
+      "repo": "leanprover-community/add-combi",
       "default_branch": "master",
       "dependency_name": "mathlib",
-      "enabled": true
-    },
-    {
-      "name": "apap",
-      "repo": "YaelDillies/apap",
-      "default_branch": "master",
-      "dependency_name": "mathlib",
-      "enabled": true
+      "enabled": true,
+      "warm_cache": true
     },
     {
       "name": "cam-combi",
       "repo": "YaelDillies/cam-combi",
       "default_branch": "master",
       "dependency_name": "mathlib",
-      "enabled": true
+      "enabled": true,
+      "warm_cache": true
     },
     {
       "name": "chandra-furst-lipton",
       "repo": "YaelDillies/chandra-furst-lipton",
       "default_branch": "master",
       "dependency_name": "mathlib",
-      "enabled": true
+      "enabled": true,
+      "warm_cache": true
     },
     {
       "name": "misc-yd",
       "repo": "YaelDillies/misc-yd",
       "default_branch": "master",
       "dependency_name": "mathlib",
-      "enabled": true
+      "enabled": true,
+      "warm_cache": true
     },
     {
       "name": "PersistentDecomp",
       "repo": "Paul-Lez/PersistentDecomp",
       "default_branch": "master",
+      "dependency_name": "mathlib",
+      "enabled": true,
+      "warm_cache": true
+    },
+    {
+      "name": "flt-regular",
+      "repo": "leanprover-community/flt-regular",
+      "default_branch": "master",
+      "dependency_name": "mathlib",
+      "enabled": true,
+      "warm_cache": true,
+      "watch_manifest": true
+    },
+    {
+      "name": "carleson",
+      "repo": "fpvandoorn/carleson",
+      "default_branch": "master",
+      "dependency_name": "mathlib",
+      "enabled": true
+    },
+    {
+      "name": "compfiles",
+      "repo": "dwrensha/compfiles",
+      "default_branch": "main",
       "dependency_name": "mathlib",
       "enabled": true
     }
