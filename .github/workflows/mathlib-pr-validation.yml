@@ -35,8 +35,9 @@ on:
       triggered_by:
         description: >-
           GitHub login of the user who dispatched this validation. When
-          set, the per-entry result comments lead with `_Requested by
-          @<user>._` so they get a notification.
+          set, the dispatch-level result comment leads with `_Requested
+          by @<user>._` so they get a single notification when the run
+          finishes.
         required: false
         default: ''
         type: string

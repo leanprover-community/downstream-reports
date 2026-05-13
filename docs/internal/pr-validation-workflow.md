@@ -259,15 +259,15 @@ New directory `mathlib-ci/scripts/pr_check_downstream/`:
   resolves `refs/pull/N/merge` via `gh api`, emits the normalised entry
   list + merge SHA. Authorisation is gated upstream in the mathlib4
   workflow.
-- `post_ack_comment.sh` — finds an existing comment by hidden marker
-  `<!-- pr-check-downstream:ack -->` (using `gh api` to list comments) and
-  edits it; otherwise creates one. Body shape:
+- `post_ack_comment.sh` — POSTs one ack per dispatch. Multiple
+  `!downstream-check` comments on the same PR therefore leave separate
+  ack lines, each pinned by its own dispatch run link, so the audit
+  trail of what got triggered survives. Body shape:
 
   > **Downstream validation triggered**
   > Testing this PR (merge ref `<short-sha>`) against: `FLT`, `Toric`.
   > Run: <link>
   > Results will be posted as a single follow-up comment when the run finishes.
-  > <!-- pr-check-downstream:ack -->
 
 These scripts live in `mathlib-ci` (not `mathlib4`) because they touch tokens
 and post comments; that is the documented split (see the `PR_summary.yml`
