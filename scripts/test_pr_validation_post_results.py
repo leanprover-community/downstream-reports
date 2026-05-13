@@ -76,10 +76,12 @@ class MergeModeRenderingTests(unittest.TestCase):
     """Existing merge-mode comments must continue rendering as before."""
 
     def test_pass_header(self) -> None:
-        """Scenario: merge-mode pass uses the green-check headline and the master caveat."""
+        """Scenario: a merge-mode pass renders the header and recipe; no master-baseline caveat."""
         body = _render(_make_result(status="pass"))
         self.assertIn("### ✅ FLT builds against this PR", body)
-        self.assertIn("did not baseline against master", body)
+        # A clean merge-mode pass is unambiguous — no subtitle disclaimer.
+        self.assertNotIn("did not baseline against master", body)
+        self.assertNotIn("mathlib master is currently", body)
 
     def test_fail_inlines_log_tail(self) -> None:
         """Scenario: merge-mode fail inlines the build.log tail in a <details> block."""
@@ -330,6 +332,89 @@ class TestTreeRecipeTests(unittest.TestCase):
 # ---------------------------------------------------------------------------
 # Self-contained body invariants
 # ---------------------------------------------------------------------------
+
+
+_FKB_SHA = "f" * 40
+
+
+class FkbAwareFramingTests(unittest.TestCase):
+    """When the snapshot records a first_known_bad_commit, the subtitle states master health definitively."""
+
+    def test_merge_fail_with_fkb_names_the_regression(self) -> None:
+        """Scenario: merge fail + FKB set links to the regression commit and recommends LKG mode."""
+        body = _render(
+            _make_result(
+                status="fail",
+                mode="merge",
+                pr_base_sha="1" * 40,
+                pr_head_sha="2" * 40,
+                commits_replayed=1,
+                fkb_commit=_FKB_SHA,
+            )
+        )
+        self.assertIn("mathlib master is currently incompatible with FLT", body)
+        self.assertIn(f"/commit/{_FKB_SHA}", body)
+        self.assertIn("Drop `--merge-branch`", body)
+
+    def test_merge_fail_without_fkb_attributes_failure_to_pr(self) -> None:
+        """Scenario: merge fail with no FKB recorded says master is healthy and points at the PR."""
+        body = _render(
+            _make_result(
+                status="fail",
+                mode="merge",
+                pr_base_sha="1" * 40,
+                pr_head_sha="2" * 40,
+                commits_replayed=1,
+            )
+        )
+        self.assertIn(
+            "mathlib master is currently known to build with FLT", body
+        )
+        self.assertIn("attributable to the PR", body)
+
+    def test_merge_pass_has_no_master_caveat(self) -> None:
+        """Scenario: a successful merge-mode build needs no subtitle disclaimer."""
+        body = _render(
+            _make_result(
+                status="pass",
+                mode="merge",
+                pr_base_sha="1" * 40,
+                pr_head_sha="2" * 40,
+                commits_replayed=1,
+            )
+        )
+        self.assertNotIn("mathlib master is currently", body)
+        self.assertNotIn("did not baseline against master", body)
+
+    def test_lkg_pass_with_fkb_explains_why_lkg_matters(self) -> None:
+        """Scenario: lkg pass + FKB set names the master regression to sharpen the verdict."""
+        body = _render(
+            _make_result(
+                status="pass",
+                mode="lkg",
+                lkg_commit=_LKG_SHA,
+                fkb_commit=_FKB_SHA,
+            )
+        )
+        self.assertIn(
+            "Current mathlib master is incompatible with FLT", body
+        )
+        self.assertIn(f"/commit/{_FKB_SHA}", body)
+        self.assertIn("purely about the PR's effect on FLT", body)
+
+    def test_lkg_pass_without_fkb_keeps_generic_framing(self) -> None:
+        """Scenario: lkg pass with no FKB recorded uses the unqualified master-health wording."""
+        body = _render(
+            _make_result(
+                status="pass",
+                mode="lkg",
+                lkg_commit=_LKG_SHA,
+            )
+        )
+        self.assertIn(
+            "independent of current mathlib master health", body
+        )
+        self.assertNotIn("Current mathlib master is incompatible", body)
 
 
 class SelfContainedBodyTests(unittest.TestCase):

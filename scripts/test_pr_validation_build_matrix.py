@@ -67,16 +67,19 @@ _LKG_SNAPSHOT_JSON = {
             "repo": "leanprover-community/FLT",
             "dependency_name": "mathlib",
             "last_known_good_commit": "f" * 40,
+            "first_known_bad_commit": None,
         },
         "Toric": {
             "repo": "YaelDillies/toric",
             "dependency_name": "mathlib",
             "last_known_good_commit": "0" * 40,
+            "first_known_bad_commit": "b" * 40,
         },
         "newcomer": {
             "repo": "some-org/newcomer",
             "dependency_name": "mathlib",
             "last_known_good_commit": None,
+            "first_known_bad_commit": None,
         },
     },
 }
@@ -236,19 +239,60 @@ class BuildMatrixCLITests(unittest.TestCase):
         self.assertEqual(entry["rev_slug"], "default")
         self.assertEqual(entry["lkg_commit"], "f" * 40)
 
-    def test_merge_branch_skips_snapshot(self) -> None:
-        """Scenario: a single `--merge-branch` entry does NOT fetch the snapshot."""
-        with patch.object(build_matrix, "_fetch_lkg_snapshot") as fetch_mock:
-            rc = _run_main(
-                inventory=self.inventory,
-                names="FLT --merge-branch",
-                output=self.output,
-            )
+    def test_merge_branch_entry_has_no_lkg_commit_field(self) -> None:
+        """Scenario: a `--merge-branch` entry resolves without a `lkg_commit` field."""
+        snapshot = _write_snapshot(self.tmpdir)
+        rc = _run_main(
+            inventory=self.inventory,
+            names="FLT --merge-branch",
+            output=self.output,
+            snapshot_url=snapshot.as_uri(),
+        )
         self.assertEqual(rc, 0)
-        fetch_mock.assert_not_called()
         entry = self._read_matrix()[0]
         self.assertEqual(entry["mode"], "merge")
         self.assertNotIn("lkg_commit", entry)
+
+    def test_merge_only_dispatch_tolerates_snapshot_fetch_failure(self) -> None:
+        """Scenario: a merge-only dispatch still succeeds when the LKG snapshot is unreachable."""
+        rc = _run_main(
+            inventory=self.inventory,
+            names="FLT --merge-branch",
+            output=self.output,
+            snapshot_url="file:///nonexistent/path/lkg.json",
+        )
+        # No LKG-mode entries, so the snapshot is enrichment-only and we
+        # proceed with a warning.
+        self.assertEqual(rc, 0)
+        entry = self._read_matrix()[0]
+        self.assertNotIn("fkb_commit", entry)
+
+    def test_fkb_attached_when_snapshot_records_it(self) -> None:
+        """Scenario: an entry with a snapshot FKB gets `fkb_commit` on its matrix row (both modes)."""
+        snapshot = _write_snapshot(self.tmpdir)
+        rc = _run_main(
+            inventory=self.inventory,
+            names="Toric, Toric --merge-branch",
+            output=self.output,
+            snapshot_url=snapshot.as_uri(),
+        )
+        self.assertEqual(rc, 0)
+        include = self._read_matrix()
+        # FKB enrichment applies to both modes when the snapshot records it.
+        for entry in include:
+            self.assertEqual(entry["fkb_commit"], "b" * 40)
+
+    def test_fkb_absent_when_snapshot_has_no_regression(self) -> None:
+        """Scenario: a downstream with `first_known_bad_commit: null` gets no `fkb_commit` field."""
+        snapshot = _write_snapshot(self.tmpdir)
+        rc = _run_main(
+            inventory=self.inventory,
+            names="FLT",
+            output=self.output,
+            snapshot_url=snapshot.as_uri(),
+        )
+        self.assertEqual(rc, 0)
+        self.assertNotIn("fkb_commit", self._read_matrix()[0])
 
     def test_rev_attached_to_entry(self) -> None:
         """Scenario: `FLT@v1.2.3` produces rev + slug fields on the matrix entry."""

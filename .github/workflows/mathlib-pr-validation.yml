@@ -131,10 +131,13 @@ jobs:
           # validate.sh then falls back to $DEFAULT_BRANCH.
           DOWNSTREAM_REV:  ${{ matrix.rev }}
           # `mode` is always set by build_matrix.py ("merge" or "lkg");
-          # `lkg_commit` is only set when mode=lkg. The empty fallback keeps
-          # the env var unset cleanly when mode=merge.
+          # `lkg_commit` is only set when mode=lkg. `fkb_commit` is set
+          # (regardless of mode) when the LKG snapshot records a first-
+          # known-bad commit for this downstream — the comment renderer
+          # uses it for definitive master-health framing.
           MODE:            ${{ matrix.mode }}
           LKG_COMMIT:      ${{ matrix.lkg_commit || '' }}
+          FKB_COMMIT:      ${{ matrix.fkb_commit || '' }}
           WORKDIR:         ${{ runner.temp }}/pr-validation
           # Per-matrix output dir is keyed on (name, rev_slug, mode) so two
           # entries that differ in either dimension don't collide on disk.

@@ -126,6 +126,7 @@ emit() {  # status, stage, message  -- writes result.json
   REPLAYED_TREE_SHA="$REPLAYED_TREE_SHA" \
   DOWNSTREAM_REV_OUT="$DOWNSTREAM_REV" \
   DEFAULT_BRANCH_OUT="$DEFAULT_BRANCH" \
+  FKB_COMMIT_OUT="${FKB_COMMIT:-}" \
   python3 - "$1" "$2" "$3" "$DOWNSTREAM_SHA" "$MODE" "$LKG_COMMIT" <<'PY'
 import json, os, sys
 status, stage, message, downstream_sha, mode, lkg_commit = sys.argv[1:7]
@@ -140,6 +141,13 @@ record = {
 }
 if mode == "lkg":
     record["lkg_commit"] = lkg_commit or None
+# fkb_commit, when set, indicates the LKG snapshot records a regression
+# for this downstream on current master. The comment renderer uses it to
+# surface a definitive "master is currently broken for X" caveat instead
+# of the hypothetical "if master is broken …" wording.
+fkb = os.environ.get("FKB_COMMIT_OUT") or None
+if fkb:
+    record["fkb_commit"] = fkb
 # Record the requested downstream rev only when it actually changes what
 # we'd otherwise default to — that way the comment renderer can decide
 # whether to surface the "(at @<rev>)" annotation.

@@ -104,6 +104,65 @@ def downstream_link(
     return f"[`{repo_slug}@{label}`](https://github.com/{repo_slug}/commit/{sha})"
 
 
+def _framing_for(
+    name: str, mode: str, status: str, fkb: str | None
+) -> str:
+    """Return the blockquote subtitle for a comment, or '' to omit it.
+
+    The wording depends on three axes:
+
+    * mode (lkg vs merge) — what the run did
+    * status (pass / fail / infra_failure) — whether a build completed
+    * fkb (set / null) — whether the LKG snapshot positively records
+      that master is currently broken for this downstream
+
+    LKG-mode runs always frame the verdict as independent of master
+    health; when fkb is set we additionally name why that matters.
+
+    Merge-mode runs lean on fkb to be definitive: a fail with fkb set
+    points at the existing regression and recommends LKG mode; a fail
+    with fkb null reports master as healthy so the verdict implicates
+    the PR. Merge-mode passes need no subtitle — the recipe is enough.
+    """
+    if mode == "lkg":
+        if fkb:
+            return (
+                f"> This run replayed the PR's changes on top of a"
+                f" mathlib revision compatible with {name}. Current"
+                f" mathlib master is incompatible with {name} (first"
+                f" regression at {commit_link(fkb)}), so this verdict is"
+                f" purely about the PR's effect on {name}."
+            )
+        return (
+            f"> This run replayed the PR's changes on top of a mathlib"
+            f" revision compatible with {name}, so the verdict is"
+            f" independent of current mathlib master health."
+        )
+
+    # merge mode
+    if status == "pass":
+        # A clean build against master+PR is unambiguous; no caveat.
+        return ""
+    if status == "fail":
+        if fkb:
+            return (
+                f"> mathlib master is currently incompatible with {name}"
+                f" — the regression was first observed at"
+                f" {commit_link(fkb)}. This failure may reflect that"
+                f" existing incompatibility rather than the PR itself."
+                f" Drop `--merge-branch` to re-run against {name}'s"
+                f" last-known-good mathlib instead."
+            )
+        return (
+            f"> mathlib master is currently known to build with {name},"
+            f" so this failure is attributable to the PR."
+        )
+    # merge-mode infra_failure: the per-stage explainer below carries
+    # the actionable message; an extra master-baseline note here just
+    # adds noise.
+    return ""
+
+
 def render_test_tree_paragraph(
     *,
     name: str,
@@ -251,21 +310,15 @@ def render_body(
 
     # The framing/explainer reads as a subtitle right under the header so a
     # skimmer learns "what this verdict means" before scanning the recipe.
-    if mode == "lkg":
-        framing = (
-            f"> This run replayed the PR's changes on top of a mathlib"
-            f" revision compatible with {name}, so the verdict is"
-            f" independent of current mathlib master health."
-        )
-    else:
-        framing = (
-            "> This run did not baseline against master. If master is"
-            " currently broken for this downstream, the failure may not be"
-            " attributable to this PR. See the latest downstream report for"
-            " downstream health."
-        )
-
-    parts = [header, "", framing, "", test_tree, ""]
+    # `fkb_commit` (when present) lets us state master health definitively
+    # instead of hedging — the LKG snapshot has positively recorded a
+    # regression on master for this downstream.
+    fkb = result.get("fkb_commit")
+    framing = _framing_for(name, mode, status, fkb)
+    parts = [header, ""]
+    if framing:
+        parts.extend([framing, ""])
+    parts.extend([test_tree, ""])
 
     if status == "fail" and log_tail:
         parts.extend(

@@ -219,14 +219,23 @@ def main() -> int:
         )
         return 1
 
-    needs_snapshot = any(mode == _MODE_LKG for _, _, mode in deduped)
+    # We always try to fetch the LKG snapshot. LKG mode entries need
+    # `last_known_good_commit` from it (hard requirement); both modes use
+    # `first_known_bad_commit` to surface a definitive master-health
+    # caveat in the comment (best-effort enrichment — proceed without it
+    # when the snapshot is unreachable).
+    needs_lkg = any(mode == _MODE_LKG for _, _, mode in deduped)
     snapshot: dict[str, Any] | None = None
-    if needs_snapshot:
-        try:
-            snapshot = _fetch_lkg_snapshot(args.lkg_snapshot_url)
-        except RuntimeError as exc:
+    try:
+        snapshot = _fetch_lkg_snapshot(args.lkg_snapshot_url)
+    except RuntimeError as exc:
+        if needs_lkg:
             print(f"error: {exc}", file=sys.stderr)
             return 1
+        print(
+            f"warning: {exc} (proceeding without FKB enrichment)",
+            file=sys.stderr,
+        )
 
     include: list[dict[str, Any]] = []
     for name, rev, mode in deduped:
@@ -245,12 +254,24 @@ def main() -> int:
             "rev_slug": _slugify_rev(rev),
         }
         if mode == _MODE_LKG:
-            assert snapshot is not None  # set above when needs_snapshot
+            assert snapshot is not None  # set above when needs_lkg
             try:
                 item["lkg_commit"] = _resolve_lkg_commit(snapshot, name)
             except ValueError as exc:
                 print(f"error: {exc}", file=sys.stderr)
                 return 1
+        # FKB enrichment: when the snapshot is reachable and records a
+        # first_known_bad_commit for this downstream, attach it. The
+        # comment renderer turns this into a definitive "master is
+        # currently broken for <name>" caveat.
+        if snapshot is not None:
+            fkb = (
+                snapshot.get("downstreams", {})
+                .get(name, {})
+                .get("first_known_bad_commit")
+            )
+            if fkb:
+                item["fkb_commit"] = fkb
         include.append(item)
 
     args.output.write_text(json.dumps({"include": include}))
