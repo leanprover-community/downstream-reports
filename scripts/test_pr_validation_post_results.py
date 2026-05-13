@@ -8,7 +8,7 @@ Coverage scope:
       entry token matches the user's request.
     - ``verdict_summary`` — one-line gloss for each (mode, status,
       stage, FKB?) tuple that the summary table cell can carry.
-    - ``render_entry_section`` — one downstream's ``##`` section:
+    - ``render_entry_section`` — one downstream's bold-header section:
       header + optional framing subtitle + ``Tested:`` / ``Attempted:``
       recipe + optional inline log.
     - ``render_dispatch_body`` — assembly of the single dispatch-level
@@ -157,7 +157,7 @@ class TestMergeModeRendering:
     """Merge-mode entry sections carry the `--merge-branch` token in the heading."""
 
     def test_pass_header(self) -> None:
-        """A merge-mode pass renders the ``## ✅`` header with `--merge-branch`; no master caveat.
+        """A merge-mode pass renders a bold ``**✅``-led header with `--merge-branch`; no master caveat.
 
         A clean merge-mode pass is unambiguous: the PR builds against the
         merged tree.  No framing subtitle is needed since there's no
@@ -169,7 +169,7 @@ class TestMergeModeRendering:
         body = _render(_make_result(status="pass"))
 
         # Assert
-        assert "## ✅ FLT --merge-branch builds against this PR" in body
+        assert "**✅ FLT --merge-branch builds against this PR**" in body
         assert "mathlib master is currently" not in body
 
     def test_fail_inlines_log_tail(self) -> None:
@@ -183,7 +183,7 @@ class TestMergeModeRendering:
         body = _render(_make_result(status="fail"))
 
         # Assert
-        assert "## ❌ FLT --merge-branch fails against this PR" in body
+        assert "**❌ FLT --merge-branch fails against this PR**" in body
         assert "<details><summary>failure log</summary>" in body
         assert "some build error" in body
 
@@ -208,7 +208,7 @@ class TestLkgModeRendering:
         body = _render(_make_result(status="pass", mode="lkg", lkg_commit=_LKG_SHA))
 
         # Assert
-        assert "## ✅ FLT builds against this PR rebased onto LKG" in body
+        assert "**✅ FLT builds against this PR rebased onto LKG**" in body
         assert _LKG_SHA[:7] in body
         assert "independent of current mathlib master health" not in body
 
@@ -223,7 +223,7 @@ class TestLkgModeRendering:
         body = _render(_make_result(status="fail", mode="lkg", lkg_commit=_LKG_SHA))
 
         # Assert
-        assert "## ❌ FLT fails against this PR rebased onto LKG" in body
+        assert "**❌ FLT fails against this PR rebased onto LKG**" in body
         assert "<details><summary>failure log</summary>" in body
 
     def test_lkg_fail_keeps_framing(self) -> None:
@@ -265,7 +265,7 @@ class TestLkgModeRendering:
         )
 
         # Assert
-        assert "## ⚠️ FLT: could not validate (PR conflicts with LKG)" in body
+        assert "**⚠️ FLT: could not validate (PR conflicts with LKG)**" in body
         assert "do not apply cleanly on top of FLT's last-known-good" in body
 
     def test_mathlib_build_at_lkg_header_and_log(self) -> None:
@@ -288,7 +288,8 @@ class TestLkgModeRendering:
 
         # Assert
         assert (
-            "## ⚠️ FLT: could not validate (mathlib build failed at LKG)" in body
+            "**⚠️ FLT: could not validate (mathlib build failed at LKG)**"
+            in body
         )
         assert "<details><summary>mathlib build log</summary>" in body
         assert "some build error" in body
@@ -633,7 +634,7 @@ class TestDispatchBody:
         body = self._render_dispatch([_make_entry(_make_result(status="pass"))])
 
         # Assert
-        assert "# Downstream validation against PR merge" in body
+        assert "**Downstream validation against PR merge" in body
         assert f"/commit/{_MERGE_SHA}" in body
         assert _RUN_URL in body
 
@@ -691,11 +692,14 @@ class TestDispatchBody:
         assert "`carleson --merge-branch`" in body
         # The table precedes the per-entry sections.
         table_idx = body.find("| Entry | Verdict |")
-        first_section_idx = body.find("## ")
+        first_section_idx = body.find("**✅")
         assert first_section_idx > table_idx
+        # Sections are separated from each other (and from the table) by
+        # `---` horizontal rules; the visual break headings used to give.
+        assert "\n---\n" in body
 
     def test_each_entry_renders_as_a_section(self) -> None:
-        """Every entry produces its own ``##`` section in the body."""
+        """Every entry produces its own bold header in the body."""
         # Arrange
         entries = [
             _make_entry(
@@ -708,8 +712,8 @@ class TestDispatchBody:
         body = self._render_dispatch(entries)
 
         # Assert
-        assert "## ✅ A builds against this PR rebased onto LKG" in body
-        assert "## ✅ B --merge-branch builds against this PR" in body
+        assert "**✅ A builds against this PR rebased onto LKG**" in body
+        assert "**✅ B --merge-branch builds against this PR**" in body
 
     def test_mention_renders_once_at_top(self) -> None:
         """``triggered_by`` produces a single ``_Requested by @<user>._`` line above the title.
@@ -730,7 +734,7 @@ class TestDispatchBody:
         # Assert
         assert body.count("_Requested by @marcelolynch._") == 1
         mention_idx = body.find("_Requested by @marcelolynch._")
-        title_idx = body.find("# Downstream validation")
+        title_idx = body.find("**Downstream validation")
         assert mention_idx >= 0
         assert mention_idx < title_idx
 
@@ -933,8 +937,8 @@ class TestSizeBudget:
 
         # Assert
         assert len(body) <= post_results.COMMENT_MAX_CHARS
-        assert "## ❌ A --merge-branch fails" in body
-        assert "## ❌ B --merge-branch fails" in body
+        assert "**❌ A --merge-branch fails" in body
+        assert "**❌ B --merge-branch fails" in body
 
 
 # ---------------------------------------------------------------------------
@@ -979,7 +983,7 @@ class TestRequestedName:
 
         # Assert
         assert (
-            "## ✅ leanprover-community/FLT builds against this PR rebased onto LKG"
+            "**✅ leanprover-community/FLT builds against this PR rebased onto LKG**"
             in body
         )
         assert "FLT's last-known-good" in body
@@ -1020,6 +1024,6 @@ class TestRequestedName:
         body = self._render_section(status="pass", mode="lkg", lkg_commit=_LKG_SHA)
 
         # Assert
-        assert "## ✅ FLT builds against this PR rebased onto LKG" in body
+        assert "**✅ FLT builds against this PR rebased onto LKG**" in body
 
 

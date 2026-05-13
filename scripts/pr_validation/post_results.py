@@ -178,6 +178,12 @@ def _display_name(result: dict[str, Any]) -> str:
 
 
 def _section_header(result: dict[str, Any]) -> str:
+    """Render the bold one-liner that introduces an entry section.
+
+    Bold inline (not ``##`` heading) keeps the comment visually quiet
+    on the PR page; ``---`` separators between entries provide the
+    visual break that headings used to.
+    """
     display = _display_name(result)
     mode = result.get("mode") or "merge"
     status = result.get("status", "infra_failure")
@@ -186,14 +192,14 @@ def _section_header(result: dict[str, Any]) -> str:
     el = entry_label(display, mode, rev)
     rebased_suffix = " rebased onto LKG" if mode == "lkg" else ""
     if status == "pass":
-        return f"## ✅ {el} builds against this PR{rebased_suffix}"
+        return f"**✅ {el} builds against this PR{rebased_suffix}**"
     if status == "fail":
-        return f"## ❌ {el} fails against this PR{rebased_suffix}"
+        return f"**❌ {el} fails against this PR{rebased_suffix}**"
     if mode == "lkg" and stage == "rebase_conflict":
-        return f"## ⚠️ {el}: could not validate (PR conflicts with LKG)"
+        return f"**⚠️ {el}: could not validate (PR conflicts with LKG)**"
     if mode == "lkg" and stage == "mathlib_build_at_lkg":
-        return f"## ⚠️ {el}: could not validate (mathlib build failed at LKG)"
-    return f"## ⚠️ {el}: could not validate (infra: {stage})"
+        return f"**⚠️ {el}: could not validate (mathlib build failed at LKG)**"
+    return f"**⚠️ {el}: could not validate (infra: {stage})**"
 
 
 def _framing_for(
@@ -557,13 +563,17 @@ def render_dispatch_body(
     if triggered_by:
         parts.append(f"_Requested by @{triggered_by}._")
         parts.append("")
+    # Bold inline (not `#` heading) keeps the comment unobtrusive in the
+    # PR conversation; the run link sits right alongside the merge SHA
+    # so the reader has both anchors on the first line.
     parts.append(
-        f"# Downstream validation against PR merge {commit_link(merge_sha)}"
+        f"**Downstream validation against PR merge {commit_link(merge_sha)}**"
         f" · [run]({run_url})"
     )
     parts.append("")
 
-    if len(entries) >= 2:
+    table_rendered = len(entries) >= 2
+    if table_rendered:
         rows = [
             _summary_row(result=e["result"], repo=e.get("repo", ""))
             for e in entries
@@ -571,7 +581,13 @@ def render_dispatch_body(
         parts.append(_render_summary_table(rows))
         parts.append("")
 
-    for entry in entries:
+    # `---` horizontal rules separate sections from each other and from
+    # the table above; that visual break is what `##` headings used to
+    # provide.  A single-entry dispatch has no table so the first
+    # section follows the title directly.
+    for i, entry in enumerate(entries):
+        if i > 0 or table_rendered:
+            parts.extend(["---", ""])
         section = render_entry_section(
             name=entry["name"],
             repo=entry.get("repo", ""),

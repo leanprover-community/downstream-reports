@@ -40,8 +40,8 @@ hopscotch-reports/.github/workflows/mathlib-pr-validation.yml  (heavy)
     │  - capture log, classify outcome
     ▼
 mathlib4 PR comment (one per dispatch, summary table + per-entry sections)
-    "## ✅ FLT builds against this PR rebased onto LKG"
-    "## ❌ Toric --merge-branch fails against this PR"
+    "**✅ FLT builds against this PR rebased onto LKG**"
+    "**❌ Toric --merge-branch fails against this PR**"
 ```
 
 ## GitHub App setup
@@ -481,27 +481,34 @@ history block: if the directive is retriggered, a new comment appears
 and the previous one stays in place as a record.
 
 The body opens with an optional `_Requested by @<user>._` mention (so the
-dispatcher gets one notification per run, not one per entry), then the
+dispatcher gets one notification per run, not one per entry), then a bold
 dispatch title with the merge SHA and run link, then a summary table when
-there are at least two entries, then one `## ` section per entry. Shape:
+there are at least two entries, then one bold-headered section per entry
+separated by `---` horizontal rules. Headings are intentionally not used
+(`#`/`##` render large in the PR conversation); the bold + rule
+combination keeps the comment readable without dominating the page. Shape:
 
 ```
 _Requested by @marcelolynch._
 
-# Downstream validation against PR merge [`abc1234`](commit-url) · [run](run-url)
+**Downstream validation against PR merge [`abc1234`](commit-url)** · [run](run-url)
 
 | Entry | Verdict |
 |---|---|
 | `FLT` | ✅ builds (rebased onto LKG) |
 | `Toric --merge-branch` | ❌ fails (master incompatibility at [`fff7777`](commit-url)) |
 
-## ✅ FLT builds against this PR rebased onto LKG
+---
+
+**✅ FLT builds against this PR rebased onto LKG**
 
 **Tested:** 3 PR commit(s) ([`abc1234..def5678`](compare-url)) cherry-picked
 onto FLT's last-known-good mathlib commit [`257086b`](commit-url), built
 against [`leanprover-community/FLT@13206c9`](commit-url).
 
-## ❌ Toric --merge-branch fails against this PR
+---
+
+**❌ Toric --merge-branch fails against this PR**
 
 > mathlib master is currently incompatible with Toric — the regression
 > was first observed at [`fff7777`](commit-url). This failure may
@@ -517,7 +524,7 @@ over base …), built against [`leanprover-community/Toric@…`](commit-url).
 </details>
 ```
 
-Per-entry section headers follow the entry-label grammar from
+Per-entry headers follow the entry-label grammar from
 `!downstream-check`: a bare name for LKG mode (the default), `@<rev>`
 when a rev was requested, and a ` --merge-branch` suffix in merge mode.
 The framing blockquote is skipped on a clean pass with no recorded
@@ -526,14 +533,14 @@ one-sentence subtitle so the reader can interpret the verdict without
 scanning back to the dispatch grammar.
 
 **Section variants:**
-- `## ✅ <entry> builds against this PR[ rebased onto LKG]` (pass)
-- `## ❌ <entry> fails against this PR[ rebased onto LKG]` (fail; inlines
+- `**✅ <entry> builds against this PR[ rebased onto LKG]**` (pass)
+- `**❌ <entry> fails against this PR[ rebased onto LKG]**` (fail; inlines
   the filtered tail of `build.log` in a `<details>` block)
-- `## ⚠️ <entry>: could not validate (PR conflicts with LKG)` (LKG mode,
+- `**⚠️ <entry>: could not validate (PR conflicts with LKG)**` (LKG mode,
   `stage=rebase_conflict`)
-- `## ⚠️ <entry>: could not validate (mathlib build failed at LKG)` (LKG
+- `**⚠️ <entry>: could not validate (mathlib build failed at LKG)**` (LKG
   mode, `stage=mathlib_build_at_lkg`)
-- `## ⚠️ <entry>: could not validate (infra: <stage>)` (generic — clone /
+- `**⚠️ <entry>: could not validate (infra: <stage>)**` (generic — clone /
   fetch / lakedit / lake update / etc.)
 
 Sections include the requested rev (when `@<rev>` was given) inline in
