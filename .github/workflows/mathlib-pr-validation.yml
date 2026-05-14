@@ -135,37 +135,65 @@ jobs:
         run: bash scripts/pr_validation/install_lakedit.sh
 
       - name: Run validation
+        # Every matrix / inputs value flows into the script via `env:`
+        # rather than `${{ … }}` expansion inside `run:`. GitHub renders
+        # `${{ … }}` directly into the shell script before bash sees it,
+        # so a value containing `$(...)` or backticks would execute as
+        # command substitution even inside double quotes. Binding via
+        # `env:` makes bash read the value as a literal string at run
+        # time with no re-evaluation. `matrix.rev` in particular is the
+        # verbatim refspec the user typed in the `!downstream-check`
+        # comment, with only grammar validation upstream.
+        #
         # `matrix.rev` / `matrix.lkg_commit` / `matrix.fkb_commit` are
-        # `''` when build_matrix.py didn't set them (no `@<rev>` from the
-        # user, merge mode without LKG, no recorded master regression).
+        # `''` when build_matrix.py didn't set them (no `@<rev>` from
+        # the user, merge mode, no recorded master regression).
         # validate.py accepts empty strings and falls back appropriately:
         # --downstream-rev empty → use --default-branch; --lkg-commit
         # empty is rejected by Config.from_args when --mode lkg.
         # --requested-name carries the literal user-typed token (short
         # name or owner/repo slug) for the displayed entry label.
+        env:
+          PR_NUMBER:       ${{ inputs.pr_number }}
+          MERGE_SHA:       ${{ inputs.merge_sha }}
+          DOWNSTREAM:      ${{ matrix.name }}
+          REQUESTED_NAME:  ${{ matrix.requested_name }}
+          DOWNSTREAM_REPO: ${{ matrix.repo }}
+          DEFAULT_BRANCH:  ${{ matrix.default_branch }}
+          DEPENDENCY_NAME: ${{ matrix.dependency_name }}
+          DOWNSTREAM_REV:  ${{ matrix.rev }}
+          MODE:            ${{ matrix.mode }}
+          LKG_COMMIT:      ${{ matrix.lkg_commit || '' }}
+          FKB_COMMIT:      ${{ matrix.fkb_commit || '' }}
+          WORKDIR:         ${{ runner.temp }}/pr-validation
+          OUTPUT_DIR:      ${{ runner.temp }}/artifacts/result-${{ matrix.name }}-${{ matrix.rev_slug }}-${{ matrix.mode }}
+          TOOL_BIN:        ${{ runner.temp }}/tool-bin
         run: |
           python3 scripts/pr_validation/validate.py \
-            --pr-number "${{ inputs.pr_number }}" \
-            --merge-sha "${{ inputs.merge_sha }}" \
-            --downstream "${{ matrix.name }}" \
-            --requested-name "${{ matrix.requested_name }}" \
-            --downstream-repo "${{ matrix.repo }}" \
-            --default-branch "${{ matrix.default_branch }}" \
-            --dependency-name "${{ matrix.dependency_name }}" \
-            --downstream-rev "${{ matrix.rev }}" \
-            --mode "${{ matrix.mode }}" \
-            --lkg-commit "${{ matrix.lkg_commit || '' }}" \
-            --fkb-commit "${{ matrix.fkb_commit || '' }}" \
-            --workdir "${{ runner.temp }}/pr-validation" \
-            --output-dir "${{ runner.temp }}/artifacts/result-${{ matrix.name }}-${{ matrix.rev_slug }}-${{ matrix.mode }}" \
-            --tool-bin "${{ runner.temp }}/tool-bin"
+            --pr-number "$PR_NUMBER" \
+            --merge-sha "$MERGE_SHA" \
+            --downstream "$DOWNSTREAM" \
+            --requested-name "$REQUESTED_NAME" \
+            --downstream-repo "$DOWNSTREAM_REPO" \
+            --default-branch "$DEFAULT_BRANCH" \
+            --dependency-name "$DEPENDENCY_NAME" \
+            --downstream-rev "$DOWNSTREAM_REV" \
+            --mode "$MODE" \
+            --lkg-commit "$LKG_COMMIT" \
+            --fkb-commit "$FKB_COMMIT" \
+            --workdir "$WORKDIR" \
+            --output-dir "$OUTPUT_DIR" \
+            --tool-bin "$TOOL_BIN"
 
       - name: Summarize result
         if: always()
+        env:
+          DOWNSTREAM: ${{ matrix.name }}
+          OUTPUT_DIR: ${{ runner.temp }}/artifacts/result-${{ matrix.name }}-${{ matrix.rev_slug }}-${{ matrix.mode }}
         run: |
           python3 scripts/pr_validation/summarize.py \
-            --downstream "${{ matrix.name }}" \
-            --output-dir "${{ runner.temp }}/artifacts/result-${{ matrix.name }}-${{ matrix.rev_slug }}-${{ matrix.mode }}"
+            --downstream "$DOWNSTREAM" \
+            --output-dir "$OUTPUT_DIR"
 
       - name: Upload result
         if: always()
