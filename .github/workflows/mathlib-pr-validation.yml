@@ -127,7 +127,10 @@ jobs:
 
       - name: Build / fetch lakedit
         env:
-          HOPSCOTCH_REF: lakedit # ${{ vars.HOPSCOTCH_REF || 'v1.4.1' }}
+          # Pinned to a specific hopscotch commit on `main` rather than a
+          # tag while we wait for the next tagged release that carries
+          # `lakedit`. install_lakedit.sh accepts branches, tags, or SHAs.
+          HOPSCOTCH_REF: ${{ vars.HOPSCOTCH_REF || '34fae86f8ee3731f760d25889d31da27f02a545b' }}
           TOOL_BIN: ${{ runner.temp }}/tool-bin
         run: bash scripts/pr_validation/install_lakedit.sh
 
