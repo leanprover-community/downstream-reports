@@ -75,8 +75,7 @@
       "repo": "kbuzzard/ClassFieldTheory",
       "default_branch": "main",
       "dependency_name": "mathlib",
-      "enabled": true,
-      "warm_cache": true
+      "enabled": true
     },
     {
       "name": "gibbs-measure",
@@ -99,8 +98,7 @@
       "repo": "Whysoserioushah/BrauerGroup_new",
       "default_branch": "main",
       "dependency_name": "mathlib",
-      "enabled": true,
-      "warm_cache": true
+      "enabled": true
     },
     {
       "name": "add-combi",
