@@ -1,492 +1,248 @@
-# PR-triggered downstream validation
+# PR validation workflow reference
 
-Implementation spec for testing a `mathlib4` PR's would-be-merged tree against a
-named downstream, triggered by a PR comment.
+`mathlib-pr-validation.yml` answers the question: *will this `mathlib4` PR
+break a named downstream?* — on demand, before merge, via a comment directive.
 
-## Goal
+Unlike the scheduled regression workflow (which tests every tracked downstream
+against a fixed `mathlib4` commit and only alerts on episode state changes),
+PR validation is fired ad-hoc by a reviewer on a specific PR, runs against
+the PR's would-be-merged tree (or against a known-good baseline with the PR
+rebased onto it), and posts a single Markdown comment back on the PR with the
+verdicts. It does not touch the regression database; PR runs are ephemeral.
 
-Answer "Will this PR break downstream `D`?" before merge, on demand, via
-`!downstream-check <name>` in a `mathlib4` PR comment.
+---
 
-## Non-goals (v1)
-
-- No master baseline. The reader is assumed to have checked downstream health
-  before dispatching. The result comment links to the latest downstream report
-  and notes the caveat.
-- No commit-status check. The result is an informational comment, not a merge
-  gate.
-- No DB persistence. PR runs are ephemeral; the regression-tracking schema in
-  hopscotch-reports stays untouched.
-- No artifact reuse across PR runs.
- 
-## Topology
-
-Two workflows, two repos, one new GitHub App.
+## Round-trip topology
 
 ```
-mathlib4 PR comment "!downstream-check FLT"
+mathlib4 PR comment "!downstream-check FLT, Toric --merge-branch"
     │
     ▼
-mathlib4/.github/workflows/pr_check_downstream.yml          (thin)
-    │  - auth check (author_association)
-    │  - parse comment, resolve merge SHA
-    │  - validate downstream names against inventory
-    │  - mint App token, post ack comment, dispatch
+mathlib4/.github/workflows/pr_check_downstream.yml          (thin, in mathlib4)
+    │  - author-association gate
+    │  - parse comment, resolve refs/pull/N/merge to a SHA
+    │  - validate entry grammar
+    │  - mint App token, post ack comment, workflow_dispatch
     ▼
-hopscotch-reports/.github/workflows/mathlib-pr-validation.yml  (heavy)
-    │  - matrix job per downstream on [self-hosted, pr]
-    │  - clone mathlib4 @ merge SHA + lake exe cache get
-    │  - clone downstream, lakedit set --path, lake update, lake build
-    │  - capture log, classify outcome
+downstream-reports/.github/workflows/mathlib-pr-validation.yml  (this repo)
+    │  - matrix job per entry on [self-hosted, pr]
+    │  - clone mathlib4, resolve tree (LKG-rebase or merge SHA), build downstream
+    │  - assemble one dispatch-level comment, post via App token
     ▼
-mathlib4 PR comment (one per dispatch, summary table + per-entry sections)
-    "**✅ FLT builds against this PR rebased onto LKG**"
-    "**❌ Toric --merge-branch fails against this PR**"
+mathlib4 PR comment — summary table + one section per entry
 ```
 
-## GitHub App setup
+The mathlib4 side (the directive handler, the ack comment, and the grammar
+validator) lives in `leanprover-community/mathlib4` and
+`leanprover-community/mathlib-ci`. Everything documented below lives in this
+repo and is what runs once the dispatch lands.
 
-We create a dedicated App rather than reusing any existing one — the scopes
-needed here are narrow and shouldn't be bundled with broader bots.
+A dedicated GitHub App (`downstream-reports-automation`) is installed on both
+mathlib4 and downstream-reports. Each side mints a token scoped to the *other*
+repo: mathlib4 to dispatch into us, this workflow's `report` job to post the
+result comment back. The App's private key sits in Azure Key Vault and is
+fetched at run time via OIDC federation to an Entra app pinned to the
+`pr-validation-token` environment subject — manual dispatches from a feature
+branch authenticate identically to production runs from `main`.
 
-### 1. Create the App
+---
 
-GitHub → Settings → Developer settings → GitHub Apps → New GitHub App.
+## The two modes: LKG vs merge
 
-- **Name:** `mathlib-pr-downstream-validator` (or similar; must be globally
-  unique).
-- **Homepage URL:** the hopscotch-reports repo URL.
-- **Webhook:** disable (we don't receive events; we only mint tokens).
-- **Repository permissions:**
-  | Scope          | Access       | Why                                                  |
-  |----------------|--------------|------------------------------------------------------|
-  | Metadata       | Read         | Required by GitHub for any App.                      |
-  | Contents       | Read         | Read inventory, fetch merge ref info.                |
-  | Pull requests  | Read & write | Post/edit the result comment on the mathlib4 PR.     |
-  | Issues         | Read & write | PR comments use the Issues API for create/edit/list. |
-  | Actions        | Read & write | `workflow_dispatch` against hopscotch-reports.       |
-- **Account permissions:** none.
-- **Where can this App be installed?** Only on this account
-  (`leanprover-community`).
+Each entry in the directive runs in one of two modes. LKG is the default;
+`--merge-branch` opts a single entry into merge mode.
 
-After creation:
-1. Generate a private key (`.pem`). Store it securely — it is shown once.
-2. Note the **App ID**.
-3. Install the App on **both** repos:
-   - `leanprover-community/mathlib4`
-   - `leanprover-community/hopscotch-reports`
-   Restrict the installation to those two repos in the install dialog.
-4. Note the **Installation IDs** (one per repo) — visible in the install URL or
-   via `GET /app/installations`. We don't strictly need them at runtime
-   (`actions/create-github-app-token` discovers them) but it's useful to record
-   them in a sealed place for debugging.
+**LKG mode** (default) takes the downstream's `last_known_good_commit` from
+the published [`lkg/latest.json`](https://downstreamreports.z13.web.core.windows.net/lkg/latest.json)
+snapshot, cherry-picks the PR's commits onto it, sanity-builds `Mathlib`, and
+only then builds the downstream. The verdict is independent of current master
+health: even when `mathlib4` master is already broken for that downstream (the
+case this whole repo exists to track), an LKG-mode pass tells you the PR did
+*not* introduce that break.
 
-### 2. Store the credentials
+**Merge mode** (`--merge-branch`) clones `mathlib4` at the PR's
+`merge_commit_sha` directly — current master + the PR applied, as GitHub
+computes it — and builds the downstream against that. Cheaper because the
+upstream olean cache hits cleanly, but a failure may be master's fault rather
+than the PR's.
 
-For v1, use plain GitHub repository secrets on both sides. The existing
-`mathlib-ci/.github/actions/azure-create-github-app-token` flow keeps the
-mathlib bot key in Azure Key Vault; we are intentionally *not* coupling this
-new App to Azure — it can move there later if needed without changing
-workflow logic, since `actions/create-github-app-token` is a drop-in.
+LKG mode is the more actionable signal in steady state. Cost-wise,
+`lake exe cache get` is content-keyed so files the PR did not touch still
+hit cache after the rebase; only PR-modified files (and their dependents)
+plus the `Mathlib` library sanity-build add real time over the merge-mode
+path. In practice that's minutes, not the hour-plus a full rebuild would
+take.
 
-In `leanprover-community/mathlib4` repo settings → Secrets and variables →
-Actions:
-- `DOWNSTREAM_VALIDATOR_APP_ID` (App ID, plain text, can be a `var` not secret).
-- `DOWNSTREAM_VALIDATOR_PRIVATE_KEY` (full `.pem` contents).
+---
 
-In `leanprover-community/hopscotch-reports`:
-- `DOWNSTREAM_VALIDATOR_APP_ID`
-- `DOWNSTREAM_VALIDATOR_PRIVATE_KEY`
+## Comment grammar
 
-(Same App, so identical values. We store both because the dispatching workflow
-on mathlib4 mints a token to call hopscotch-reports' `workflow_dispatch`, and
-the hopscotch-reports workflow mints a separate token to post comments back on
-the mathlib4 PR — each side needs its own token-minting capability.)
+Single line, first line of the triggering comment:
 
-### 3. Token minting in workflows
-
-Use `actions/create-github-app-token@v2`. Each side requests a token scoped to
-the *other* repo:
-
-```yaml
-# In mathlib4 workflow:
-- uses: actions/create-github-app-token@v2
-  id: app_token
-  with:
-    app-id: ${{ vars.DOWNSTREAM_VALIDATOR_APP_ID }}
-    private-key: ${{ secrets.DOWNSTREAM_VALIDATOR_PRIVATE_KEY }}
-    owner: leanprover-community
-    repositories: hopscotch-reports
+```
+!downstream-check <name-or-slug>[@<rev>] [--merge-branch][, <name-or-slug>[@<rev>] [--merge-branch] ...]
 ```
 
-```yaml
-# In hopscotch-reports workflow:
-- uses: actions/create-github-app-token@v2
-  id: app_token
-  with:
-    app-id: ${{ vars.DOWNSTREAM_VALIDATOR_APP_ID }}
-    private-key: ${{ secrets.DOWNSTREAM_VALIDATOR_PRIVATE_KEY }}
-    owner: leanprover-community
-    repositories: mathlib4
-```
+Per comma-separated entry:
 
-This narrows each token to a single repo even though the App is installed on
-both — least-privilege for each leg of the round trip.
-
-## Mathlib4 side
-
-### File: `.github/workflows/pr_check_downstream.yml`
-
-```yaml
-name: PR check downstream
-
-on:
-  issue_comment:
-    types: [created]
-  workflow_dispatch:
-    inputs:
-      pr_number:
-        required: true
-        type: string
-      downstreams:
-        required: true
-        type: string  # comma-separated
-
-permissions:
-  contents: read
-  pull-requests: write   # for the ack comment
-  issues: write          # PR comments use issues API
-
-concurrency:
-  group: pr-check-downstream-${{ github.event.issue.number || inputs.pr_number }}
-  cancel-in-progress: false   # do not cancel a running build on a new comment;
-                              # the dispatch is cheap and we want both runs.
-
-jobs:
-  trigger:
-    if: |
-      github.event_name == 'workflow_dispatch' ||
-      (github.event.issue.pull_request &&
-       startsWith(github.event.comment.body, '!downstream-check'))
-    runs-on: ubuntu-latest
-    steps:
-      - name: Authorize commenter
-        if: github.event_name == 'issue_comment'
-        env:
-          ASSOC: ${{ github.event.comment.author_association }}
-        run: |
-          case "$ASSOC" in
-            OWNER|MEMBER|COLLABORATOR) echo "ok" ;;
-            *) echo "::error::author_association=$ASSOC not allowed"; exit 1 ;;
-          esac
-
-      - name: Parse comment
-        id: parse
-        if: github.event_name == 'issue_comment'
-        env:
-          BODY: ${{ github.event.comment.body }}
-        run: |
-          # First line only; trim the directive; remainder is the
-          # comma-separated `<name>[@<rev>] [--merge-branch]` list.
-          line="$(printf '%s' "$BODY" | head -n1 | tr -d '\r')"
-          rest="${line#!downstream-check}"
-          rest="$(echo "$rest" | sed -E 's/^[[:space:]]+//;s/[[:space:]]+$//')"
-          if [ -z "$rest" ]; then
-            echo "::error::usage: !downstream-check <name>[@<rev>] [--merge-branch][, ...]"
-            exit 1
-          fi
-          echo "downstreams=$rest" >> "$GITHUB_OUTPUT"
-
-      - name: Get mathlib-ci
-        uses: ./workflow-actions/.github/actions/get-mathlib-ci
-
-      - name: Validate downstream entries
-        id: validate
-        env:
-          DS: ${{ steps.parse.outputs.downstreams || inputs.downstreams }}
-        run: |
-          "$CI_SCRIPTS_DIR/pr_check_downstream/validate_names.sh" \
-            --names "$DS" \
-            --output "$GITHUB_OUTPUT"
-          # Sets: resolved_names (final comma list), merge_sha (resolved
-          # from refs/pull/N/merge — lives on the base repo even for fork
-          # PRs, so no head-repo plumbing is needed). Author-association
-          # gating happens upstream in this same workflow.
-
-      - name: Mint App token (for hopscotch-reports)
-        id: app_token
-        uses: actions/create-github-app-token@v2
-        with:
-          app-id: ${{ vars.DOWNSTREAM_VALIDATOR_APP_ID }}
-          private-key: ${{ secrets.DOWNSTREAM_VALIDATOR_PRIVATE_KEY }}
-          owner: leanprover-community
-          repositories: hopscotch-reports
-
-      - name: Dispatch hopscotch-reports workflow
-        env:
-          GH_TOKEN: ${{ steps.app_token.outputs.token }}
-          PR_NUMBER: ${{ github.event.issue.number || inputs.pr_number }}
-          MERGE_SHA: ${{ steps.validate.outputs.merge_sha }}
-          DOWNSTREAMS: ${{ steps.validate.outputs.resolved_names }}
-        run: |
-          gh workflow run mathlib-pr-validation.yml \
-            -R leanprover-community/hopscotch-reports \
-            -f pr_number="$PR_NUMBER" \
-            -f merge_sha="$MERGE_SHA" \
-            -f downstreams="$DOWNSTREAMS"
-
-      - name: Post / update ack comment
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PR_NUMBER: ${{ github.event.issue.number || inputs.pr_number }}
-          DOWNSTREAMS: ${{ steps.validate.outputs.resolved_names }}
-          MERGE_SHA: ${{ steps.validate.outputs.merge_sha }}
-        run: |
-          "$CI_SCRIPTS_DIR/pr_check_downstream/post_ack_comment.sh"
-```
-
-The default `secrets.GITHUB_TOKEN` is sufficient for posting the ack comment on
-the same repo — we only need the App token for the cross-repo dispatch.
-
-### Mathlib-ci scripts
-
-New directory `mathlib-ci/scripts/pr_check_downstream/`:
-
-- `validate_names.sh` — validates the grammar of each comma-separated
-  entry (`<name-or-slug>[@<rev>] [--merge-branch]`), dedups, and
-  resolves `refs/pull/N/merge` via `gh api`. Bare tokens are passed
-  through verbatim: the dispatched workflow's `build_matrix.py` holds
-  the inventory and is the single source of truth for name resolution,
-  so this side stays inventory-agnostic and accepts both short names
-  and `owner/repo` slugs. Authorisation is gated upstream in the
-  mathlib4 workflow.
-- `post_ack_comment.sh` — POSTs one ack per dispatch. Multiple
-  `!downstream-check` comments on the same PR therefore leave separate
-  ack lines, each pinned by its own dispatch run link, so the audit
-  trail of what got triggered survives. Body shape:
-
-  > **Downstream validation triggered**
-  > Testing this PR (merge ref `<short-sha>`) against: `FLT`, `Toric`.
-  > Run: <link>
-  > Results will be posted as a single follow-up comment when the run finishes.
-
-These scripts live in `mathlib-ci` (not `mathlib4`) because they touch tokens
-and post comments; that is the documented split (see the `PR_summary.yml`
-reminder language in mathlib4).
-
-## Hopscotch-reports side
-
-### File: `.github/workflows/mathlib-pr-validation.yml`
-
-```yaml
-name: mathlib-pr-validation
-
-on:
-  workflow_dispatch:
-    inputs:
-      pr_number:
-        required: true
-        type: string
-      merge_sha:
-        description: >-
-          Resolved SHA of refs/pull/N/merge (a.k.a. the PR API's
-          merge_commit_sha). The ref lives on the base repo even for fork
-          PRs, and the merge commit's two parents identify the PR's base
-          and head — so no head-repo input is needed.
-        required: true
-        type: string
-      downstreams:
-        description: "Comma-separated `<name>[@<rev>] [--merge-branch]` entries."
-        required: true
-        type: string
-
-permissions:
-  contents: read
-  actions: read
-
-concurrency:
-  group: mathlib-pr-validation-${{ inputs.pr_number }}-${{ inputs.merge_sha }}
-  cancel-in-progress: true   # if a new push lands and a fresh dispatch comes
-                             # for the same PR, drop the older one
-
-jobs:
-  plan:
-    runs-on: ubuntu-latest
-    outputs:
-      matrix: ${{ steps.plan.outputs.matrix }}
-    steps:
-      - uses: actions/checkout@v6
-      - id: plan
-        env:
-          INPUT_DOWNSTREAMS: ${{ inputs.downstreams }}
-        run: |
-          python3 scripts/pr_validation/build_matrix.py \
-            --inventory ci/inventory/downstreams.json \
-            --names "$INPUT_DOWNSTREAMS" \
-            --output matrix.json
-          echo "matrix=$(tr -d '\n' < matrix.json)" >> "$GITHUB_OUTPUT"
-
-  validate:
-    needs: plan
-    name: "validate: ${{ matrix.name }}"
-    runs-on: [self-hosted, pr]
-    strategy:
-      fail-fast: false
-      max-parallel: 2
-      matrix: ${{ fromJson(needs.plan.outputs.matrix) }}
-    timeout-minutes: ${{ vars.PR_VALIDATION_TIMEOUT_MINUTES || 90 }}
-    steps:
-      - uses: actions/checkout@v6   # hopscotch-reports itself, for scripts
-      - name: Set up Python
-        uses: actions/setup-python@v6.2.0
-        with:
-          python-version: '3.x'
-      - run: pip install -r scripts/requirements.txt
-
-      - name: Install Lean (elan)
-        run: |
-          curl https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh -sSf \
-            | sh -s -- -y --default-toolchain none
-          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
-
-      - name: Build / fetch lakedit
-        env:
-          HOPSCOTCH_REF: ${{ vars.HOPSCOTCH_REF || 'v1.4.1' }}
-          TOOL_BIN: ${{ runner.temp }}/tool-bin
-        run: bash scripts/pr_validation/install_lakedit.sh
-
-      - name: Run validation
-        id: run
-        env:
-          PR_NUMBER:    ${{ inputs.pr_number }}
-          MERGE_SHA:    ${{ inputs.merge_sha }}
-          DOWNSTREAM:   ${{ matrix.name }}
-          DOWNSTREAM_REPO: ${{ matrix.repo }}
-          DEFAULT_BRANCH: ${{ matrix.default_branch }}
-          DEPENDENCY_NAME: ${{ matrix.dependency_name }}
-          WORKDIR:      ${{ runner.temp }}/pr-validation
-          OUTPUT_DIR:   ${{ runner.temp }}/artifacts/${{ matrix.name }}
-          TOOL_BIN:     ${{ runner.temp }}/tool-bin
-        run: python3 scripts/pr_validation/validate.py
-
-      - name: Upload result
-        if: always()
-        uses: actions/upload-artifact@v7.0.0
-        with:
-          name: result-${{ matrix.name }}
-          path: ${{ runner.temp }}/artifacts/${{ matrix.name }}
-          if-no-files-found: error
-
-  report:
-    needs: [plan, validate]
-    if: always()
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-      - uses: actions/download-artifact@v8.0.1
-        with:
-          path: results
-          pattern: result-*
-
-      - name: Mint App token (for mathlib4)
-        id: app_token
-        uses: actions/create-github-app-token@v2
-        with:
-          app-id: ${{ vars.DOWNSTREAM_VALIDATOR_APP_ID }}
-          private-key: ${{ secrets.DOWNSTREAM_VALIDATOR_PRIVATE_KEY }}
-          owner: leanprover-community
-          repositories: mathlib4
-
-      - name: Post / update result comments
-        env:
-          GH_TOKEN:   ${{ steps.app_token.outputs.token }}
-          PR_NUMBER:  ${{ inputs.pr_number }}
-          MERGE_SHA:  ${{ inputs.merge_sha }}
-          RUN_URL:    ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-        run: python3 scripts/pr_validation/post_results.py --results-dir results
-```
-
-### Hopscotch-reports scripts
-
-New directory `hopscotch-reports/scripts/pr_validation/`:
-
-- `build_matrix.py` — load inventory, intersect with requested names, emit
-  `{ "include": [ {name, repo, default_branch, dependency_name}, ... ] }`.
-  Errors if any requested name is unknown (defense in depth — mathlib4 already
-  validated, but the dispatch is untrusted input).
-- `install_lakedit.sh` — clones `leanprover-community/hopscotch` at the pinned
-  ref into `$WORKDIR/hopscotch`, runs `lake build lakedit`, copies the binary
-  to `$TOOL_BIN/lakedit`. Caches by hopscotch SHA in a stable path so reruns
-  on the same self-hosted runner are fast.
-- `validate.py` — see next section.
-- `post_results.py` — reads every `result.json` in the validate matrix and
-  POSTs a **single** dispatch-level comment on the PR. The body opens with
-  an optional `_Requested by @<user>._` mention, the dispatch title, a
-  summary table (entry → verdict), and one `##` section per entry carrying
-  the framing subtitle, `Tested:`/`Attempted:` recipe, and optional
-  failure log. One mention per dispatch keeps notifications quiet; the
-  build logs themselves remain available via the `result-*` run artifacts.
-
-### `validate.py` structure
-
-The script is pure Python orchestration around shell-outs to `git`,
-`lake`, and `lakedit`. It decomposes into seven stage functions with a
-shared `Config` (env-derived, frozen) and `State` (mutable, populated
-as stages progress):
-
-| Stage | What it does | Infra-failure label |
+| Token | Required? | Meaning |
 |---|---|---|
-| 1. `clone_mathlib` | `git clone --no-checkout $UPSTREAM_REPO` | `clone` |
-| 2. `resolve_mathlib_tree` | fetch merge SHA (+ LKG when applicable), derive PR_BASE/PR_HEAD via `git rev-parse <merge>^{1,2}`, check out the working tree (merge SHA for merge mode; LKG + cherry-pick for LKG mode) | `fetch` / `checkout` / `rev_parse` / `rebase_conflict` |
-| 3. `warm_cache` | `lake exe cache get` (best-effort; failure is logged but not fatal) | — |
-| 4. `sanity_build_mathlib` | LKG mode only: `lake build Mathlib` to catch "PR depends on post-LKG mathlib changes" before it bleeds into a downstream build error | `mathlib_build_at_lkg` |
-| 5. `clone_downstream` | `git clone --no-checkout` the downstream + `fetch origin $DOWNSTREAM_REV` + `checkout FETCH_HEAD`. Same path works for branches, tags, and reachable SHAs | `clone_downstream` / `fetch_downstream` / `checkout_downstream` |
-| 6. `lakedit_set` | `lakedit set $DEPENDENCY_NAME --path $ML --project-dir $DS` | `lakedit` |
-| 7. `lake_update_and_build` | `lake update $DEPENDENCY_NAME` then `lake build` on the downstream | `lake_update` (update) / `build` (build pass or fail) |
+| `<name-or-slug>` | yes | Inventory short name (case-sensitive match against `inventory.downstreams[*].name`) or GitHub `owner/repo` slug (case-insensitive match against `inventory.downstreams[*].repo`). Either form resolves to the same canonical row; the user-typed literal is preserved as `requested_name` for display. |
+| `@<rev>` | no | Any git refspec — branch, tag, or commit SHA — for the downstream checkout. Defaults to the inventory's `default_branch`. |
+| `--merge-branch` | no | Flips this one entry from LKG mode (the default) to merge mode. Per-entry, so `FLT --merge-branch, Toric` runs the two in different modes. |
 
-Cross-cutting concerns:
+Authorisation is gated on the mathlib4 side to `OWNER` / `MEMBER` /
+`COLLABORATOR`. There is no `all` shorthand — entries are enumerated.
 
-- **`Log` (class)** is the single chokepoint for live streaming. Every
-  line emitted by the script (headers, annotations, subprocess output)
-  is written to both stdout (the live workflow log) and `build.log`
-  (the artifact). Subprocesses run via `log.run([...])`, which captures
-  each subprocess's stdout+stderr line-by-line and mirrors it to both
-  sinks. `log.print(...)` does the same for the script's own output.
-- **`fail_infra`** closes the current `::group::`, emits a
-  `::error::` (or `::warning::` for `rebase_conflict` /
-  `mathlib_build_at_lkg`) annotation, writes `result.json` with
-  `status="infra_failure"` + the stage label, and exits 0.
-- **`build_result_record`** is the JSON-shape contract. Optional
-  fields (`fkb_commit`, `downstream_rev`, `requested_name`, PR
-  endpoints, `commits_replayed`, `replayed_tree_sha`) are only
-  included when they carry information beyond their default — keeps
-  result.json compact and lets `post_results.py`'s
-  `result.get(...)` falsy-fallbacks work.
+---
 
-`status` is one of `pass`, `fail`, `infra_failure`. The reporter renders these
-distinctly so users can tell "your PR breaks FLT" from "the runner couldn't
-clone FLT."
+## Job structure
 
-`scripts/test_pr_validation_validate.py` covers `Config.from_env`,
-`build_result_record`, `derive_pr_endpoints`, the `Log` streaming
-contract, and `fail_infra`. The stage functions themselves are
-exercised by the smoke-dispatch runs against real PRs rather than
-mocked subprocess invocations.
+```
+plan (ubuntu-latest) ──► validate (×N, self-hosted, no secrets) ──► report (ubuntu-latest)
+```
+
+Concurrency group is `mathlib-pr-validation-${pr_number}` with
+`cancel-in-progress: false`: a new push (which produces a new merge SHA) and
+a re-dispatched directive both queue behind the running build rather than
+cancel it. Each individual run takes long enough on the self-hosted `pr` pool
+that finishing what we started is almost always cheaper than discarding it;
+the dispatcher can still cancel manually if a stale build stops being
+interesting.
+
+### `plan`
+
+Runs `scripts/pr_validation/build_matrix.py` to turn the comma-separated
+`downstreams` input into a GitHub Actions matrix `include` list.
+
+1. Loads `ci/inventory/downstreams.json` and indexes by both short name and
+   `owner/repo` slug.
+2. Parses each entry into `(bare-token, rev, mode)`. Unknown flags or empty
+   tokens fail the job. Unknown names produce a single
+   `error: unknown downstream(s): …` line and fail the job.
+3. Fetches the published LKG snapshot. LKG-mode entries need
+   `last_known_good_commit` from it (hard requirement — a downstream with no
+   recorded LKG must fall back to `--merge-branch`). Both modes optionally
+   pull `first_known_bad_commit` so the result comment can frame master
+   health definitively. Snapshot unreachable + all-merge-mode dispatch
+   proceeds without FKB enrichment.
+4. Deduplicates on `(canonical name, rev, mode)`; the user's first-typed form
+   wins as `requested_name`.
+5. Emits `matrix.json` with one row per surviving entry.
+
+The `has_downstreams` job output gates the rest of the workflow — an empty
+matrix (only possible with stale dispatches) cleanly skips both `validate`
+and `report`.
+
+### `validate` (matrix)
+
+Runs on the `[self-hosted, pr]` pool, up to 2 jobs in parallel, with a
+configurable timeout (`PR_VALIDATION_TIMEOUT_MINUTES`, default 90 min). One
+job per matrix row. The matrix display name encodes `(name, rev_slug, mode)`
+so two entries that differ only in rev or mode show up as distinct rows in
+the UI.
+
+Each job installs `lakedit` (the manifest-rewriting tool) by cloning
+`leanprover-community/hopscotch@$HOPSCOTCH_REF` and running `lake build
+lakedit`, then runs `scripts/pr_validation/validate.py` through a pipeline
+of stage functions:
+
+| Stage | What it does | `stage` label on infra failure |
+|---|---|---|
+| 1. clone | `git clone --no-checkout` upstream `mathlib4` | `clone` |
+| 2. resolve mathlib tree | Fetch the merge SHA (and LKG, in LKG mode); resolve `PR_BASE = merge^1` and `PR_HEAD = merge^2`; check out the merge SHA (merge mode) or check out LKG and `git cherry-pick PR_BASE..PR_HEAD` (LKG mode) | `fetch` / `checkout` / `rev_parse` / `rebase_conflict` |
+| 3. warm cache | `lake exe cache get` — best-effort, failure is logged but not fatal | — |
+| 4. sanity-build Mathlib | LKG mode only: `lake build Mathlib` to disambiguate "PR depends on post-LKG mathlib changes" from a genuine downstream break before that signal bleeds into a downstream build error | `mathlib_build_at_lkg` |
+| 5. clone downstream | Clone + `fetch origin <rev>` + `checkout FETCH_HEAD` (works for branches, tags, and reachable SHAs alike) | `clone_downstream` / `fetch_downstream` / `checkout_downstream` |
+| 6. lakedit set | `lakedit set <dep> --path <local mathlib4>` rewrites the downstream's `lake-manifest.json` | `lakedit` |
+| 7. lake update + build | `lake update <dep>` then `lake build` on the downstream | `lake_update` (update phase) / `build` (final verdict) |
+
+A single `Log` class is the chokepoint for live streaming: every subprocess
+line and every script-emitted line lands in both the live workflow log and
+`build.log`. `post_results.py` and `summarize.py` consume the same filtered
+transcript.
+
+Each job uploads a `result-<name>-<rev_slug>-<mode>` artifact containing
+`result.json` and `build.log`, and runs `summarize.py` to append a
+per-downstream block to `$GITHUB_STEP_SUMMARY`.
+
+### `report`
+
+Skipped when `post_results=false` so the workflow can be exercised without
+the App / token plumbing (the per-entry artifacts are still available for
+manual review). Otherwise runs `scripts/pr_validation/post_results.py`,
+which:
+
+1. Walks every `result-*/result.json` and reads the corresponding filtered
+   `build.log` tail.
+2. Looks each downstream up in the local inventory for `repo` and
+   `default_branch` metadata.
+3. Sorts entries by `(name, rev, mode)` so related rows sit together.
+4. Pre-trims each log to the per-entry budget, then assembles the body and
+   progressively halves the longest inlined log until the body fits under
+   GitHub's 65,536-char comment limit.
+5. POSTs **one** comment per dispatch via the App token. Re-dispatches
+   produce additional comments (no edit-in-place, no hidden markers), so the
+   audit trail of what was triggered survives.
+
+---
+
+## Security boundary
+
+The `validate` job runs on `[self-hosted, pr]` and is deliberately kept off
+the main regression-runner pool: it builds arbitrary `mathlib4` trees (the
+PR's would-be-merged commit, or the PR's commits cherry-picked onto a
+downstream's LKG) and runs `lake build` on a downstream, so it must never
+see `POSTGRES_DSN` or any other regression-side secret. The `pr` runner
+label gates the separation. The `report` job, which holds the App token,
+runs on `ubuntu-latest` and never invokes `lake` or `hopscotch`.
+
+This mirrors the regression workflow's split: `plan` and `report` can
+talk to the outside world; `validate` cannot.
+
+---
+
+## `result.json` shape
+
+Written by `validate.py` to each artifact root. Optional fields are only
+included when they carry information beyond their default, so the comment
+renderer's `result.get(...)` falsy-defaults are meaningful.
+
+```json
+{
+  "status":         "pass" | "fail" | "infra_failure",
+  "stage":          "build" | "clone" | "fetch" | …,
+  "message":        "human-readable one-liner",
+  "downstream":     "<canonical inventory name>",
+  "merge_sha":      "<PR merge SHA>",
+  "downstream_sha": "<resolved downstream HEAD>",
+  "mode":           "lkg" | "merge",
+
+  "lkg_commit":       "...",     // LKG mode only
+  "requested_name":   "...",     // omitted when user typed the canonical name
+  "downstream_rev":   "...",     // omitted when user used the default branch
+  "fkb_commit":       "...",     // present when snapshot recorded a master regression
+  "pr_base_sha":      "...",     // merge^1
+  "pr_head_sha":      "...",     // merge^2; omitted for fast-forward merges
+  "commits_replayed": 3,         // |PR_BASE..PR_HEAD|
+  "replayed_tree_sha":"..."      // LKG mode only — post-cherry-pick HEAD
+}
+```
+
+`validate.py` exits 0 in every case except a script-level crash: a build
+failure or an infra failure is the meaningful answer for this workflow, not
+a workflow error.
+
+---
 
 ## Result comment shape
 
-One Markdown comment is **POSTed fresh per dispatch**, carrying every
-matrix entry's verdict. No edit-in-place, no hidden marker, no embedded
-history block: if the directive is retriggered, a new comment appears
-and the previous one stays in place as a record.
-
-The body opens with an optional `_Requested by @<user>._` mention (so the
-dispatcher gets one notification per run, not one per entry), then a bold
-dispatch title with the merge SHA and run link, then a summary table when
-there are at least two entries, then one bold-headered section per entry
-separated by `---` horizontal rules. Headings are intentionally not used
-(`#`/`##` render large in the PR conversation); the bold + rule
-combination keeps the comment readable without dominating the page. Shape:
+One Markdown comment per dispatch, opening with an optional `_Requested by
+@<user>._` mention, then a bold dispatch title with the merge SHA and run
+link, then a summary table (when there are at least two entries), then one
+bold-headed section per entry separated by `---` rules. Headings are
+intentionally bold-inline rather than `##` so the comment stays visually
+quiet on the PR page.
 
 ```
 _Requested by @marcelolynch._
@@ -524,166 +280,84 @@ over base …), built against [`leanprover-community/Toric@…`](commit-url).
 </details>
 ```
 
-Per-entry headers follow the entry-label grammar from
-`!downstream-check`: a bare name for LKG mode (the default), `@<rev>`
-when a rev was requested, and a ` --merge-branch` suffix in merge mode.
-The framing blockquote is skipped on a clean pass with no recorded
-master regression (FKB unset); every other combination earns a
-one-sentence subtitle so the reader can interpret the verdict without
-scanning back to the dispatch grammar.
+Per-entry header variants:
 
-**Section variants:**
-- `**✅ <entry> builds against this PR[ rebased onto LKG]**` (pass)
-- `**❌ <entry> fails against this PR[ rebased onto LKG]**` (fail; inlines
-  the filtered tail of `build.log` in a `<details>` block)
-- `**⚠️ <entry>: could not validate (PR conflicts with LKG)**` (LKG mode,
-  `stage=rebase_conflict`)
-- `**⚠️ <entry>: could not validate (mathlib build failed at LKG)**` (LKG
-  mode, `stage=mathlib_build_at_lkg`)
-- `**⚠️ <entry>: could not validate (infra: <stage>)**` (generic — clone /
-  fetch / lakedit / lake update / etc.)
+- `**✅ <entry> builds against this PR[ rebased onto LKG]**` — pass.
+- `**❌ <entry> fails against this PR[ rebased onto LKG]**` — fail; inlines
+  the filtered tail of `build.log` in a `<details>` block.
+- `**⚠️ <entry>: could not validate (PR conflicts with LKG)**` — LKG mode,
+  `stage=rebase_conflict`.
+- `**⚠️ <entry>: could not validate (mathlib build failed at LKG)**` — LKG
+  mode, `stage=mathlib_build_at_lkg`.
+- `**⚠️ <entry>: could not validate (infra: <stage>)**` — every other infra
+  failure (clone / fetch / lakedit / lake update / …).
 
-Sections include the requested rev (when `@<rev>` was given) inline in
-the downstream link's label so the reader sees what was asked for; the
-URL always points at the resolved commit SHA.
+A blockquote subtitle frames every verdict except a clean LKG pass with no
+recorded master regression, where the section header and recipe already say
+everything.
 
-**Size budget:** the comment caps at ~60K chars to stay under GitHub's
-65,536-char limit. Inline failure logs are sized to a per-entry budget
-scaled to the number of failing entries; pathologically large logs are
-progressively halved until the body fits, with the run-artifact link in
-the title as the always-available full-log fallback.
+The body caps at ~60K chars to stay under GitHub's 65,536-char limit.
+Per-entry log budgets scale to the number of failing entries; pathologically
+large logs are progressively halved until the body fits, with the
+run-artifact link in the title as the always-available full-log fallback.
 
-## Parameters / extension points
+---
 
-Wire these from day one, defaulting to what we want today:
-
-| Surface          | Variable                       | Default                                 | Where    |
-|------------------|--------------------------------|-----------------------------------------|----------|
-| Inventory URL    | `INVENTORY_URL`                | downstream-reports `main` raw URL       | mathlib4 |
-| Hopscotch ref    | `HOPSCOTCH_REF`                | `v1.4.1` (a tag)                        | downstream-reports |
-| Runner label     | matrix `runs-on`               | `[self-hosted, pr]`                     | downstream-reports |
-| Build timeout    | `PR_VALIDATION_TIMEOUT_MINUTES`| `90`                                    | downstream-reports |
-| LKG snapshot URL | `build_matrix.py --lkg-snapshot-url` | `lkg/latest.json` on the published static site | downstream-reports |
-| Allowed authors  | hardcoded list in auth step    | `OWNER`/`MEMBER`/`COLLABORATOR`         | mathlib4 |
-
-Use `vars.*` (repo variables) for everything that's not a secret; `secrets.*`
-only for the App private key.
-
-## Comment grammar
-
-Single line, first line of the comment:
-
-```
-!downstream-check <name-or-slug>[@<rev>] [--merge-branch][, <name-or-slug>[@<rev>] [--merge-branch] ...]
-```
-
-Each comma-separated entry:
-
-| Token             | Required? | Meaning                                                                                                                                                                                                                            |
-|-------------------|-----------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `<name-or-slug>`  | yes       | Either the inventory short name (case-sensitive match against `inventory.downstreams[*].name`) or the GitHub `owner/repo` slug (case-insensitive match against `inventory.downstreams[*].repo`).                                   |
-| `@<rev>`          | no        | Any git refspec — branch, tag, or commit SHA — for the downstream's checkout. Defaults to the inventory's `default_branch` when absent.                                                                                            |
-| `--merge-branch`  | no        | Flips that one entry from the default LKG mode to merge mode (test against the PR's would-be-merged tree instead of cherry-picking onto the LKG). Per-entry, so mixing `FLT --merge-branch, Toric` runs each in a different mode. |
-
-Other rules:
-
-- Authorisation is gated upstream to `OWNER` / `MEMBER` / `COLLABORATOR`.
-- Empty argument list errors with a usage hint.
-- Anything after the first line is ignored — the comment can carry
-  contextual prose under the directive.
-- There is no `all` / `all@*` shorthand. Enumerate names explicitly.
-- mathlib-ci is grammar-only: the bare token is passed through verbatim
-  to the dispatched workflow's `build_matrix.py`, which holds the
-  inventory and reports unknown names from there. The two forms always
-  resolve to the same canonical matrix row; the user-typed literal
-  survives on `requested_name` for the displayed entry label.
-
-## LKG vs merge mode
-
-The two modes differ in what mathlib tree the downstream is tested
-against. LKG is the default; `--merge-branch` opts a single entry into
-merge mode.
-
-**LKG mode** (default) takes the downstream's `last_known_good_commit`
-from the published `lkg/latest.json` snapshot, cherry-picks the PR's
-commits onto it, sanity-builds mathlib's library target, then builds the
-downstream. The verdict is independent of current master health — when
-master happens to be already broken for that downstream (which is the
-case we built this whole repo to track), an LKG-mode pass tells you the
-PR did *not* introduce that break.
-
-**Merge mode** (`--merge-branch`) clones the PR's `merge_commit_sha`
-directly — current master + the PR applied, as GitHub computes it — and
-builds the downstream against it. Cheaper because the upstream olean
-cache hits cleanly, but a failure may be master's fault rather than
-the PR's.
-
-### Pipeline (per matrix job, when `mode=lkg`)
-
-1. Fetch `MERGE_SHA` and `LKG_COMMIT` into the mathlib4 clone.
-2. Resolve `PR_BASE = MERGE_SHA^1` and `PR_HEAD = MERGE_SHA^2` — the merge
-   ref's two parents are the base ref tip when GitHub built the merge and
-   the PR head, respectively. (Fast-forward merges have only one parent;
-   we treat that as "nothing to cherry-pick".)
-3. Check out `LKG_COMMIT` and `git cherry-pick PR_BASE..PR_HEAD`.
-4. `lake exe cache get` (best-effort; PR-touched files miss).
-5. `lake build Mathlib` — sanity-build the library target. If this fails,
-   we report `mathlib_build_at_lkg` because mathlib's own compilation
-   must succeed before a downstream verdict means anything.
-6. Existing downstream stages: clone, `lakedit set`, `lake update`,
-   `lake build`.
-
-### Failure modes specific to LKG mode
+## LKG-mode-specific failure modes
 
 | `stage` | What it means | What the PR author should do |
-|---------|---------------|------------------------------|
+|---|---|---|
 | `rebase_conflict` | Cherry-pick of the PR's commits onto LKG produced a conflict. | The PR likely depends on post-LKG mathlib changes; re-run with `--merge-branch` (and live with the master noise) or wait for a fresh LKG. |
-| `mathlib_build_at_lkg` | Cherry-pick succeeded but `lake build Mathlib` failed at LKG. | Same conclusion as `rebase_conflict` — the PR does not stand alone at LKG. |
-| `lkg_missing` (raised in `build_matrix.py`) | The downstream has no recorded LKG yet (e.g. recently enabled). | Use `--merge-branch`; LKG mode requires a successful regression run on record. |
+| `mathlib_build_at_lkg` | Cherry-pick succeeded but `lake build Mathlib` failed at LKG. | Same conclusion as `rebase_conflict`. |
+| `lkg_missing` (raised in `build_matrix.py`, no per-entry artifact) | The downstream has no recorded LKG yet (e.g. recently enabled). | Use `--merge-branch`; LKG mode requires a successful regression run on record. |
 
-### Cost
+These render as warnings (not errors) in the workflow log and as `⚠️
+could not validate` sections in the comment — the underlying signal is "the
+PR cannot be tested in isolation against an older mathlib", not "infra
+broke".
 
-`lake exe cache get` is content-keyed, so files the PR did *not* touch
-still hit the upstream olean cache after the rebase. Only PR-modified
-files (and their dependents) are rebuilt. The mathlib library build
-(`lake build Mathlib`) plus the downstream's build is the slow part
-relative to the merge-mode path; in practice it adds minutes, not the
-hour-plus a full mathlib rebuild would take.
+---
 
-## Rollout plan
+## Inventory and configuration
 
-1. Create the App, install on both repos, store secrets/vars.
-2. Land `scripts/pr_validation/` in hopscotch-reports + the
-   `mathlib-pr-validation.yml` workflow on a feature branch. Smoke-test by
-   running `gh workflow run mathlib-pr-validation.yml -f ...` from a personal
-   token (no mathlib4 changes yet) against a known-good downstream.
-3. Land `scripts/pr_check_downstream/` in mathlib-ci.
-4. Land `pr_check_downstream.yml` in mathlib4 on a feature branch. Smoke-test
-   by self-commenting on a draft PR.
-5. Document the comment grammar in mathlib4's CONTRIBUTING (separate PR).
+A downstream is eligible for PR validation as long as it appears in
+`ci/inventory/downstreams.json`. There is no per-downstream opt-in flag and
+no `enabled` gate — the directive lists what to test.
 
-## Future work / TODOs
+The `dependency_name` inventory field (default `mathlib`) is what
+`lakedit set` rewrites, so downstreams whose manifest dependency on
+`mathlib4` is recorded under a non-default name continue to work without
+special-casing.
 
-- **Per-downstream LKG baseline.** *Implemented* — LKG mode is now the
-  default and `--merge-branch` opts back into the master-included path.
-  This is *not* a true master baseline (no parallel build of master),
-  but it is the more actionable signal: the verdict is whether the PR
-  breaks the downstream *in isolation*, regardless of master health.
-- **True master baseline.** Run a parallel build of the same downstream
-  against current master and surface a "this PR is responsible" / "master
-  is also broken" verdict alongside the per-downstream LKG result.
-- **Hopscotch / lakedit binary release.** Replace `install_lakedit.sh`'s
-  build-from-source path with a release-asset download, mirroring how the
-  hopscotch binary is fetched in the existing workflows.
-- **Cache reuse.** Persist `$WORKDIR/mathlib4/.lake` across runs on the same
-  self-hosted runner to amortize the lake-build cost when the merge SHA's
-  oleans are partially cache-hits.
-- **Status check.** Optionally surface results as a commit-status check, gated
-  by a label so it's opt-in per-PR.
-- **DB persistence.** Record PR runs in the hopscotch-reports DB so trends
-  ("this PR broke X downstreams") are queryable. Requires a new schema branch.
-- **Comment cleanup on close.** Collapse / strike through stale result
-  comments when a PR is merged or force-pushed.
+Tunable surfaces:
 
-## A note on directories
-Always recall that the local ~/hopscotch-reports is actually pointing to leanprover-community/downstream-reports. The name of the repository in strings should always be "downstrream-reports"
+| Surface | Where | Default |
+|---|---|---|
+| Inventory URL (mathlib4 side) | `vars.INVENTORY_URL` | downstream-reports `main` raw URL |
+| Hopscotch ref (used by `install_lakedit.sh`) | `vars.HOPSCOTCH_REF` | `v1.4.1` |
+| Runner pool | matrix `runs-on` | `[self-hosted, pr]` |
+| Build timeout | `vars.PR_VALIDATION_TIMEOUT_MINUTES` | `90` |
+| LKG snapshot URL | `build_matrix.py --lkg-snapshot-url` | published `lkg/latest.json` on Azure |
+
+Repository-level secrets (`DOWNSTREAM_REPORTS_AUTOMATION_APP_ID`,
+`LPC_AZ_TENANT_ID`) and variables (`MATHLIB_AZ_KEY_VAULT_NAME`,
+`GH_APP_AZURE_CLIENT_ID_DOWNSTREAM_REPORTS_AUTOMATION`) drive the Azure-Key-Vault
+token mint in the `report` job.
+
+---
+
+## Known limitations
+
+- **No master baseline.** PR validation does not run the downstream against
+  current master in parallel. LKG mode answers "PR's effect in isolation";
+  merge mode answers "PR + current master combined". Neither alone gives a
+  conclusive "this is the PR's fault" / "master is also broken" verdict —
+  the reader is expected to check the latest downstream report alongside.
+- **No commit-status check.** The result is an informational comment, not a
+  merge gate.
+- **No DB persistence.** PR runs are ephemeral; regression-tracking state
+  in this repo is untouched.
+- **No artifact reuse.** Each run rebuilds `lakedit`, re-clones mathlib4 and
+  the downstream, and re-fetches the olean cache. Persisting `.lake/` across
+  runs on the same self-hosted runner is the obvious cost-reducer once usage
+  justifies it.
