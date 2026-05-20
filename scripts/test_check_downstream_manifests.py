@@ -462,6 +462,21 @@ class TestPinnedFromManifestPayload:
         payload = {"packages": [{"name": "mathlib", "type": "git", "rev": ""}]}
         assert pinned_from_manifest_payload(payload, "mathlib") is None
 
+    def test_scoped_dep_name_matches_bare_manifest_entry(self) -> None:
+        """Scenario: inventory uses a scoped Reservoir name (``scope/name``) so
+        hopscotch's lakefile parser can match ``require "scope" / name`` blocks,
+        but ``lake-manifest.json`` only stores the bare package name. The lookup
+        should strip the scope before matching."""
+        payload = {
+            "packages": [
+                {"name": "mathlib", "type": "git", "rev": _NEW_PIN},
+            ]
+        }
+        assert (
+            pinned_from_manifest_payload(payload, "leanprover-community/mathlib")
+            == _NEW_PIN
+        )
+
 
 class TestInFlightSet:
     """Walks the GitHub Actions API to build the set of live downstream names."""

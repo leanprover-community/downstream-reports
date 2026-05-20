@@ -24,7 +24,7 @@ inputs:
     description: 'Name of the dependency in the lakefile'
   hopscotch-version:
     required: false
-    default: 'v1.4.1'
+    default: 'v1.4.2'
     description: 'Hopscotch release tag to download'
   skip-build:
     required: false

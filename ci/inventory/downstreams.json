@@ -162,6 +162,13 @@
       "default_branch": "main",
       "dependency_name": "mathlib",
       "enabled": true
+    },
+    {
+      "name": "Robo",
+      "repo": "hhu-adam/Robo",
+      "default_branch": "main",
+      "dependency_name": "leanprover-community/mathlib",
+      "enabled": true
     }
   ]
 }

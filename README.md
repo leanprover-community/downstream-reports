@@ -161,7 +161,7 @@ Add an entry to `ci/inventory/downstreams.json`. Required fields:
 | `name` | Unique identifier used in job names, artifact names, and the database. |
 | `repo` | GitHub repository in `owner/name` form. |
 | `default_branch` | Branch to clone for validation (e.g. `main` or `master`). |
-| `dependency_name` | Must match the `name` field of the mathlib `[[require]]` entry in the downstream's `lakefile.toml`. For mathlib dependents this is always `"mathlib"`. |
+| `dependency_name` | Must match the dependency name that hopscotch's lakefile parser sees in the downstream's lakefile. For `lakefile.toml` projects this is the `name` field of the `[[require]]` entry (typically `"mathlib"`). For `lakefile.lean` projects using the scoped Reservoir form `require "scope" / name`, use the scoped `"scope/name"` form (e.g. `"leanprover-community/mathlib"`); the manifest-lookup helpers strip the scope automatically. |
 | `enabled` | Set to `false` to exclude the entry without deleting it. Defaults to `true`. |
 
 Example entry:
