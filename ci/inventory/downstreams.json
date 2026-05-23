@@ -162,6 +162,14 @@
       "default_branch": "main",
       "dependency_name": "mathlib",
       "enabled": true
+    },
+    {
+      "name": "PrimeCert",
+      "repo": "b-mehta/PrimeCert",
+      "default_branch": "master",
+      "dependency_name": "mathlib",
+      "enabled": true,
+      "warm_cache": true
     }
   ]
 }
