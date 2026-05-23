@@ -168,7 +168,8 @@
       "repo": "nomeata/loogle",
       "default_branch": "master",
       "dependency_name": "mathlib",
-      "enabled": true
+      "enabled": true,
+      "warm_cache": true
     }
   ]
 }
