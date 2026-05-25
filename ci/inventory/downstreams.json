@@ -168,8 +168,7 @@
       "repo": "sinhp/Poly",
       "default_branch": "master",
       "dependency_name": "mathlib",
-      "enabled": true,
-      "warm_cache": true
+      "enabled": true
     },
     {
       "name": "PrimeCert",
