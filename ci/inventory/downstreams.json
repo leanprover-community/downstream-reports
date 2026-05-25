@@ -172,24 +172,8 @@
       "warm_cache": true
     },
     {
-      "name": "HoTTLean",
-      "repo": "sinhp/HoTTLean",
-      "default_branch": "master",
-      "dependency_name": "mathlib",
-      "enabled": true,
-      "warm_cache": true
-    },
-    {
       "name": "PrimeCert",
       "repo": "b-mehta/PrimeCert",
-      "default_branch": "master",
-      "dependency_name": "mathlib",
-      "enabled": true,
-      "warm_cache": true
-    },
-    {
-      "name": "loogle",
-      "repo": "nomeata/loogle",
       "default_branch": "master",
       "dependency_name": "mathlib",
       "enabled": true,
