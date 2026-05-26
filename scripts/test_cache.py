@@ -23,9 +23,14 @@ Why this matters
 ----------------
 The cache helpers are the in-process layer of the project's secret-
 stripping invariant: any job that runs hopscotch (or ``lake build``)
-must have no CI secrets in its subprocess environment.  The job
-boundary is the *primary* guarantee; ``cache_env``'s denylist is the
-secondary, in-process layer that catches accidental forwarding.
+must have no *privilege-bearing* CI secrets in its subprocess
+environment.  The job boundary is the *primary* guarantee;
+``cache_env``'s denylist is the secondary, in-process layer that
+catches accidental forwarding.
+
+``GITHUB_TOKEN`` is intentionally exempt from the denylist — hopscotch
+needs it for authenticated GitHub API calls and strips it from each
+child it spawns (``Hopscotch.secretScrubEnv``).
 """
 
 from __future__ import annotations
@@ -113,18 +118,17 @@ class TestCacheEnv:
             assert "LAKE_CACHE_DIR" not in env
             assert str(cache_dir / "mathlib") == env["MATHLIB_CACHE_DIR"]
 
-    def test_cache_env_strips_ci_secrets(self) -> None:
-        """CI secrets in ``os.environ`` do not appear in the returned env.
+    def test_cache_env_strips_privilege_bearing_secrets(self) -> None:
+        """Privilege-bearing CI secrets in ``os.environ`` do not appear in the returned env.
 
-        The denylist (``GITHUB_TOKEN``, ``POSTGRES_DSN``,
-        ``ZULIP_API_KEY``, ``ZULIP_EMAIL``) is the in-process safety net
-        for the secret-stripping invariant: even if a job boundary mis-
-        configures ``env:`` blocks, hopscotch's child processes still
-        cannot see the secrets.
+        The denylist (``POSTGRES_DSN``, ``ZULIP_API_KEY``,
+        ``ZULIP_EMAIL``) is the in-process safety net for the secret-
+        stripping invariant: even if a job boundary mis-configures
+        ``env:`` blocks, hopscotch's child processes still cannot see
+        these secrets.
         """
         # Arrange
         secret_env = {
-            "GITHUB_TOKEN": "ghs_fake",
             "POSTGRES_DSN": "postgresql://user:pass@host/db",
             "ZULIP_API_KEY": "zulip_fake",
             "ZULIP_EMAIL": "bot@example.com",
@@ -137,6 +141,26 @@ class TestCacheEnv:
             # Assert
             for key in secret_env:
                 assert key not in env, f"{key} must not reach validation subprocesses"
+
+    def test_cache_env_passes_github_token_through(self) -> None:
+        """``GITHUB_TOKEN`` is preserved so hopscotch can authenticate API calls.
+
+        Hopscotch reads ``GITHUB_TOKEN`` for rate-limited commit-range queries
+        and strips it from the env of every ``lake`` / ``git`` child it spawns,
+        so passing it through here is safe.  See ``Hopscotch.secretScrubEnv``
+        in the hopscotch repo for the child-side enforcement.
+        """
+        # Arrange
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.dict(os.environ, {"GITHUB_TOKEN": "ghs_fake"}):
+                # Act
+                env = cache_env(Path(tmp) / "cache")
+
+            # Assert
+            assert env.get("GITHUB_TOKEN") == "ghs_fake", (
+                "GITHUB_TOKEN must reach hopscotch so it can authenticate "
+                "GitHub API calls; child-process isolation happens in hopscotch."
+            )
 
 
 class TestWarmDownstreamCache:
