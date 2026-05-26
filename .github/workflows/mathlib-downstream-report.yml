@@ -23,6 +23,11 @@ on:
         required: false
         default: false
         type: boolean
+      force_rebisect:
+        description: "Disable try_skip_known_bad_bisect so the probe re-runs the bisect even when the stored first-known-bad commit is still an ancestor of the target."
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -229,17 +234,23 @@ jobs:
           OUTPUT_DIR: ${{ runner.temp }}/artifacts/${{ matrix.name }}
           PYTHONUNBUFFERED: "1"
           QUIET: ${{ inputs.quiet }}
+          FORCE_REBISECT: ${{ inputs.force_rebisect }}
           WORKDIR: ${{ runner.temp }}/downstream-regression
         run: |
           QUIET_FLAG=""
           if [ "$QUIET" = "true" ]; then
             QUIET_FLAG="--quiet"
           fi
+          SKIP_FLAG=""
+          if [ "$FORCE_REBISECT" = "true" ]; then
+            SKIP_FLAG="--no-skip-known-bad-bisect"
+          fi
           python3 -u scripts/probe_downstream_regression_window.py \
             --selection "$OUTPUT_DIR/selection.json" \
             --workdir "$WORKDIR" \
             --output-dir "$OUTPUT_DIR" \
             $QUIET_FLAG \
+            $SKIP_FLAG \
             --tool-exe "${{ runner.temp }}/tool-bin/hopscotch"
 
       - name: Upload result artifact
