@@ -126,6 +126,7 @@ def main() -> int:
         default_branch=effective_branch,
         dependency_name=config.dependency_name,
         skip_known_bad_bisect=config.skip_known_bad_bisect,
+        nuke_lakedir=config.nuke_lakedir,
     )
 
     # Embed prior episode state so the probe step can apply skip heuristics

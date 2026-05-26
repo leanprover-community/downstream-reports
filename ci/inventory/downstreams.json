@@ -68,7 +68,8 @@
       "repo": "google-deepmind/formal-conjectures",
       "default_branch": "main",
       "dependency_name": "mathlib",
-      "enabled": true
+      "enabled": true,
+      "nuke_lakedir": true
     },
     {
       "name": "ClassFieldTheory",
@@ -98,7 +99,8 @@
       "repo": "Whysoserioushah/BrauerGroup",
       "default_branch": "main",
       "dependency_name": "mathlib",
-      "enabled": true
+      "enabled": true,
+      "nuke_lakedir": true
     },
     {
       "name": "add-combi",
@@ -168,7 +170,8 @@
       "repo": "sinhp/Poly",
       "default_branch": "master",
       "dependency_name": "mathlib",
-      "enabled": true
+      "enabled": true,
+      "nuke_lakedir": true
     },
     {
       "name": "PrimeCert",

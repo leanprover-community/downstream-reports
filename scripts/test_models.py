@@ -103,3 +103,45 @@ class TestLoadInventorySkipFlags:
         assert loaded["slow-downstream"].skip_known_bad_bisect, (
             "Per-flag overrides are independent — only the flagged one flips"
         )
+
+
+class TestNukeLakedirFlag:
+    """Inventory propagation of the per-downstream ``nuke_lakedir`` opt-in."""
+
+    def test_default_off(self) -> None:
+        """``nuke_lakedir`` is opt-in: paranoia knob, not the default.
+
+        Wiping ``.lake/`` between probes adds rebuild time on every
+        commit; only downstreams demonstrating stale-artifact symptoms
+        (e.g. "ProofWidgets not up-to-date") should pay that cost.
+        """
+        config = DownstreamConfig(name="foo", repo="owner/foo", default_branch="main")
+        assert not config.nuke_lakedir, "nuke_lakedir must default to False"
+
+    def test_inventory_opt_in_propagates(self, tmp_path: Path) -> None:
+        """``nuke_lakedir: true`` in inventory JSON reaches DownstreamConfig.
+
+        The probe step keys on this flag to set HOPSCOTCH_DEBUG_NUKE_LAKEDIR;
+        if loading silently drops it, affected downstreams would keep
+        bisecting into false culprits.
+        """
+        inventory = {
+            "schema_version": 1,
+            "downstreams": [
+                {
+                    "name": "BrauerGroup",
+                    "repo": "Whysoserioushah/BrauerGroup",
+                    "default_branch": "main",
+                    "enabled": True,
+                    "nuke_lakedir": True,
+                },
+            ],
+        }
+        path = tmp_path / "inventory.json"
+        path.write_text(json.dumps(inventory))
+
+        loaded = load_inventory(path)
+
+        assert loaded["BrauerGroup"].nuke_lakedir, (
+            "Inventory's `nuke_lakedir: true` must propagate to DownstreamConfig"
+        )
