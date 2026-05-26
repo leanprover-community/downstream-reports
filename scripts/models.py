@@ -32,6 +32,13 @@ class DownstreamConfig:
     skip_already_good: bool = True
     skip_known_bad_bisect: bool = True
     warm_cache: bool = False
+    # When True, the probe step sets HOPSCOTCH_DEBUG_NUKE_LAKEDIR=1 in the
+    # hopscotch subprocess environment.  Hopscotch then wipes <projectDir>/.lake
+    # (preserving .lake/hopscotch/) before every probe and forces the bump step
+    # to re-run.  Enable for downstreams whose culprit log shows a stale-artifact
+    # symptom such as "ProofWidgets not up-to-date" that survives across probes
+    # and causes bisect to walk into a false culprit.
+    nuke_lakedir: bool = False
     # When True, the manifest-watcher (.github/workflows/manifest-watcher.yml,
     # cron */15) inspects this downstream every 15 min and dispatches a
     # targeted regression-report run when its lake-manifest.json pin moves
@@ -95,6 +102,10 @@ class WindowSelection:
     # Per-downstream skip flag from the inventory, forwarded so the probe step
     # respects inventory-level overrides without access to the inventory file.
     skip_known_bad_bisect: bool = True
+    # Per-downstream nuke-lakedir flag from the inventory, forwarded so the
+    # probe step can set HOPSCOTCH_DEBUG_NUKE_LAKEDIR=1 without re-reading the
+    # inventory file.  See DownstreamConfig.nuke_lakedir.
+    nuke_lakedir: bool = False
 
     @classmethod
     def from_json(cls, payload: dict[str, Any]) -> "WindowSelection":

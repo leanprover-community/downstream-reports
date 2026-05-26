@@ -252,6 +252,8 @@ def main() -> int:
         # passed through to hopscotch so it can authenticate commit-range API
         # calls; hopscotch then strips it from every child process it spawns.
         env = cache_env(cache_dir)
+        if selection.nuke_lakedir:
+            env["HOPSCOTCH_DEBUG_NUKE_LAKEDIR"] = "1"
 
         # Clone upstream for git operations (ancestor checks, parent-commit
         # lookups).  Public repo — no authentication required.
