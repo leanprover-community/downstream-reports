@@ -94,8 +94,8 @@
       "warm_cache": true
     },
     {
-      "name": "BrauerGroup_new",
-      "repo": "Whysoserioushah/BrauerGroup_new",
+      "name": "BrauerGroup",
+      "repo": "Whysoserioushah/BrauerGroup",
       "default_branch": "main",
       "dependency_name": "mathlib",
       "enabled": true
