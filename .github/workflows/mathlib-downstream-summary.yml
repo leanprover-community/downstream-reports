@@ -52,8 +52,15 @@ jobs:
           ZULIP_STREAM: ${{ inputs.stream || 'hopscotch' }}
           ZULIP_TOPIC: ${{ inputs.topic || 'Downstream reports' }}
         run: |
+          # `github.event.workflow_run.head_branch` reflects the branch of the
+          # upstream `mathlib-downstream-report` run that triggered us; the
+          # `github.ref_name` fallback covers direct `workflow_dispatch`, where
+          # the upstream-run field is empty.  Without the fallback, a chained
+          # run from a non-`main` upstream branch would post to Zulip because
+          # `workflow_run`-triggered workflows always execute from `main`.
+          TRIGGER_BRANCH="${{ github.event.workflow_run.head_branch || github.ref_name }}"
           BACKEND="zulip"
-          if [ "${{ inputs.dry_run }}" = "true" ] || [ "${{ github.ref_name }}" != "main" ]; then
+          if [ "${{ inputs.dry_run }}" = "true" ] || [ "$TRIGGER_BRANCH" != "main" ]; then
             BACKEND="dry-run"
           fi
           python3 scripts/send_summary.py \
