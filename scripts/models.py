@@ -45,6 +45,12 @@ class DownstreamConfig:
     # to or past first_known_bad_commit.  Default False (opt-in) so the
     # watcher only spends API calls on downstreams that actively bump-track.
     watch_manifest: bool = False
+    # Labels passed verbatim to the probe job's `runs-on:` directive.
+    # Default is the self-hosted PR pool.  Override (e.g. `["ubuntu-latest"]`)
+    # for downstreams whose build needs something the self-hosted image lacks
+    # — currently Robo, which depends on a populated `/usr/share/zoneinfo`
+    # database for `Std.Time` lookups during `MakeGame` elaboration.
+    runs_on: list[str] = field(default_factory=lambda: ["self-hosted", "pr"])
 
 
 @dataclass(frozen=True)

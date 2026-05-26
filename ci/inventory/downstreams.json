@@ -180,6 +180,14 @@
       "dependency_name": "mathlib",
       "enabled": true,
       "warm_cache": true
+    },
+    {
+      "name": "Robo",
+      "repo": "hhu-adam/Robo",
+      "default_branch": "main",
+      "dependency_name": "leanprover-community/mathlib",
+      "enabled": true,
+      "runs_on": ["ubuntu-latest"]
     }
   ]
 }
