@@ -182,6 +182,10 @@ jobs:
           }
           if ! stage; then
             echo "::warning::Stage attempt 1 failed, retrying once..."
+            # Partial .ltar output from the failed attempt would
+            # otherwise be uploaded alongside the second attempt's
+            # files, mixing stale + fresh blobs in the staging artifact.
+            rm -rf ../cache-staging
             stage
           fi
 
