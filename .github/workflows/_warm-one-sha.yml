@@ -110,6 +110,32 @@ jobs:
         working-directory: mathlib4-tools
         run: lake build cache
 
+      # The master cache binary resolves `leantar` strictly from the
+      # active toolchain's sysroot (`<lean --print-prefix>/bin/leantar`,
+      # see Cache/IO.lean leantarSysrootBin) — PATH is not consulted.
+      # Target SHAs older than nightly-2026-03-09 pin a toolchain that
+      # predates leantar bundling, so cache stage/probe explode with
+      # "leantar not found in Lean sysroot". Backfill by copying master's
+      # leantar (always recent enough) into the target sysroot.
+      - name: Backfill leantar into target toolchain (if missing)
+        run: |
+          set -euo pipefail
+          # Trigger elan install of both toolchains so --print-prefix resolves.
+          ( cd mathlib4         && lean --version ) >/dev/null
+          ( cd mathlib4-tools   && lean --version ) >/dev/null
+          TARGET_PREFIX=$( cd mathlib4       && lean --print-prefix )
+          TOOLS_PREFIX=$(  cd mathlib4-tools && lean --print-prefix )
+          if [ -x "$TARGET_PREFIX/bin/leantar" ]; then
+            echo "leantar already present in target sysroot: $TARGET_PREFIX/bin/leantar"
+            exit 0
+          fi
+          if [ ! -x "$TOOLS_PREFIX/bin/leantar" ]; then
+            echo "::error::No leantar in master tools sysroot ($TOOLS_PREFIX/bin/leantar); cannot backfill."
+            exit 1
+          fi
+          cp "$TOOLS_PREFIX/bin/leantar" "$TARGET_PREFIX/bin/leantar"
+          echo "Backfilled leantar: $TOOLS_PREFIX/bin/leantar -> $TARGET_PREFIX/bin/leantar"
+
       # `lake env <cmd>` evaluates the lakefile in the current working
        # directory, resolves deps, and sets LEAN_PATH / LEAN_SRC_PATH so
        # the cache binary can find Mathlib modules — invoking the cache
