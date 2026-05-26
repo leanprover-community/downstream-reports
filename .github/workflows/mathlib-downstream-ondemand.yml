@@ -213,10 +213,16 @@ jobs:
           echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
 
       - name: Download hopscotch binary
+        # v1.5.0 introduced `Hopscotch.secretScrubEnv`, which strips
+        # GITHUB_TOKEN from every `lake` / `git` child env.  The "Run probe"
+        # step below relies on that guarantee to authenticate API calls
+        # without leaking the token into untrusted lake builds.  Do not
+        # downgrade this URL without first removing GITHUB_TOKEN from the
+        # probe step's env: block.
         run: |
           mkdir -p "${{ runner.temp }}/tool-bin"
           curl -L \
-            https://github.com/leanprover-community/hopscotch/releases/download/v1.4.1/hopscotch-linux-x86_64 \
+            https://github.com/leanprover-community/hopscotch/releases/download/v1.5.0/hopscotch-linux-x86_64 \
             -o "${{ runner.temp }}/tool-bin/hopscotch"
           chmod +x "${{ runner.temp }}/tool-bin/hopscotch"
 
@@ -227,11 +233,16 @@ jobs:
           path: ${{ runner.temp }}/artifacts/${{ matrix.name }}
 
       - name: Run probe
-        # No secrets in env — hopscotch and lake build cannot read GITHUB_TOKEN
-        # or POSTGRES_DSN.  The downstream repos are public; unauthenticated
-        # GitHub API access is sufficient for the commit-range queries hopscotch
-        # performs.
+        # No privilege-bearing secrets in env — POSTGRES_DSN, ZULIP_*, and
+        # similar are absent so hopscotch and any lake build it spawns
+        # cannot read them.  GITHUB_TOKEN is intentionally exposed so
+        # hopscotch can authenticate commit-range API calls against
+        # mathlib4 (the unauthenticated 60-req/h limit is too tight);
+        # hopscotch strips it from the env of every `lake` / `git` child
+        # process it spawns.  Requires hopscotch >= v1.5.0 (env
+        # isolation; see `Hopscotch.secretScrubEnv` in the hopscotch repo).
         env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           OUTPUT_DIR: ${{ runner.temp }}/artifacts/${{ matrix.name }}
           PYTHONUNBUFFERED: "1"
           QUIET: ${{ inputs.quiet }}
