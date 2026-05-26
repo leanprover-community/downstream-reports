@@ -186,7 +186,8 @@
       "repo": "hhu-adam/Robo",
       "default_branch": "main",
       "dependency_name": "leanprover-community/mathlib",
-      "enabled": true
+      "enabled": true,
+      "runs_on": ["ubuntu-latest"]
     }
   ]
 }

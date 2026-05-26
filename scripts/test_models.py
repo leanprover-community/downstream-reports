@@ -105,6 +105,67 @@ class TestLoadInventorySkipFlags:
         )
 
 
+class TestRunsOnField:
+    """Inventory propagation of the per-downstream ``runs_on`` override."""
+
+    def test_default_is_self_hosted_pr(self) -> None:
+        """``runs_on`` defaults to the self-hosted PR pool.
+
+        Most downstreams should land on the dedicated probe fleet; the
+        ``ubuntu-latest`` override exists for downstreams whose build
+        needs something the self-hosted image lacks (e.g. a populated
+        ``/usr/share/zoneinfo`` database).  Flipping the default would
+        silently shift every probe onto GitHub-hosted minutes.
+        """
+        config = DownstreamConfig(name="foo", repo="owner/foo", default_branch="main")
+        assert config.runs_on == ["self-hosted", "pr"], (
+            "runs_on must default to the self-hosted PR pool"
+        )
+
+    def test_default_factory_returns_fresh_list(self) -> None:
+        """Mutating one config's ``runs_on`` must not leak into another.
+
+        ``field(default_factory=...)`` is the only correct way to give a
+        frozen dataclass a list default; a shared literal would let one
+        downstream's override silently rewire its neighbours.
+        """
+        a = DownstreamConfig(name="a", repo="owner/a", default_branch="main")
+        b = DownstreamConfig(name="b", repo="owner/b", default_branch="main")
+        a.runs_on.append("smoke-test-mutation")
+        assert b.runs_on == ["self-hosted", "pr"], (
+            "Each instance must own a fresh list, not share the default"
+        )
+
+    def test_inventory_override_propagates(self, tmp_path: Path) -> None:
+        """Inventory ``runs_on: ["ubuntu-latest"]`` reaches DownstreamConfig.
+
+        The probe job reads the labels from the matrix; the matrix is
+        seeded from inventory.  If ``load_inventory`` dropped the field,
+        every probe would land on the default pool regardless of
+        configuration — exactly the bug this knob exists to avoid.
+        """
+        inventory = {
+            "schema_version": 1,
+            "downstreams": [
+                {
+                    "name": "Robo",
+                    "repo": "hhu-adam/Robo",
+                    "default_branch": "main",
+                    "enabled": True,
+                    "runs_on": ["ubuntu-latest"],
+                },
+            ],
+        }
+        path = tmp_path / "inventory.json"
+        path.write_text(json.dumps(inventory))
+
+        loaded = load_inventory(path)
+
+        assert loaded["Robo"].runs_on == ["ubuntu-latest"], (
+            "Inventory's `runs_on` override must propagate to DownstreamConfig"
+        )
+
+
 class TestNukeLakedirFlag:
     """Inventory propagation of the per-downstream ``nuke_lakedir`` opt-in."""
 

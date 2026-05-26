@@ -193,9 +193,10 @@ jobs:
       - select
     permissions:
       contents: read
-    runs-on:
-      - self-hosted
-      - pr
+    # Runner labels come from `runs_on` on the matrix entry, sourced from
+    # the inventory (default `[self-hosted, pr]`).  Downstreams whose build
+    # needs a stock image override with `runs_on: ["ubuntu-latest"]`.
+    runs-on: ${{ matrix.runs_on }}
     strategy:
       fail-fast: false
       max-parallel: 2

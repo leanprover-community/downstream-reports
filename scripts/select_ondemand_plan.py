@@ -172,6 +172,9 @@ def main() -> int:
                 "previous_job_url": prior.get("job_url"),
             })
 
+    for item in include:
+        item.setdefault("runs_on", ["self-hosted", "pr"])
+
     args.output.write_text(json.dumps({"include": include}, sort_keys=True))
     args.skipped_output.write_text(json.dumps(skipped, sort_keys=True))
     return 0
