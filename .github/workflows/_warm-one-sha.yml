@@ -215,10 +215,29 @@ jobs:
             stage
           fi
 
+      # Detect "build succeeded but stage produced nothing" — the cache
+      # tool emits zero .ltar files when every locally-built olean's
+      # content hash matches what's already in the remote index. This
+      # case is now reachable post-nuke: the probe can fail on a
+      # non-olean target (e.g. proofwidgets/widgetJsAll), we wipe and
+      # rebuild from scratch, but the resulting oleans are identical to
+      # what the remote already has. Treat that as `already_warm` rather
+      # than letting the upload step error out on `if-no-files-found`.
+      - name: Detect empty stage
+        id: stage_files
+        if: steps.stage.outcome == 'success'
+        run: |
+          if [ ! -d cache-staging ] || [ -z "$(ls -A cache-staging 2>/dev/null)" ]; then
+            echo "Cache stage produced no files; remote olean cache is already warm for this SHA."
+            echo "empty=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "empty=false" >> "$GITHUB_OUTPUT"
+          fi
+
       # Just .ltar files — no binary. upload_cache builds its own
       # trusted cache tool from a clean master checkout.
       - name: Upload staging artifact
-        if: steps.stage.outcome == 'success'
+        if: steps.stage.outcome == 'success' && steps.stage_files.outputs.empty != 'true'
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: stage-${{ inputs.sha }}
@@ -235,10 +254,12 @@ jobs:
           PROBE_OUTCOME: ${{ steps.probe.outcome }}
           BUILD_OUTCOME: ${{ steps.build.outcome }}
           STAGE_OUTCOME: ${{ steps.stage.outcome }}
+          STAGE_EMPTY: ${{ steps.stage_files.outputs.empty }}
         run: |
           if   [ "$PROBE_OUTCOME" = "success" ];   then STATUS=already_warm
           elif [ "$BUILD_OUTCOME" != "success" ];  then STATUS=build_failed
           elif [ "$STAGE_OUTCOME" != "success" ];  then STATUS=build_failed
+          elif [ "$STAGE_EMPTY" = "true" ];        then STATUS=already_warm
           else                                          STATUS=staged
           fi
           mkdir -p out
