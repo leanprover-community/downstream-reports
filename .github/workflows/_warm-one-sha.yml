@@ -41,19 +41,6 @@ on:
         description: 'JSON array of downstream names benefitting from this SHA, e.g. ["physlib","FLT"].'
         type: string
         required: true
-      nuke_lakedir:
-        description: >-
-          When true, wipe `.lake/` between a failed probe and the build
-          step. Set by the planner when any downstream pinned to this SHA
-          opts into `nuke_lakedir` in the inventory. Mirrors the
-          regression-side `HOPSCOTCH_DEBUG_NUKE_LAKEDIR` semantic: the
-          probe's partial `cache get` can leave stale proofwidgets/widget
-          JS state that survives into the build and aborts with
-          "ProofWidgets not up-to-date"; wiping forces fresh dependency
-          resolution and a clean rebuild.
-        type: boolean
-        required: false
-        default: false
 
 permissions:
   contents: read
@@ -172,19 +159,6 @@ jobs:
             probe
           fi
 
-      # Probe populates .lake from `cache get` and can leave partial /
-      # stale state (notably proofwidgets bits) that the next `lake build`
-      # refuses to update — `lake build Mathlib` aborts with "ProofWidgets
-      # not up-to-date" instead of refetching. Wiping forces fresh
-      # dependency resolution, which re-runs proofwidgets' setup script
-      # and pulls a clean widget JS bundle.
-      - name: Clean .lake before build (nuke_lakedir downstream)
-        if: steps.probe.outcome != 'success' && inputs.nuke_lakedir
-        working-directory: mathlib4
-        run: |
-          echo "Probe failed and nuke_lakedir was set; wiping .lake before the build attempt."
-          rm -rf .lake
-
       - name: Build Mathlib
         id: build
         if: steps.probe.outcome != 'success'
@@ -215,29 +189,10 @@ jobs:
             stage
           fi
 
-      # Detect "build succeeded but stage produced nothing" — the cache
-      # tool emits zero .ltar files when every locally-built olean's
-      # content hash matches what's already in the remote index. This
-      # case is now reachable post-nuke: the probe can fail on a
-      # non-olean target (e.g. proofwidgets/widgetJsAll), we wipe and
-      # rebuild from scratch, but the resulting oleans are identical to
-      # what the remote already has. Treat that as `already_warm` rather
-      # than letting the upload step error out on `if-no-files-found`.
-      - name: Detect empty stage
-        id: stage_files
-        if: steps.stage.outcome == 'success'
-        run: |
-          if [ ! -d cache-staging ] || [ -z "$(ls -A cache-staging 2>/dev/null)" ]; then
-            echo "Cache stage produced no files; remote olean cache is already warm for this SHA."
-            echo "empty=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "empty=false" >> "$GITHUB_OUTPUT"
-          fi
-
       # Just .ltar files — no binary. upload_cache builds its own
       # trusted cache tool from a clean master checkout.
       - name: Upload staging artifact
-        if: steps.stage.outcome == 'success' && steps.stage_files.outputs.empty != 'true'
+        if: steps.stage.outcome == 'success'
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: stage-${{ inputs.sha }}
@@ -254,12 +209,10 @@ jobs:
           PROBE_OUTCOME: ${{ steps.probe.outcome }}
           BUILD_OUTCOME: ${{ steps.build.outcome }}
           STAGE_OUTCOME: ${{ steps.stage.outcome }}
-          STAGE_EMPTY: ${{ steps.stage_files.outputs.empty }}
         run: |
           if   [ "$PROBE_OUTCOME" = "success" ];   then STATUS=already_warm
           elif [ "$BUILD_OUTCOME" != "success" ];  then STATUS=build_failed
           elif [ "$STAGE_OUTCOME" != "success" ];  then STATUS=build_failed
-          elif [ "$STAGE_EMPTY" = "true" ];        then STATUS=already_warm
           else                                          STATUS=staged
           fi
           mkdir -p out
