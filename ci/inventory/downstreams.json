@@ -100,7 +100,9 @@
       "default_branch": "main",
       "dependency_name": "mathlib",
       "enabled": true,
-      "nuke_lakedir": true
+      "nuke_lakedir": true,
+      "warm_cache": true,
+      "watch_manifest": true
     },
     {
       "name": "add-combi",
