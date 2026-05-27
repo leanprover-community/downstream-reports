@@ -52,7 +52,9 @@ from scripts.plan_cache_warm_jobs import (
 from scripts.storage import DownstreamStatusRecord
 
 
-def _config(name: str, *, warm_cache: bool = True) -> DownstreamConfig:
+def _config(
+    name: str, *, warm_cache: bool = True, nuke_lakedir: bool = False
+) -> DownstreamConfig:
     """Construct a minimal ``DownstreamConfig`` for matrix-building tests.
 
     What state it provides
@@ -76,6 +78,7 @@ def _config(name: str, *, warm_cache: bool = True) -> DownstreamConfig:
         default_branch="main",
         dependency_name="mathlib",
         warm_cache=warm_cache,
+        nuke_lakedir=nuke_lakedir,
     )
 
 
@@ -183,11 +186,11 @@ class TestBuildMatrixManual:
 
         # Assert
         assert matrix == [
-                {"sha": SHA_A, "short_sha": SHA_A[:7], "tag": "manual", "downstreams": []},
-                {"sha": SHA_B, "short_sha": SHA_B[:7], "tag": "manual", "downstreams": []},
+                {"sha": SHA_A, "short_sha": SHA_A[:7], "tag": "manual", "downstreams": [], "nuke_lakedir": False},
+                {"sha": SHA_B, "short_sha": SHA_B[:7], "tag": "manual", "downstreams": [], "nuke_lakedir": False},
             ], (
                 "Manual matrix entries are the contract with _warm-one-sha.yml; "
-                "the four-field shape and `manual` tag must be stable"
+                "the five-field shape and `manual` tag must be stable"
             )
 
     def test_build_matrix_manual_with_empty_input_yields_empty_matrix(self) -> None:
@@ -255,7 +258,7 @@ class TestBuildMatrixFromDbRoleTagging:
         include, skipped = build_matrix_from_db(inventory, statuses)
 
         # Assert
-        assert include == [{"sha": SHA_A, "short_sha": SHA_A[:7], "tag": "lkg", "downstreams": ["physlib"]}], "LKG-only SHA must be tagged 'lkg'"
+        assert include == [{"sha": SHA_A, "short_sha": SHA_A[:7], "tag": "lkg", "downstreams": ["physlib"], "nuke_lakedir": False}], "LKG-only SHA must be tagged 'lkg'"
         assert skipped == []
 
     def test_build_matrix_with_only_fkb_set_tags_entry_fkb(self) -> None:
@@ -274,7 +277,7 @@ class TestBuildMatrixFromDbRoleTagging:
         include, skipped = build_matrix_from_db(inventory, statuses)
 
         # Assert
-        assert include == [{"sha": SHA_A, "short_sha": SHA_A[:7], "tag": "fkb", "downstreams": ["physlib"]}], "FKB-only SHA must be tagged 'fkb'"
+        assert include == [{"sha": SHA_A, "short_sha": SHA_A[:7], "tag": "fkb", "downstreams": ["physlib"], "nuke_lakedir": False}], "FKB-only SHA must be tagged 'fkb'"
         assert skipped == []
 
     def test_build_matrix_with_sha_as_both_lkg_and_fkb_tags_entry_both(self) -> None:
@@ -529,3 +532,83 @@ class TestBuildMatrixFromDbKnownWarmFilter:
         assert skipped[0]["sha"] == SHA_A
         assert skipped[0]["tag"] == "both", "Skipped entry must carry the cross-role tag, not be reduced to 'lkg' or 'fkb'"
         assert sorted(skipped[0]["downstreams"]) == ["FLT", "physlib"]
+
+
+class TestBuildMatrixFromDbNukeLakedirPropagation:
+    """Propagation of the per-downstream ``nuke_lakedir`` opt-in into matrix entries.
+
+    The reusable worker (`_warm-one-sha.yml`) keys the between-probe-and-build
+    `.lake` wipe on this flag.  Pinning the planner's projection contract here
+    keeps the wipe from silently turning off if a refactor drops the field.
+    """
+
+    def test_entry_for_downstream_with_nuke_lakedir_carries_true(self) -> None:
+        """A single downstream with ``nuke_lakedir=True`` propagates to ``nuke_lakedir: true``."""
+        # Arrange
+        inventory = {"BrauerGroup": _config("BrauerGroup", nuke_lakedir=True)}
+        statuses = {"BrauerGroup": DownstreamStatusRecord(last_known_good_commit=SHA_A)}
+
+        # Act
+        include, _ = build_matrix_from_db(inventory, statuses)
+
+        # Assert
+        assert include[0]["nuke_lakedir"] is True, (
+            "Entry for a nuke_lakedir downstream must opt the SHA into the .lake wipe"
+        )
+
+    def test_entry_for_downstream_without_nuke_lakedir_carries_false(self) -> None:
+        """Default downstreams produce ``nuke_lakedir: false`` so the wipe doesn't slow them."""
+        # Arrange
+        inventory = {"physlib": _config("physlib")}
+        statuses = {"physlib": DownstreamStatusRecord(last_known_good_commit=SHA_A)}
+
+        # Act
+        include, _ = build_matrix_from_db(inventory, statuses)
+
+        # Assert
+        assert include[0]["nuke_lakedir"] is False, (
+            "Default downstreams must not trigger the expensive between-step .lake wipe"
+        )
+
+    def test_shared_sha_with_one_nuke_lakedir_downstream_opts_entry_in(self) -> None:
+        """If any downstream pinned to a SHA opts in, the SHA-level entry opts in.
+
+        Per-SHA, not per-downstream: the reusable worker builds one mathlib
+        clone per SHA, so the wipe applies to the whole entry. One opt-in
+        downstream is enough to justify the (slower-but-correct) wipe for
+        every downstream sharing the SHA.
+        """
+        # Arrange
+        inventory = {
+            "physlib": _config("physlib", nuke_lakedir=False),
+            "BrauerGroup": _config("BrauerGroup", nuke_lakedir=True),
+        }
+        statuses = {
+            "physlib": DownstreamStatusRecord(last_known_good_commit=SHA_A),
+            "BrauerGroup": DownstreamStatusRecord(last_known_good_commit=SHA_A),
+        }
+
+        # Act
+        include, _ = build_matrix_from_db(inventory, statuses)
+
+        # Assert
+        assert len(include) == 1, "Shared LKG must dedup to one entry"
+        assert include[0]["nuke_lakedir"] is True, (
+            "Per-SHA flag must OR across downstreams — one opt-in is enough"
+        )
+
+    def test_manual_entries_never_set_nuke_lakedir(self) -> None:
+        """Manual dispatches bypass inventory; their entries default to false.
+
+        The reusable worker's `nuke_lakedir` input defaults to false too, but
+        we pin the planner's projection here so a future refactor that
+        drops the field from manual entries surfaces in tests rather than at
+        workflow-dispatch time.
+        """
+        # Arrange / Act
+        matrix = build_matrix_manual([SHA_A])
+
+        # Assert
+        assert matrix[0]["nuke_lakedir"] is False, (
+            "Manual entries have no inventory linkage; opt out of the wipe by default"
+        )

@@ -118,6 +118,7 @@ jobs:
       sha: ${{ matrix.sha }}
       tag: ${{ matrix.tag }}
       downstreams_json: ${{ toJson(matrix.downstreams) }}
+      nuke_lakedir: ${{ matrix.nuke_lakedir == true }}
     secrets: inherit
 
   # Aggregates per-SHA results, persists `cache_warmth` rows so future plan

@@ -17,12 +17,12 @@ Output JSON shape::
     {
       "include": [
         {"sha": "<40-hex>", "tag": "lkg|fkb|both|manual",
-         "downstreams": ["physlib", "FLT"]},
+         "downstreams": ["physlib", "FLT"], "nuke_lakedir": false},
         ...
       ],
       "skipped_warm": [
         {"sha": "<40-hex>", "tag": "lkg|fkb|both",
-         "downstreams": ["physlib", "FLT"]},
+         "downstreams": ["physlib", "FLT"], "nuke_lakedir": false},
         ...
       ]
     }
@@ -130,11 +130,19 @@ def build_matrix_from_db(
             tag = "fkb"
         else:
             tag = "both"
+        # True if any downstream pinned to this SHA opted into nuke_lakedir.
+        # The reusable worker uses it to wipe .lake between a failed cache
+        # probe and the from-scratch build, so stale proofwidgets state from
+        # the probe doesn't survive into the build attempt.
+        nuke_lakedir = any(
+            inventory[name].nuke_lakedir for name in meta["downstreams"]
+        )
         return {
             "sha": sha,
             "short_sha": sha[:7],
             "tag": tag,
             "downstreams": meta["downstreams"],
+            "nuke_lakedir": nuke_lakedir,
         }
 
     include: list[dict[str, Any]] = []
@@ -147,7 +155,13 @@ def build_matrix_from_db(
 def build_matrix_manual(shas: list[str]) -> list[dict[str, Any]]:
     """Build the matrix from an operator-supplied SHA list."""
     return [
-        {"sha": sha, "short_sha": sha[:7], "tag": "manual", "downstreams": []}
+        {
+            "sha": sha,
+            "short_sha": sha[:7],
+            "tag": "manual",
+            "downstreams": [],
+            "nuke_lakedir": False,
+        }
         for sha in shas
     ]
 

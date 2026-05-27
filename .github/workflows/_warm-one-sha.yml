@@ -41,6 +41,19 @@ on:
         description: 'JSON array of downstream names benefitting from this SHA, e.g. ["physlib","FLT"].'
         type: string
         required: true
+      nuke_lakedir:
+        description: >-
+          When true, wipe `.lake/` between a failed probe and the build
+          step. Set by the planner when any downstream pinned to this SHA
+          opts into `nuke_lakedir` in the inventory. Mirrors the
+          regression-side `HOPSCOTCH_DEBUG_NUKE_LAKEDIR` semantic: the
+          probe's partial `cache get` can leave stale proofwidgets/widget
+          JS state that survives into the build and aborts with
+          "ProofWidgets not up-to-date"; wiping forces fresh dependency
+          resolution and a clean rebuild.
+        type: boolean
+        required: false
+        default: false
 
 permissions:
   contents: read
@@ -158,6 +171,19 @@ jobs:
             echo "::warning::Probe attempt 1 failed, retrying once..."
             probe
           fi
+
+      # Probe populates .lake from `cache get` and can leave partial /
+      # stale state (notably proofwidgets bits) that the next `lake build`
+      # refuses to update — `lake build Mathlib` aborts with "ProofWidgets
+      # not up-to-date" instead of refetching. Wiping forces fresh
+      # dependency resolution, which re-runs proofwidgets' setup script
+      # and pulls a clean widget JS bundle.
+      - name: Clean .lake before build (nuke_lakedir downstream)
+        if: steps.probe.outcome != 'success' && inputs.nuke_lakedir
+        working-directory: mathlib4
+        run: |
+          echo "Probe failed and nuke_lakedir was set; wiping .lake before the build attempt."
+          rm -rf .lake
 
       - name: Build Mathlib
         id: build
