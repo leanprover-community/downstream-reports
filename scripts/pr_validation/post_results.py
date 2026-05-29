@@ -478,35 +478,6 @@ def render_entry_section(
     return "\n".join(parts).rstrip() + "\n"
 
 
-# Backwards-compat alias for callers (and tests) that import the per-entry
-# renderer under its previous name. The signature accepts ``triggered_by`` so
-# legacy callers don't break, but the mention is now hoisted to the
-# dispatch-level body; ``render_dispatch_body`` is the new entry point.
-def render_body(
-    *,
-    name: str,
-    repo: str,
-    default_branch: str,
-    result: dict[str, Any],
-    merge_sha: str,
-    run_url: str,
-    log_tail: str,
-    triggered_by: str = "",
-) -> str:
-    section = render_entry_section(
-        name=name,
-        repo=repo,
-        default_branch=default_branch,
-        result=result,
-        merge_sha=merge_sha,
-        run_url=run_url,
-        log_tail=log_tail,
-    )
-    if not triggered_by:
-        return section
-    return f"_Requested by @{triggered_by}._\n\n{section}"
-
-
 # ---------------------------------------------------------------------------
 # Dispatch-level body rendering
 # ---------------------------------------------------------------------------
