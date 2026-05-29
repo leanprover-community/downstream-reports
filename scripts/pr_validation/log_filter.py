@@ -7,7 +7,7 @@ not surrounding noise.
 
 Kept local to ``pr_validation/`` rather than imported from ``aggregate_results``
 because the PR-validation pipeline is otherwise standalone and does not share
-state with the regression scripts (see ``CLAUDE.md``).
+state with the regression scripts.
 """
 
 from __future__ import annotations
