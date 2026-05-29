@@ -334,7 +334,7 @@ Tunable surfaces:
 | Surface | Where | Default |
 |---|---|---|
 | Inventory URL (mathlib4 side) | `vars.INVENTORY_URL` | downstream-reports `main` raw URL |
-| Hopscotch ref (used by `install_lakedit.sh`) | `vars.HOPSCOTCH_REF` | `v1.4.1` |
+| Hopscotch ref (used by `install_lakedit.sh`) | `vars.HOPSCOTCH_REF` | `v1.5.0` |
 | Runner pool | matrix `runs-on` | `[self-hosted, pr]` |
 | Build timeout | `vars.PR_VALIDATION_TIMEOUT_MINUTES` | `90` |
 | LKG snapshot URL | `build_matrix.py --lkg-snapshot-url` | published `lkg/latest.json` on Azure |
