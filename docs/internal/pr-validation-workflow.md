@@ -102,13 +102,18 @@ Authorisation is gated on the mathlib4 side to `OWNER` / `MEMBER` /
 plan (ubuntu-latest) ──► validate (×N, self-hosted, no secrets) ──► report (ubuntu-latest)
 ```
 
-Concurrency group is `mathlib-pr-validation-${pr_number}` with
-`cancel-in-progress: false`: a new push (which produces a new merge SHA) and
-a re-dispatched directive both queue behind the running build rather than
-cancel it. Each individual run takes long enough on the self-hosted `pr` pool
-that finishing what we started is almost always cheaper than discarding it;
-the dispatcher can still cancel manually if a stale build stops being
-interesting.
+Concurrency group is the literal string `mathlib-pr-validation`:
+every dispatch lands in one global FIFO, so at most one validation
+workflow is in flight at a time across all PRs.  Within that one
+in-flight dispatch the matrix `max-parallel` (default 2, tunable
+via `vars.PR_VALIDATION_MAX_PARALLEL`) caps how many `pr` runners it
+occupies.  The pool's load is therefore bounded by `max-parallel`
+regardless of how many PRs are dispatching.
+
+`cancel-in-progress: false`: dispatches are deliberate maintainer
+actions, so we treat the workflow as a request queue and run them
+all in arrival order.  A dispatcher cancels a stale build by hand
+if they want to drop it.
 
 ### `plan`
 

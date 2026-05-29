@@ -51,13 +51,17 @@ permissions:
   id-token: write   # required for the Azure Key Vault token mint in `report`
 
 concurrency:
-  # Serialize all runs for the same PR — re-dispatches (same merge SHA, or a
-  # new push that produced a different merge SHA) queue behind the running
-  # one rather than cancel it. Each individual run takes long enough on the
-  # self-hosted `pr` pool that finishing what we started is almost always
-  # cheaper than discarding it; if a stale build is no longer interesting
-  # the dispatcher can still cancel it manually.
-  group: mathlib-pr-validation-${{ inputs.pr_number }}
+  # Single global FIFO across all PRs.  `!downstream-check` is a
+  # shared resource backed by the self-hosted `pr` pool, so we
+  # serialise every dispatch into one queue: at most one workflow run
+  # is in flight at a time, and within it the matrix `max-parallel`
+  # caps how many `pr` runners that dispatch occupies.
+  #
+  # `cancel-in-progress: false`: dispatches are deliberate maintainer
+  # actions, so we treat the workflow as a request queue and run them
+  # all in arrival order.  A dispatcher who wants to drop a stale
+  # build cancels it by hand.
+  group: mathlib-pr-validation
   cancel-in-progress: false
 
 jobs:
@@ -113,7 +117,10 @@ jobs:
     runs-on: [self-hosted, pr]
     strategy:
       fail-fast: false
-      max-parallel: 2
+      # How many `pr` self-hosted runners one dispatch is allowed to
+      # occupy concurrently.  Tune via `vars.PR_VALIDATION_MAX_PARALLEL`
+      # to match the pool's size.
+      max-parallel: ${{ fromJSON(vars.PR_VALIDATION_MAX_PARALLEL || '2') }}
       matrix: ${{ fromJson(needs.plan.outputs.matrix) }}
     timeout-minutes: ${{ fromJSON(vars.PR_VALIDATION_TIMEOUT_MINUTES || '90') }}
     steps:
