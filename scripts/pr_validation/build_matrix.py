@@ -185,10 +185,10 @@ def main() -> int:
     with args.inventory.open() as handle:
         inventory = json.load(handle)
 
-    # Two lookups: short inventory name (case-sensitive, the historical
-    # form) and GitHub `owner/repo` slug (case-insensitive, mirroring
-    # GitHub URL semantics). Each entry's bare token is matched against
-    # either, in that order.
+    # Two lookups: short inventory name (case-sensitive) and GitHub
+    # `owner/repo` slug (case-insensitive, mirroring GitHub URL
+    # semantics). Each entry's bare token is matched against either,
+    # in that order.
     by_name = {entry["name"]: entry for entry in inventory["downstreams"]}
     by_slug = {
         entry["repo"].lower(): entry for entry in inventory["downstreams"]

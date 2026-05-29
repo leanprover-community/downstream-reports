@@ -180,9 +180,8 @@ def _display_name(result: dict[str, Any]) -> str:
 def _section_header(result: dict[str, Any]) -> str:
     """Render the bold one-liner that introduces an entry section.
 
-    Bold inline (not ``##`` heading) keeps the comment visually quiet
-    on the PR page; ``---`` separators between entries provide the
-    visual break that headings used to.
+    Bold inline keeps the comment visually quiet on the PR page;
+    ``---`` separators between entries provide the visual break.
     """
     display = _display_name(result)
     mode = result.get("mode") or "merge"
@@ -553,9 +552,8 @@ def render_dispatch_body(
         parts.append("")
 
     # `---` horizontal rules separate sections from each other and from
-    # the table above; that visual break is what `##` headings used to
-    # provide.  A single-entry dispatch has no table so the first
-    # section follows the title directly.
+    # the table above.  A single-entry dispatch has no table so the
+    # first section follows the title directly.
     for i, entry in enumerate(entries):
         if i > 0 or table_rendered:
             parts.extend(["---", ""])
@@ -614,7 +612,6 @@ def _shrink_to_fit(
     merge_sha: str,
     run_url: str,
     triggered_by: str,
-    run_artifacts_url: str | None = None,
 ) -> str:
     """Render the dispatch body and progressively trim logs to fit the limit.
 

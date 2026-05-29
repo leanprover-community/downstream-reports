@@ -143,11 +143,10 @@ class Config:
 def build_parser() -> argparse.ArgumentParser:
     """Build the argparse parser for ``validate.py``.
 
-    Every input is a named flag; defaults match the bash script's old
-    fallbacks.  ``--lkg-commit`` and ``--fkb-commit`` are optional at
-    the argparse level (so merge-mode dispatches don't have to pass
-    empty strings); the mode-specific guard in ``Config.from_args``
-    enforces ``--lkg-commit`` for LKG runs.
+    Every input is a named flag.  ``--lkg-commit`` and ``--fkb-commit``
+    are optional at the argparse level (so merge-mode dispatches don't
+    have to pass empty strings); the mode-specific guard in
+    ``Config.from_args`` enforces ``--lkg-commit`` for LKG runs.
     """
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--pr-number", required=True)

@@ -695,7 +695,7 @@ class TestDispatchBody:
         first_section_idx = body.find("**✅")
         assert first_section_idx > table_idx
         # Sections are separated from each other (and from the table) by
-        # `---` horizontal rules; the visual break headings used to give.
+        # `---` horizontal rules.
         assert "\n---\n" in body
 
     def test_each_entry_renders_as_a_section(self) -> None:
