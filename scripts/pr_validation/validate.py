@@ -342,6 +342,11 @@ def build_result_record(
     }
     if cfg.mode == MODE_LKG:
         record["lkg_commit"] = cfg.lkg_commit or None
+    elif cfg.lkg_commit:
+        # Merge mode doesn't build against LKG, but build_matrix may attach
+        # the recorded last-known-good as the baseline behind the comment's
+        # "master builds with <name>" claim. Pass it through when present.
+        record["lkg_commit"] = cfg.lkg_commit
 
     # The literal token the user typed; only stored when it differs
     # from the canonical downstream name (i.e. the slug form was used).
@@ -465,18 +470,29 @@ def _rev_parse(log: Log, repo: Path, rev: str) -> str:
     return proc.stdout.strip()
 
 
-def _rev_list_count(repo: Path, range_: str) -> int | None:
+def _pr_commits(repo: Path, range_: str) -> list[str] | None:
+    """Return non-merge commits in *range_* in chronological order.
+
+    Used both for the LKG-mode cherry-pick (only non-merge commits can be
+    replayed without a ``-m`` directive, and we don't want to replay
+    master changes that the PR pulled in via a merge) and for the
+    ``commits_replayed`` count on result.json (we report how many of the
+    PR's *own* edits we'd attempt to replay, not the merge commits).
+
+    Returns ``None`` on a rev-list failure; ``[]`` is a valid empty
+    range (e.g. the PR head equals master).
+    """
     proc = subprocess.run(
-        ["git", "-C", str(repo), "rev-list", "--count", range_],
+        [
+            "git", "-C", str(repo), "rev-list",
+            "--reverse", "--no-merges", range_,
+        ],
         capture_output=True,
         text=True,
     )
     if proc.returncode != 0:
         return None
-    try:
-        return int(proc.stdout.strip())
-    except ValueError:
-        return None
+    return proc.stdout.split()
 
 
 # ---------------------------------------------------------------------------
@@ -563,9 +579,11 @@ def _resolve_merge_mode(cfg: Config, state: State, log: Log) -> None:
         log, cfg.mathlib_dir, cfg.merge_sha
     )
     if state.pr_base and state.pr_head and state.pr_base != state.pr_head:
-        state.n_commits = _rev_list_count(
+        commits = _pr_commits(
             cfg.mathlib_dir, f"{state.pr_base}..{state.pr_head}"
         )
+        if commits is not None:
+            state.n_commits = len(commits)
 
     section(log, "Check out merge SHA")
     rc = log.run(
@@ -634,45 +652,76 @@ def _resolve_lkg_mode(cfg: Config, state: State, log: Log) -> None:
     endsection(log)
 
     if state.pr_head and state.pr_base != state.pr_head:
-        state.n_commits = _rev_list_count(
+        # Enumerate the non-merge commits explicitly. Merge commits in
+        # the range can't be cherry-picked without `-m`, and even with
+        # `-m` either choice replays the wrong diff (parent-1 brings in
+        # master changes; parent-2 squashes the whole PR's diff). The
+        # right semantics for "replay the PR's own edits on top of LKG"
+        # is to skip merge commits and apply each non-merge commit
+        # individually, in chronological order.
+        commits = _pr_commits(
             cfg.mathlib_dir, f"{state.pr_base}..{state.pr_head}"
         )
-        n = state.n_commits if state.n_commits is not None else "?"
-        section(log, f"Cherry-pick {n} PR commit(s) onto LKG")
-        notice(
-            log,
-            "Cherry-pick",
-            f"Replaying {n} PR commit(s) "
-            f"({state.pr_base}..{state.pr_head}) onto LKG "
-            f"{cfg.lkg_commit[:7]}",
-        )
-        rc = log.run(
-            [
-                "git", "-C", str(cfg.mathlib_dir),
-                "-c", "user.email=ci@downstream-reports.invalid",
-                "-c", "user.name=ci",
-                "cherry-pick", f"{state.pr_base}..{state.pr_head}",
-            ]
-        )
-        if rc != 0:
-            # Best-effort cleanup; don't fail the abort itself.
-            subprocess.run(
-                ["git", "-C", str(cfg.mathlib_dir), "cherry-pick", "--abort"],
-                check=False,
-            )
+        if commits is None:
             fail_infra(
                 cfg, state, log,
-                stage="rebase_conflict",
-                title="Rebase conflict",
-                annotation="warning",
+                stage="rev_list",
+                title="rev-list failed",
                 message=(
-                    f"PR commits do not apply on top of LKG {cfg.lkg_commit}; "
-                    "this PR likely depends on post-LKG mathlib changes"
+                    f"could not enumerate commits in "
+                    f"{state.pr_base}..{state.pr_head}"
                 ),
             )
-        state.replayed_tree_sha = _rev_parse(log, cfg.mathlib_dir, "HEAD")
-        log.print(f"  resulting tree: {state.replayed_tree_sha}")
-        endsection(log)
+        state.n_commits = len(commits)
+        n = state.n_commits
+        section(log, f"Cherry-pick {n} PR commit(s) onto LKG")
+        if n == 0:
+            # Range was non-empty but contained only merge commits (a
+            # PR whose only change is "merge master in"). Nothing to
+            # replay; the LKG itself is the tested tree.
+            notice(
+                log,
+                "Cherry-pick",
+                "no non-merge commits in range; LKG itself is the tested tree",
+            )
+            state.replayed_tree_sha = cfg.lkg_commit
+            endsection(log)
+        else:
+            notice(
+                log,
+                "Cherry-pick",
+                f"Replaying {n} PR commit(s) "
+                f"({state.pr_base}..{state.pr_head}, --no-merges) onto LKG "
+                f"{cfg.lkg_commit[:7]}",
+            )
+            rc = log.run(
+                [
+                    "git", "-C", str(cfg.mathlib_dir),
+                    "-c", "user.email=ci@downstream-reports.invalid",
+                    "-c", "user.name=ci",
+                    "cherry-pick",
+                    *commits,
+                ]
+            )
+            if rc != 0:
+                # Best-effort cleanup; don't fail the abort itself.
+                subprocess.run(
+                    ["git", "-C", str(cfg.mathlib_dir), "cherry-pick", "--abort"],
+                    check=False,
+                )
+                fail_infra(
+                    cfg, state, log,
+                    stage="rebase_conflict",
+                    title="Rebase conflict",
+                    annotation="warning",
+                    message=(
+                        f"PR commits do not apply on top of LKG {cfg.lkg_commit}; "
+                        "this PR likely depends on post-LKG mathlib changes"
+                    ),
+                )
+            state.replayed_tree_sha = _rev_parse(log, cfg.mathlib_dir, "HEAD")
+            log.print(f"  resulting tree: {state.replayed_tree_sha}")
+            endsection(log)
     else:
         # Fast-forward merge: PR head == merge SHA, nothing to replay.
         state.n_commits = 0

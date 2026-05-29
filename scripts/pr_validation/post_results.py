@@ -154,7 +154,7 @@ def verdict_summary(result: dict[str, Any]) -> str:
             return (
                 f"❌ fails (master incompatibility at {commit_link(fkb)})"
             )
-        return "❌ fails (attributable to the PR)"
+        return "❌ fails (likely attributable to the PR)"
     # infra_failure
     if mode == "lkg" and stage == "rebase_conflict":
         return "⚠️ could not validate (PR conflicts with LKG)"
@@ -202,7 +202,7 @@ def _section_header(result: dict[str, Any]) -> str:
 
 
 def _framing_for(
-    name: str, mode: str, status: str, fkb: str | None
+    name: str, mode: str, status: str, fkb: str | None, lkg: str | None = None
 ) -> str:
     """Return the blockquote subtitle for an entry section, or '' to omit it.
 
@@ -212,6 +212,12 @@ def _framing_for(
     * status (pass / fail / infra_failure) — whether a build completed
     * fkb (set / null) — whether the LKG snapshot positively records
       that master is currently broken for this downstream
+
+    ``lkg`` is the downstream's recorded last-known-good mathlib commit.
+    In merge mode it is the baseline behind the "master builds with
+    <name>" claim; naming it (and flagging that it may be stale) keeps
+    the PR-blame framing honest when the snapshot hasn't been refreshed
+    since the regression run that recorded it.
 
     A clean pass with no master regression on record is unambiguous and
     needs no caveat — the recipe paragraph already says everything. Every
@@ -250,9 +256,20 @@ def _framing_for(
                 f" Drop `--merge-branch` to re-run against {name}'s"
                 f" last-known-good mathlib instead."
             )
+        baseline = (
+            f" The most recent regression run had mathlib master building"
+            f" with {name} at {commit_link(lkg)}."
+            if lkg
+            else " The most recent regression run had mathlib master building"
+            f" with {name}."
+        )
         return (
-            f"> mathlib master is currently known to build with {name},"
-            f" so this failure is attributable to the PR."
+            f"> No master regression is on record for {name}, so this failure"
+            f" is most likely attributable to the PR.{baseline} That baseline"
+            f" may be stale, though — if master has regressed for {name} since"
+            f" it was recorded, the failure could predate the PR. Drop"
+            f" `--merge-branch` to re-run against {name}'s last-known-good"
+            f" mathlib instead."
         )
     # merge-mode infra_failure: the per-stage explainer below carries
     # the actionable message; an extra master-baseline note here just
@@ -406,7 +423,8 @@ def render_entry_section(
     # instead of hedging — the LKG snapshot has positively recorded a
     # regression on master for this downstream.
     fkb = result.get("fkb_commit")
-    framing = _framing_for(name, mode, status, fkb)
+    lkg = result.get("lkg_commit")
+    framing = _framing_for(name, mode, status, fkb, lkg)
 
     parts: list[str] = [header, ""]
     if framing:

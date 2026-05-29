@@ -524,11 +524,11 @@ class TestFkbAwareFraming:
         assert "Drop `--merge-branch`" in body
 
     def test_merge_fail_without_fkb_attributes_failure_to_pr(self) -> None:
-        """Merge fail with no FKB recorded says master is healthy and points at the PR.
+        """Merge fail with no FKB points at the PR but hedges on baseline staleness.
 
-        No FKB = the snapshot positively records master as building
-        with X.  The failure is therefore PR-attributable and we say so
-        unambiguously.
+        No FKB = no master regression on record, so the failure is most
+        likely the PR's. The baseline that backs that claim can be stale,
+        though, so the framing says "most likely" and offers the LKG re-run.
         """
         # Arrange / Act
         body = _render(
@@ -542,8 +542,33 @@ class TestFkbAwareFraming:
         )
 
         # Assert
-        assert "mathlib master is currently known to build with FLT" in body
-        assert "attributable to the PR" in body
+        assert "No master regression is on record for FLT" in body
+        assert "most likely attributable to the PR" in body
+        assert "may be stale" in body
+        assert "Drop `--merge-branch`" in body
+
+    def test_merge_fail_without_fkb_names_baseline_sha(self) -> None:
+        """When the baseline LKG is recorded, the framing links the exact SHA.
+
+        The "master builds with X" claim rests on the last regression
+        run's last-known-good commit; naming it lets the reader judge how
+        fresh that baseline is.
+        """
+        # Arrange / Act
+        body = _render(
+            _make_result(
+                status="fail",
+                mode="merge",
+                pr_base_sha="1" * 40,
+                pr_head_sha="2" * 40,
+                commits_replayed=1,
+                lkg_commit=_LKG_SHA,
+            )
+        )
+
+        # Assert
+        assert "most recent regression run had mathlib master building" in body
+        assert f"/commit/{_LKG_SHA}" in body
 
     def test_merge_pass_has_no_master_caveat(self) -> None:
         """A successful merge-mode build needs no subtitle disclaimer.
@@ -805,11 +830,16 @@ class TestVerdictSummary:
         assert f"/commit/{_FKB_SHA}" in summary
 
     def test_merge_fail_without_fkb_attributes_to_pr(self) -> None:
-        """A merge fail with no FKB attributes to the PR."""
+        """A merge fail with no FKB hedges the PR attribution.
+
+        With no master regression on record the failure is most likely
+        the PR's, but the baseline behind that claim can be stale, so the
+        gloss says "likely" rather than asserting it outright.
+        """
         # Arrange / Act / Assert
         assert (
             post_results.verdict_summary(_make_result(status="fail", mode="merge"))
-            == "❌ fails (attributable to the PR)"
+            == "❌ fails (likely attributable to the PR)"
         )
 
     def test_rebase_conflict_gloss(self) -> None:
