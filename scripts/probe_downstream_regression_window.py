@@ -1,10 +1,16 @@
 #!/usr/bin/env python3
 """Run the downstream regression HEAD probe and optional bisect for a preselected window.
 
-This script is intentionally free of CI secrets.  It reads all the information
-it needs from the selection.json artifact produced by the select step, clones
-public repositories without authentication, and invokes hopscotch with an
-environment that has had all known secrets stripped (see cache.cache_env).
+This script is intentionally free of privilege-bearing CI secrets.  It reads
+all the information it needs from the selection.json artifact produced by the
+select step, clones public repositories without authentication, and invokes
+hopscotch with an environment that has had privilege-bearing secrets stripped
+(see cache.cache_env).
+
+``GITHUB_TOKEN`` is the one exception: hopscotch needs it to authenticate
+commit-range API calls (the unauthenticated 60-req/h rate limit is too tight
+for mathlib's history) and strips it from the env of every ``lake`` / ``git``
+child it spawns.  See ``Hopscotch.secretScrubEnv`` in the hopscotch repo.
 
 Inputs:
   <selection>   — path to selection.json written by the select step.
@@ -242,9 +248,12 @@ def main() -> int:
         search_dir = args.workdir / "downstreams-search" / config.name
         cache_dir = downstream_cache_dir(args.workdir, config.name)
         cache_dir.mkdir(parents=True, exist_ok=True)
-        # cache_env() strips CI secrets — hopscotch and lake build see only
-        # environment variables that are safe to expose to arbitrary code.
+        # cache_env() strips privilege-bearing CI secrets.  GITHUB_TOKEN is
+        # passed through to hopscotch so it can authenticate commit-range API
+        # calls; hopscotch then strips it from every child process it spawns.
         env = cache_env(cache_dir)
+        if selection.nuke_lakedir:
+            env["HOPSCOTCH_DEBUG_NUKE_LAKEDIR"] = "1"
 
         # Clone upstream for git operations (ancestor checks, parent-commit
         # lookups).  Public repo — no authentication required.

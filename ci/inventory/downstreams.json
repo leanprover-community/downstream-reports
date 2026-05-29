@@ -68,15 +68,15 @@
       "repo": "google-deepmind/formal-conjectures",
       "default_branch": "main",
       "dependency_name": "mathlib",
-      "enabled": true
+      "enabled": true,
+      "nuke_lakedir": true
     },
     {
       "name": "ClassFieldTheory",
       "repo": "kbuzzard/ClassFieldTheory",
       "default_branch": "main",
       "dependency_name": "mathlib",
-      "enabled": true,
-      "warm_cache": true
+      "enabled": true
     },
     {
       "name": "gibbs-measure",
@@ -95,12 +95,12 @@
       "warm_cache": true
     },
     {
-      "name": "BrauerGroup_new",
-      "repo": "Whysoserioushah/BrauerGroup_new",
+      "name": "BrauerGroup",
+      "repo": "Whysoserioushah/BrauerGroup",
       "default_branch": "main",
       "dependency_name": "mathlib",
       "enabled": true,
-      "warm_cache": true
+      "nuke_lakedir": true
     },
     {
       "name": "add-combi",
@@ -164,6 +164,30 @@
       "default_branch": "main",
       "dependency_name": "mathlib",
       "enabled": true
+    },
+    {
+      "name": "Poly",
+      "repo": "sinhp/Poly",
+      "default_branch": "master",
+      "dependency_name": "mathlib",
+      "enabled": true,
+      "nuke_lakedir": true
+    },
+    {
+      "name": "PrimeCert",
+      "repo": "b-mehta/PrimeCert",
+      "default_branch": "master",
+      "dependency_name": "mathlib",
+      "enabled": true,
+      "warm_cache": true
+    },
+    {
+      "name": "Robo",
+      "repo": "hhu-adam/Robo",
+      "default_branch": "main",
+      "dependency_name": "leanprover-community/mathlib",
+      "enabled": true,
+      "runs_on": ["ubuntu-latest"]
     }
   ]
 }

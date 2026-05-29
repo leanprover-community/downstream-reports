@@ -165,6 +165,7 @@ def main() -> int:
         dependency_name=config.dependency_name,
         upstream_ref=args.upstream_ref,
         skip_known_bad_bisect=config.skip_known_bad_bisect,
+        nuke_lakedir=config.nuke_lakedir,
     )
 
     # Embed prior episode state so the probe step can apply skip heuristics

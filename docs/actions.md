@@ -95,12 +95,39 @@ the benefit is full CI coverage on bump PRs and a stable bot identity.
    No webhooks or user-level permissions are needed.
 
 2. **Install it** on the downstream repo (or on the owning org, scoped to
-   that repo).
+   that repo). From the App's settings page:
 
-3. **Store the credentials.** From the App's settings page generate a private
-   key (PEM) and save it as a repository secret — `MY_BOT_PRIVATE_KEY` below.
-   Save the numeric App ID as a repository (or org) variable —
-   `MY_BOT_APP_ID` below.
+   1. Open the **Install App** tab in the left sidebar.
+   2. Click **Install** next to the account that owns the downstream repo
+      (your user account, or the org).
+   3. Choose **Only select repositories** and pick the downstream repo
+      (recommended), or **All repositories** if the App will service several.
+   4. Confirm — GitHub takes you to the installation's settings page, whose
+      URL ends in `/installations/<installation-id>`. You don't need to copy
+      this ID; `actions/create-github-app-token` resolves it from the App ID
+      plus the target repo at runtime.
+
+   GitHub's reference: [Installing your own GitHub App](https://docs.github.com/en/apps/using-github-apps/installing-your-own-github-app).
+
+3. **Store the credentials.** You need two pieces of data from the App's
+   settings page:
+
+   1. **App ID** — shown near the top of the **General** tab as a small
+      numeric value. Copy it and save it as a repository (or org) **variable**
+      named `MY_BOT_APP_ID` (Settings → Secrets and variables → Actions →
+      Variables → New repository variable). A variable, not a secret — App
+      IDs are not sensitive and storing them as variables lets you reference
+      them via `${{ vars.MY_BOT_APP_ID }}` in logs without masking.
+   2. **Private key** — scroll down to **Private keys** on the same General
+      tab and click **Generate a private key**. A `.pem` file downloads
+      once; GitHub does not retain it. Open the file, copy its full
+      contents (including the `-----BEGIN/END RSA PRIVATE KEY-----` lines),
+      and save it as a repository (or org) **secret** named
+      `MY_BOT_PRIVATE_KEY` (Settings → Secrets and variables → Actions →
+      Secrets → New repository secret). Then delete the local `.pem` —
+      you can always generate a new key if you lose it.
+
+   GitHub's reference: [Managing private keys for GitHub Apps](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/managing-private-keys-for-github-apps).
 
 4. **Mint an installation token per run** with
    [`actions/create-github-app-token`](https://github.com/actions/create-github-app-token)

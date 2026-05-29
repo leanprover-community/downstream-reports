@@ -51,6 +51,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from scripts.git_ops import (
     RELEASE_TAG_GLOB,
+    git_url_from_manifest,
     latest_reachable_tag,
     repo_clone_source,
     resolve_tag,
@@ -371,3 +372,39 @@ class TestRepoCloneSource:
             "Existing local paths must be returned in resolved form so callers "
             "can pass them straight to `git clone`"
         )
+
+
+class TestGitUrlFromManifest:
+    """Tests for ``git_url_from_manifest``.
+
+    The inventory's ``dependency_name`` may be a scoped Reservoir name like
+    ``"leanprover-community/mathlib"`` so hopscotch's lakefile parser can match
+    ``require "leanprover-community" / mathlib`` blocks. ``lake-manifest.json``,
+    however, only ever records the bare package name. These tests pin both the
+    bare and scoped lookup paths.
+    """
+
+    def _write_manifest(self, project_dir: Path, payload: object) -> None:
+        import json
+        (project_dir / "lake-manifest.json").write_text(json.dumps(payload))
+
+    def test_bare_name_lookup_returns_url(self, tmp_path: Path) -> None:
+        url = "https://github.com/leanprover-community/mathlib4"
+        self._write_manifest(
+            tmp_path,
+            {"packages": [{"name": "mathlib", "type": "git", "url": url, "rev": "x" * 40}]},
+        )
+        assert git_url_from_manifest(tmp_path, "mathlib") == url
+
+    def test_scoped_name_lookup_strips_scope(self, tmp_path: Path) -> None:
+        url = "https://github.com/leanprover-community/mathlib4"
+        self._write_manifest(
+            tmp_path,
+            {"packages": [{"name": "mathlib", "type": "git", "url": url, "rev": "x" * 40}]},
+        )
+        assert (
+            git_url_from_manifest(tmp_path, "leanprover-community/mathlib") == url
+        )
+
+    def test_missing_manifest_returns_none(self, tmp_path: Path) -> None:
+        assert git_url_from_manifest(tmp_path, "mathlib") is None

@@ -110,32 +110,84 @@ jobs:
         working-directory: mathlib4-tools
         run: lake build cache
 
+      # The master cache binary resolves `leantar` strictly from the
+      # active toolchain's sysroot (`<lean --print-prefix>/bin/leantar`,
+      # see Cache/IO.lean leantarSysrootBin) — PATH is not consulted.
+      # Target SHAs older than nightly-2026-03-09 pin a toolchain that
+      # predates leantar bundling, so cache stage/probe explode with
+      # "leantar not found in Lean sysroot". Backfill by copying master's
+      # leantar (always recent enough) into the target sysroot.
+      - name: Backfill leantar into target toolchain (if missing)
+        run: |
+          set -euo pipefail
+          # Trigger elan install of both toolchains so --print-prefix resolves.
+          ( cd mathlib4         && lean --version ) >/dev/null
+          ( cd mathlib4-tools   && lean --version ) >/dev/null
+          TARGET_PREFIX=$( cd mathlib4       && lean --print-prefix )
+          TOOLS_PREFIX=$(  cd mathlib4-tools && lean --print-prefix )
+          if [ -x "$TARGET_PREFIX/bin/leantar" ]; then
+            echo "leantar already present in target sysroot: $TARGET_PREFIX/bin/leantar"
+            exit 0
+          fi
+          if [ ! -x "$TOOLS_PREFIX/bin/leantar" ]; then
+            echo "::error::No leantar in master tools sysroot ($TOOLS_PREFIX/bin/leantar); cannot backfill."
+            exit 1
+          fi
+          cp "$TOOLS_PREFIX/bin/leantar" "$TARGET_PREFIX/bin/leantar"
+          echo "Backfilled leantar: $TOOLS_PREFIX/bin/leantar -> $TARGET_PREFIX/bin/leantar"
+
       # `lake env <cmd>` evaluates the lakefile in the current working
        # directory, resolves deps, and sets LEAN_PATH / LEAN_SRC_PATH so
        # the cache binary can find Mathlib modules — invoking the cache
        # binary directly fails with "unknown module prefix 'Mathlib'".
+      # Each retryable step gets one extra attempt to absorb transient
+      # flakes (Azure 503, network blip, runner hiccup). After the
+      # second failure the step reports failure to its `outcome:` and
+      # the per-SHA result captures it as build_failed / push_failed /
+      # verify_failed — best-effort, never fails the workflow_run.
       - name: Probe cache completeness
         id: probe
         working-directory: mathlib4
         continue-on-error: true
         run: |
-          lake env ../mathlib4-tools/.lake/build/bin/cache get
-          lake build --no-build -v Mathlib
+          probe() {
+            lake env ../mathlib4-tools/.lake/build/bin/cache get \
+              && lake build --no-build -v Mathlib
+          }
+          if ! probe; then
+            echo "::warning::Probe attempt 1 failed, retrying once..."
+            probe
+          fi
 
       - name: Build Mathlib
         id: build
         if: steps.probe.outcome != 'success'
         working-directory: mathlib4
         continue-on-error: true
-        run: lake build Mathlib
+        run: |
+          if ! lake build Mathlib; then
+            echo "::warning::Build attempt 1 failed, retrying once..."
+            lake build Mathlib
+          fi
 
       - name: Stage cache
         id: stage
         if: steps.build.outcome == 'success'
         working-directory: mathlib4
+        continue-on-error: true
         run: |
-          lake env ../mathlib4-tools/.lake/build/bin/cache stage \
-            --staging-dir=../cache-staging
+          stage() {
+            lake env ../mathlib4-tools/.lake/build/bin/cache stage \
+              --staging-dir=../cache-staging
+          }
+          if ! stage; then
+            echo "::warning::Stage attempt 1 failed, retrying once..."
+            # Partial .ltar output from the failed attempt would
+            # otherwise be uploaded alongside the second attempt's
+            # files, mixing stale + fresh blobs in the staging artifact.
+            rm -rf ../cache-staging
+            stage
+          fi
 
       # Just .ltar files — no binary. upload_cache builds its own
       # trusted cache tool from a clean master checkout.
@@ -272,14 +324,20 @@ jobs:
 
       - name: Push staged cache to Azure
         id: push
-        continue-on-error: true   # capture push_failed before failing the job
+        continue-on-error: true   # best-effort; push_failed surfaces in result.json
         working-directory: mathlib4-tools
         env:
           MATHLIB_CACHE_USE_CLOUDFLARE: "0"
         run: |
-          lake env .lake/build/bin/cache put-staged \
-            --staging-dir=../cache-staging \
-            --repo=leanprover-community/mathlib4
+          push() {
+            lake env .lake/build/bin/cache put-staged \
+              --staging-dir=../cache-staging \
+              --repo=leanprover-community/mathlib4
+          }
+          if ! push; then
+            echo "::warning::Push attempt 1 failed, retrying once..."
+            push
+          fi
 
       # Narrow the bearer's exposure to roughly mint→push.
       - name: Clear cache bearer token
@@ -321,11 +379,10 @@ jobs:
           path: out/result.json
           if-no-files-found: error
 
-      - name: Surface push failure as a job failure
+      - name: Annotate push failure
         if: steps.push.outcome == 'failure'
         run: |
-          echo "::error::Cache push failed for ${{ inputs.sha }}."
-          exit 1
+          echo "::warning::Cache push failed for ${{ inputs.sha }} after one retry; recorded as push_failed and skipped on future ticks."
 
   verify:
     needs: upload_cache
@@ -346,16 +403,22 @@ jobs:
 
       - name: Verify cache for SHA
         id: verify
-        continue-on-error: true   # capture verify_failed before failing the job
+        continue-on-error: true   # best-effort; verify_failed surfaces in result.json
         env:
           SHA: ${{ inputs.sha }}
         run: |
+          verify_once() {
+            lake exe cache get \
+              && lake build --no-build --rehash -v Mathlib
+          }
           git clone --filter=blob:none https://github.com/leanprover-community/mathlib4 mathlib4
           git -C mathlib4 fetch origin "$SHA" --depth 1
           git -C mathlib4 checkout "$SHA"
           cd mathlib4
-          lake exe cache get
-          lake build --no-build --rehash -v Mathlib
+          if ! verify_once; then
+            echo "::warning::Verify attempt 1 failed, retrying once..."
+            verify_once
+          fi
 
       - name: Write final result
         if: always()
@@ -379,8 +442,7 @@ jobs:
           path: out/result.json
           if-no-files-found: error
 
-      - name: Surface verify failure as a job failure
+      - name: Annotate verify failure
         if: steps.verify.outcome == 'failure'
         run: |
-          echo "::error::Cache verification failed for ${{ inputs.sha }}: not all Mathlib oleans are present after the push."
-          exit 1
+          echo "::warning::Cache verification failed for ${{ inputs.sha }} after one retry; recorded as verify_failed and skipped on future ticks."

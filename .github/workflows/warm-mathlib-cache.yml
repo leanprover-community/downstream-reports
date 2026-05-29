@@ -243,14 +243,19 @@ jobs:
           # Print to job log too, for inline visibility.
           cat summary.json
 
-          # Hard failures surface as a red finalize job. `no_result` is
-          # also failure-worthy: it means a matrix entry didn't reach a
-          # terminal upload, which usually points to runner / timeout
-          # trouble worth investigating. `cache_warmth_hit` is never a
-          # failure — it's the steady-state "everything is fine" case.
-          if jq -e 'any(.[]; .status == "verify_failed" or .status == "push_failed" or .status == "no_result")' \
+          # `no_result` is the only failure-worthy status: it means a
+          # matrix entry didn't reach a terminal upload (runner /
+          # timeout / infra trouble worth investigating). Per-SHA
+          # build_failed / push_failed / verify_failed are best-effort
+          # outcomes — they're recorded into `cache_warmth` so future
+          # ticks skip them, and they MUST NOT fail the workflow_run
+          # because publish-lkg + generate-pages gate on this
+          # workflow's success and they serve every downstream.
+          # `cache_warmth_hit` is the steady-state "everything is
+          # fine" case.
+          if jq -e 'any(.[]; .status == "no_result")' \
                summary.json >/dev/null; then
-            echo "::error::At least one SHA failed cache push, post-push verification, or didn't report a result."
+            echo "::error::At least one SHA didn't report a result (runner timeout / matrix dropout)."
             exit 1
           fi
 

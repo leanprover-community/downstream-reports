@@ -219,6 +219,19 @@ def should_run_boundary_search(head_probe_exit_code: int, commit_window: list[st
 # ---------------------------------------------------------------------------
 
 
+def _manifest_lookup_name(dependency_name: str) -> str:
+    """Return the bare name `lake-manifest.json` records for a (possibly scoped) dep.
+
+    The inventory's ``dependency_name`` can be a scoped Reservoir name like
+    ``"leanprover-community/mathlib"`` (needed so hopscotch's lakefile parser
+    matches ``require "leanprover-community" / mathlib`` etc.), but Lake's
+    manifest only stores the bare package name (``"mathlib"``).  Strip the
+    scope before doing manifest lookups.
+    """
+    _, _, bare = dependency_name.rpartition("/")
+    return bare or dependency_name
+
+
 def pinned_from_manifest_payload(payload: Any, dependency_name: str) -> str | None:
     """Return the resolved SHA for `dependency_name` from a parsed manifest payload.
 
@@ -229,8 +242,9 @@ def pinned_from_manifest_payload(payload: Any, dependency_name: str) -> str | No
     """
     if not isinstance(payload, dict):
         return None
+    lookup_name = _manifest_lookup_name(dependency_name)
     for pkg in payload.get("packages", []):
-        if pkg.get("name") == dependency_name and pkg.get("type") == "git":
+        if pkg.get("name") == lookup_name and pkg.get("type") == "git":
             rev = pkg.get("rev")
             return rev if isinstance(rev, str) and rev else None
     return None
@@ -271,8 +285,9 @@ def git_url_from_manifest(project_dir: Path, dependency_name: str) -> str | None
         payload = json.loads(manifest_path.read_text())
     except Exception:
         return None
+    lookup_name = _manifest_lookup_name(dependency_name)
     for pkg in payload.get("packages", []):
-        if pkg.get("name") == dependency_name and pkg.get("type") == "git":
+        if pkg.get("name") == lookup_name and pkg.get("type") == "git":
             url = pkg.get("url")
             return url if isinstance(url, str) and url else None
     return None

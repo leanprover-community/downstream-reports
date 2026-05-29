@@ -16,14 +16,18 @@ def downstream_cache_dir(workdir: Path, downstream_name: str) -> Path:
     return workdir / "lake-artifact-cache" / downstream_name
 
 
-# Secrets that must never reach hopscotch or lake build subprocesses.
-# cache_env() is the single chokepoint for subprocess environment
-# construction.  Stripping secrets here is a defence-in-depth measure;
-# the primary guarantee is the job boundary (the probe job has no secrets
-# in its env: blocks).  Keep this list in sync with any secret added to
-# the workflow's select job.
+# Privilege-bearing CI secrets that must never reach hopscotch or any lake
+# build subprocess it spawns.  cache_env() is the single chokepoint for
+# subprocess environment construction; stripping these here is a defence-
+# in-depth measure layered on top of the workflow's job boundary (the probe
+# job omits these from its env: blocks).
+#
+# GITHUB_TOKEN is deliberately *not* in this set: hopscotch needs it for
+# rate-limited GitHub API calls during commit-range queries, and hopscotch
+# strips it from the env of every `lake` / `git` child it spawns (see
+# `Hopscotch.secretScrubEnv` in the hopscotch repo).  Keep this list in
+# sync with any privilege-bearing secret added to a probe-job env block.
 _CI_SECRETS = frozenset({
-    "GITHUB_TOKEN",
     "POSTGRES_DSN",
     "ZULIP_API_KEY",
     "ZULIP_EMAIL",
@@ -33,8 +37,10 @@ _CI_SECRETS = frozenset({
 def cache_env(cache_dir: Path) -> dict[str, str]:
     """Build the environment that keeps only mathlib's `.ltar` cache local.
 
-    CI secrets are explicitly stripped so that hopscotch and any lake build
-    subprocesses it spawns cannot read them from the environment.
+    Privilege-bearing CI secrets are stripped so that hopscotch and any
+    lake build subprocesses it spawns cannot read them.  ``GITHUB_TOKEN``
+    is intentionally preserved — hopscotch uses it for authenticated
+    GitHub API calls and strips it from each child process it spawns.
     """
 
     env = {k: v for k, v in os.environ.items() if k not in _CI_SECRETS}
