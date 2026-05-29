@@ -342,6 +342,11 @@ def build_result_record(
     }
     if cfg.mode == MODE_LKG:
         record["lkg_commit"] = cfg.lkg_commit or None
+    elif cfg.lkg_commit:
+        # Merge mode doesn't build against LKG, but build_matrix may attach
+        # the recorded last-known-good as the baseline behind the comment's
+        # "master builds with <name>" claim. Pass it through when present.
+        record["lkg_commit"] = cfg.lkg_commit
 
     # The literal token the user typed; only stored when it differs
     # from the canonical downstream name (i.e. the slug form was used).

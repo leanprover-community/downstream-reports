@@ -309,12 +309,14 @@ class TestBuildMatrixCLI:
         assert entry["rev_slug"] == "default"
         assert entry["lkg_commit"] == SHA_F
 
-    def test_merge_branch_entry_has_no_lkg_commit_field(self) -> None:
-        """A `--merge-branch` entry resolves without a `lkg_commit` field.
+    def test_merge_branch_entry_carries_baseline_lkg_commit(self) -> None:
+        """A `--merge-branch` entry attaches the recorded LKG as a baseline.
 
-        Merge mode builds against the PR's would-be-merged tree directly
-        and doesn't need the LKG anchor; the field's absence is the
-        validate step's signal to take the merge-mode code path.
+        Merge mode builds against the PR's would-be-merged tree directly,
+        so the LKG isn't a build anchor (the explicit `--mode merge` drives
+        the validate code path). But the snapshot's last-known-good is the
+        SHA behind the comment's "master builds with <name>" claim, so we
+        pass it through for the renderer to name and flag as possibly stale.
         """
         # Arrange
         snapshot = _write_snapshot(self.tmpdir)
@@ -323,6 +325,30 @@ class TestBuildMatrixCLI:
         rc = _run_main(
             inventory=self.inventory,
             names="FLT --merge-branch",
+            output=self.output,
+            snapshot_url=snapshot.as_uri(),
+        )
+
+        # Assert
+        assert rc == 0
+        entry = self._read_matrix()[0]
+        assert entry["mode"] == "merge"
+        assert entry["lkg_commit"] == SHA_F
+
+    def test_merge_branch_entry_without_recorded_lkg_omits_field(self) -> None:
+        """A merge entry whose downstream has no recorded LKG omits the field.
+
+        `newcomer` has `last_known_good_commit: null`, so there's no
+        baseline SHA to surface; the field stays absent and the renderer
+        falls back to a baseline-free phrasing.
+        """
+        # Arrange
+        snapshot = _write_snapshot(self.tmpdir)
+
+        # Act
+        rc = _run_main(
+            inventory=self.inventory,
+            names="newcomer --merge-branch",
             output=self.output,
             snapshot_url=snapshot.as_uri(),
         )

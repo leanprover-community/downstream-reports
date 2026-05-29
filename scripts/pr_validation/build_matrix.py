@@ -293,13 +293,20 @@ def main() -> int:
         # comment renderer turns this into a definitive "master is
         # currently broken for <name>" caveat.
         if snapshot is not None:
-            fkb = (
-                snapshot.get("downstreams", {})
-                .get(name, {})
-                .get("first_known_bad_commit")
-            )
+            entry = snapshot.get("downstreams", {}).get(name, {})
+            fkb = entry.get("first_known_bad_commit")
             if fkb:
                 item["fkb_commit"] = fkb
+            # Merge-mode entries surface the recorded last-known-good as an
+            # informational baseline: it's the SHA behind the comment's
+            # "master builds with <name>" claim, so naming it lets the
+            # renderer flag when that baseline may be stale. LKG mode set
+            # lkg_commit above (it's the commit actually built against), so
+            # only fill the gap for the other modes here.
+            if mode != _MODE_LKG and "lkg_commit" not in item:
+                lkg = entry.get("last_known_good_commit")
+                if lkg:
+                    item["lkg_commit"] = lkg
         include.append(item)
 
     args.output.write_text(json.dumps({"include": include}))
