@@ -188,6 +188,13 @@
       "dependency_name": "leanprover-community/mathlib",
       "enabled": true,
       "runs_on": ["ubuntu-latest"]
+    },
+    {
+      "name": "sum_product",
+      "repo": "mathlib-initiative/sum_product",
+      "default_branch": "main",
+      "dependency_name": "mathlib",
+      "enabled": true
     }
   ]
 }
