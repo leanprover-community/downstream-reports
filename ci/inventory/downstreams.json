@@ -195,6 +195,13 @@
       "default_branch": "main",
       "dependency_name": "mathlib",
       "enabled": true
+    },
+    {
+      "name": "HighlyAbundant",
+      "repo": "b-mehta/HighlyAbundant",
+      "default_branch": "master",
+      "dependency_name": "mathlib",
+      "enabled": true
     }
   ]
 }
