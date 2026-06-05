@@ -1057,3 +1057,80 @@ class TestRequestedName:
         assert "**✅ FLT builds against this PR rebased onto LKG**" in body
 
 
+# ---------------------------------------------------------------------------
+# collect_entries — artifact layout discovery
+# ---------------------------------------------------------------------------
+
+
+def _write_result_dir(parent: Path, dirname: str, **overrides) -> Path:
+    """Drop a ``result.json`` into ``parent/dirname`` and return the directory."""
+    import json
+
+    sub = parent / dirname
+    sub.mkdir(parents=True)
+    (sub / "result.json").write_text(json.dumps(_make_result(**overrides)))
+    return sub
+
+
+class TestCollectEntries:
+    """``collect_entries`` discovers result.json under both artifact layouts.
+
+    The validate matrix uploads one ``result-<name>-<slug>-<mode>`` artifact
+    per entry. ``download-artifact`` nests each artifact in its own
+    subdirectory *only when more than one matches the pattern*; a single
+    matched artifact is extracted flat into the download path. The report
+    job must read both layouts or a one-downstream dispatch posts no comment.
+    """
+
+    def test_nested_layout_collects_each_subdir(self, tmp_path: Path) -> None:
+        """Scenario: 2+ artifacts → per-artifact result-* subdirs are each read."""
+        # Arrange
+        _write_result_dir(tmp_path, "result-FLT-default-lkg", downstream="FLT")
+        _write_result_dir(tmp_path, "result-Toric-default-lkg", downstream="Toric")
+
+        # Act
+        entries = post_results.collect_entries(tmp_path, inventory={})
+
+        # Assert
+        assert {e["name"] for e in entries} == {"FLT", "Toric"}
+
+    def test_flattened_single_artifact_layout(self, tmp_path: Path) -> None:
+        """Scenario: a single artifact is extracted flat → result.json at the root is read."""
+        # Arrange — no result-* subdir; result.json sits directly in results/.
+        import json
+
+        (tmp_path / "result.json").write_text(
+            json.dumps(_make_result(downstream="FLT", mode="lkg"))
+        )
+        (tmp_path / "build.log").write_text("build output")
+
+        # Act
+        entries = post_results.collect_entries(tmp_path, inventory={})
+
+        # Assert
+        assert len(entries) == 1
+        assert entries[0]["name"] == "FLT"
+
+    def test_empty_results_dir_yields_no_entries(self, tmp_path: Path) -> None:
+        """Scenario: nothing downloaded → no entries (caller turns this into an error)."""
+        # Act
+        entries = post_results.collect_entries(tmp_path, inventory={})
+
+        # Assert
+        assert entries == []
+
+    def test_nested_subdir_without_result_json_is_skipped(
+        self, tmp_path: Path
+    ) -> None:
+        """Scenario: a result-* subdir missing its result.json is skipped, others still read."""
+        # Arrange
+        _write_result_dir(tmp_path, "result-FLT-default-lkg", downstream="FLT")
+        (tmp_path / "result-Broken-default-lkg").mkdir()
+
+        # Act
+        entries = post_results.collect_entries(tmp_path, inventory={})
+
+        # Assert
+        assert [e["name"] for e in entries] == ["FLT"]
+
+

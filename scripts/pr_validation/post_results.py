@@ -715,36 +715,60 @@ def _entry_sort_key(result: dict[str, Any]) -> tuple[str, str, str]:
     return (name, rev, mode)
 
 
+def _build_entry(
+    result_dir: Path, fallback_name: str, inventory: dict[str, dict[str, Any]]
+) -> dict[str, Any] | None:
+    """Parse one result directory into an entry, or ``None`` if it has no result.json."""
+    result_path = result_dir / "result.json"
+    if not result_path.exists():
+        print(
+            f"warning: missing result.json in {result_dir}; skipping",
+            file=sys.stderr,
+        )
+        return None
+    with result_path.open() as handle:
+        result = json.load(handle)
+
+    name = result.get("downstream") or fallback_name
+    meta = inventory.get(name, {})
+    log_tail = read_log_tail(result_dir / "build.log", PER_ENTRY_LOG_MAX)
+    return {
+        "name": name,
+        "repo": meta.get("repo", ""),
+        "default_branch": meta.get("default_branch", ""),
+        "result": result,
+        "log_tail": log_tail,
+    }
+
+
 def collect_entries(
     results_dir: Path, inventory: dict[str, dict[str, Any]]
 ) -> list[dict[str, Any]]:
-    """Walk the results dir, parse each ``result.json``, and assemble entries."""
-    entries: list[dict[str, Any]] = []
-    for sub in sorted(results_dir.iterdir()):
-        if not sub.is_dir() or not sub.name.startswith("result-"):
-            continue
-        result_path = sub / "result.json"
-        if not result_path.exists():
-            print(
-                f"warning: missing result.json in {sub}; skipping",
-                file=sys.stderr,
-            )
-            continue
-        with result_path.open() as handle:
-            result = json.load(handle)
+    """Walk the results dir, parse each ``result.json``, and assemble entries.
 
-        name = result.get("downstream") or sub.name[len("result-"):]
-        meta = inventory.get(name, {})
-        log_tail = read_log_tail(sub / "build.log", PER_ENTRY_LOG_MAX)
-        entries.append(
-            {
-                "name": name,
-                "repo": meta.get("repo", ""),
-                "default_branch": meta.get("default_branch", ""),
-                "result": result,
-                "log_tail": log_tail,
-            }
-        )
+    Each matrix entry's artifact normally arrives as its own
+    ``result-<name>-<slug>-<mode>/`` subdirectory. But ``download-artifact``
+    flattens a *single* matched artifact directly into the download path
+    (no per-artifact subdirectory), so a one-downstream dispatch leaves
+    ``result.json`` at the root of ``results_dir``. Handle both layouts.
+    """
+    subdirs = [
+        sub
+        for sub in sorted(results_dir.iterdir())
+        if sub.is_dir() and sub.name.startswith("result-")
+    ]
+
+    entries: list[dict[str, Any]] = []
+    if subdirs:
+        for sub in subdirs:
+            entry = _build_entry(sub, sub.name[len("result-"):], inventory)
+            if entry is not None:
+                entries.append(entry)
+    elif (results_dir / "result.json").exists():
+        # Flattened single-artifact layout (one-downstream dispatch).
+        entry = _build_entry(results_dir, results_dir.name, inventory)
+        if entry is not None:
+            entries.append(entry)
 
     entries.sort(key=lambda e: _entry_sort_key(e["result"]))
     return entries
