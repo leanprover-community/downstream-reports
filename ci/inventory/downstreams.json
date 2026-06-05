@@ -194,14 +194,16 @@
       "repo": "mathlib-initiative/sum_product",
       "default_branch": "main",
       "dependency_name": "mathlib",
-      "enabled": true
+      "enabled": true,
+      "warm_cache": true
     },
     {
       "name": "HighlyAbundant",
       "repo": "b-mehta/HighlyAbundant",
       "default_branch": "master",
       "dependency_name": "mathlib",
-      "enabled": true
+      "enabled": true,
+      "warm_cache": true
     }
   ]
 }
