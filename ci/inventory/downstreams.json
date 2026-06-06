@@ -202,6 +202,13 @@
       "default_branch": "master",
       "dependency_name": "mathlib",
       "enabled": true
+    },
+    {
+      "name": "LeanMachineLearning",
+      "repo": "LeanMachineLearning/LML",
+      "default_branch": "main",
+      "dependency_name": "mathlib",
+      "enabled": true
     }
   ]
 }
