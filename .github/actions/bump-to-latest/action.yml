@@ -24,7 +24,7 @@ inputs:
     description: 'Name of the dependency in the lakefile'
   hopscotch-version:
     required: false
-    default: 'v1.4.1'
+    default: 'v1.5.0'
     description: 'Hopscotch release tag to download'
   skip-build:
     required: false
@@ -473,10 +473,21 @@ runs:
     # ------------------------------------------------------------------
     # Step 7: Run hopscotch to bump and build.
     #
-    # Exit codes:
-    #   0 → bumped and built successfully (lakefile updated)
-    #   1 → build failed (lakefile left at original pin by --keep-last-good)
-    #   2+ → tool error (fail the step)
+    # Exit codes (process and results.json `exitCode` agree on 0/1):
+    #   0 → bumped successfully (lakefile + manifest updated; built too
+    #       unless skip-build)
+    #   1 → a stage failed (results.json `status = stopped`). The *only*
+    #       acceptable exit-1 is a first-known-bad bump (no --keep-last-good,
+    #       no skip-build) whose `failureStage` is "lake build" — the FKB
+    #       breaks the verify step by definition, so a built-out FKB tree is
+    #       what we want. A "lake update" failure (the bump step, e.g. a flaky
+    #       "failed to parse latest release tag") leaves the lakefile rewritten
+    #       but lake-manifest.json stale, so it must fail the step.
+    #   2+ → tool error, aborted before any state transition (fail the step).
+    #
+    # We classify on the documented `failureStage` enum from results.json
+    # (see hopscotch docs/results.schema.json, schemaVersion 1) rather than
+    # the bare exit code, which can't tell a build failure from a bump failure.
     # ------------------------------------------------------------------
     - name: Run hopscotch dep
       id: run-hopscotch
@@ -493,6 +504,9 @@ runs:
       run: |
         set +e
 
+        RESULTS_JSON="$RUNNER_TEMP/bump-results.json"
+        rm -f "$RESULTS_JSON"
+
         ARGS=(
           dep "$DEPENDENCY_NAME"
           --from "${TARGET_COMMIT}~1"
@@ -500,6 +514,7 @@ runs:
           --project-dir "$PROJECT_DIR"
           --scan-mode linear
           --allow-dirty-workspace
+          --results-json "$RESULTS_JSON"
         )
 
         # Only pass the flag if enabled
@@ -512,22 +527,40 @@ runs:
 
         set -e
 
+        # Read the documented failure stage hopscotch reported. Empty when the
+        # run succeeded or no results file was written (e.g. an early abort).
+        FAILURE_STAGE=""
+        if [ -f "$RESULTS_JSON" ]; then
+          FAILURE_STAGE=$(jq -r '.failureStage // empty' "$RESULTS_JSON" 2>/dev/null || true)
+        fi
+
         if [ "$EXIT_CODE" -eq 0 ]; then
           echo "hopscotch: bump succeeded."
           echo "updated=true" >> "$GITHUB_OUTPUT"
           echo "build_failed=false" >> "$GITHUB_OUTPUT"
 
+        elif [ "$EXIT_CODE" -eq 1 ] \
+            && [ "$KEEP_LAST_GOOD" != "true" ] \
+            && [ "$HOPSCOTCH_SKIP_BUILD" != "true" ] \
+            && [ "$FAILURE_STAGE" = "lake build" ]; then
+          # First-known-bad bump with a build: `lake update` succeeded and the
+          # verify step (`lake build`) failed — the expected outcome, since the
+          # FKB breaks the build by definition. The bumped tree (lakefile +
+          # manifest at the FKB) is what we want to commit.
+          echo "hopscotch: build failed but expected (FKB breaks the build)."
+          echo "updated=true" >> "$GITHUB_OUTPUT"
+          echo "build_failed=true" >> "$GITHUB_OUTPUT"
+
         elif [ "$EXIT_CODE" -eq 1 ]; then
-          if [ "$KEEP_LAST_GOOD" = "true" ]; then
-            echo "hopscotch: build failed with the LKG (this is unexpected)."
-            echo "updated=false" >> "$GITHUB_OUTPUT"
-            echo "build_failed=true" >> "$GITHUB_OUTPUT"
-            exit "$EXIT_CODE"
-          else
-            echo "hopscotch: build failed but expected (no keep-last-good)."
-            echo "updated=true" >> "$GITHUB_OUTPUT"
-            echo "build_failed=true" >> "$GITHUB_OUTPUT"
-          fi
+          # Any other stopped state is unexpected or leaves an inconsistent tree:
+          # a "lake update" failure (bump step — manifest never regenerated, so
+          # the lakefile and lake-manifest.json disagree), an LKG that failed to
+          # build, or a git-cleanliness stop. Fail so callers never commit a
+          # half-baked bump.
+          echo "hopscotch: stopped at stage '${FAILURE_STAGE:-unknown}' (exit 1) — not a committable bump."
+          echo "updated=false" >> "$GITHUB_OUTPUT"
+          echo "build_failed=false" >> "$GITHUB_OUTPUT"
+          exit "$EXIT_CODE"
 
         else
           echo "hopscotch: tool error (exit $EXIT_CODE)."

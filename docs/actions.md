@@ -311,7 +311,8 @@ configuration needed.
 | `downstream` | no | `${{ github.repository }}` | Downstream name key or repo slug (`owner/repo`). Auto-detected by presence of `/`. Defaults to the repository running this action. |
 | `project-dir` | no | `.` | Path to the downstream project root |
 | `dependency-name` | no | `mathlib` | Name of the dependency in the lakefile |
-| `hopscotch-version` | no | `v1.4.1` | Hopscotch release tag to download |
+| `hopscotch-version` | no | `v1.5.0` | Hopscotch release tag to download |
+| `skip-build` | no | `false` | Set to `true` to only run `lake update` (pin lakefile + manifest) and skip the build. `build-failed` is always `false`; the bump succeeds (`updated=true`) only when `lake update` succeeds — if `lake update` fails the step fails so callers don't commit a half-baked tree. Used by the FKB fix-PR path. |
 | `generate-description` | no | `true` | Set to `false` to skip GitHub API calls; `pr-title`, `bump-description`, and `commit-message` will be empty |
 | `query-type` | no | `last-known-good` | Which commit to bump to: `last-known-good`, `first-known-bad`, or `last-good-release` (semver tag, e.g. `v4.13.0`) |
 
@@ -322,9 +323,9 @@ configuration needed.
 | `rev` | The human-readable ref passed to hopscotch (tag name for `last-good-release`, SHA otherwise) |
 | `commit` | The resolved commit SHA |
 | `current-pin` | The commit the project was pinned to before this action ran |
-| `updated` | `"true"` if hopscotch successfully bumped the project |
+| `updated` | `"true"` if hopscotch produced a committable bump. The step **fails** instead of returning `updated=false` whenever hopscotch stops at a stage that leaves nothing committable — e.g. a `lake update` (bump-step) failure, which rewrites the lakefile but leaves `lake-manifest.json` stale. |
 | `skipped` | `"true"` if the project was already at the target commit (or target is empty) |
-| `build-failed` | `"true"` if hopscotch ran but the build failed |
+| `build-failed` | `"true"` only for the expected case: a `first-known-bad` bump whose `lake build` (verify) stage failed after `lake update` succeeded (`failureStage = "lake build"` in hopscotch's `results.json`). Any other failure (including a `lake update` failure) fails the step rather than returning here. |
 | `pr-title` | Suggested PR title (empty when skipped or `generate-description: false`) |
 | `bump-description` | Markdown paragraph describing the bump — new commit + previous pin, with subjects and dates. Pass to `open-bump-pr`'s `message` input. Empty when skipped or `generate-description: false`. |
 | `commit-message` | Suggested git commit message (empty when skipped or `generate-description: false`) |
