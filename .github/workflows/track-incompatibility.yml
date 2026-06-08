@@ -56,13 +56,6 @@ on:
         default: ''
         required: false
         type: string
-      upstream:
-        description: >
-          Upstream repository slug used to fetch commit metadata for the
-          FKB/LKG commits.  Must match the upstream field in the snapshot.
-        default: 'leanprover-community/mathlib4'
-        required: false
-        type: string
       label:
         description: >
           Label used to identify the persistent tracking issue.  Created if
@@ -194,7 +187,6 @@ jobs:
         uses: leanprover-community/downstream-reports/.github/actions/track-incompatibility@main
         with:
           downstream:         ${{ inputs.downstream == '' && github.repository || inputs.downstream }}
-          upstream:           ${{ inputs.upstream }}
           label:              ${{ inputs.label }}
           title:              ${{ inputs.title }}
           close-on-resolve:   ${{ inputs.close-on-resolve }}

@@ -290,6 +290,20 @@ Also fetches human-readable commit metadata from the GitHub API to generate a
 suggested PR title, body snippet, and git commit message — pass
 `generate-description: 'false'` to skip these API calls.
 
+**Backwards-move guardrail.** Because the published snapshot can lag a
+downstream's own manifest, the recorded target commit may be *older* than the
+project's current pin (e.g. the project already advanced past it). Before
+building, the action queries the upstream repo's compare API and **fails** if
+the target is `behind` the current pin (an ancestor) or has `diverged` from it,
+rather than rewinding the dependency. Only a forward move (the target is a
+descendant of the current pin) proceeds. A transient/inconclusive compare API
+call is a warning, not a hard stop. This protects every consumer of
+`bump-to-latest`, including the fix-PR side of `track-incompatibility`.
+
+The upstream repo for that compare call (and for the commit-description
+lookups) is taken from the snapshot's top-level `upstream` field — no
+configuration needed.
+
 ### Inputs
 
 | Input | Required | Default | Description |
@@ -388,7 +402,6 @@ removing the job.
 | Input | Required | Default | Description |
 |-------|----------|---------|-------------|
 | `downstream` | no | `${{ github.repository }}` | Downstream name key or repo slug (`owner/repo`). |
-| `upstream` | no | `leanprover-community/mathlib4` | Upstream repo slug for commit metadata lookups. |
 | `label` | no | `dependency-incompatibility` | Label identifying the tracking issue. Created if missing. |
 | `title` | no | auto | Full issue title; auto-generated when empty. |
 | `close-on-resolve` | no | `true` | Close the tracking issue with a resolution comment when FKB clears. |
@@ -503,6 +516,7 @@ downstream repo can use it with no inputs at all.
 | `downstream-name` | The downstream name key as registered in the snapshot |
 | `repo` | GitHub repo slug (`owner/repo`) |
 | `dependency-name` | The dependency name field from the snapshot entry |
+| `upstream` | The upstream repo slug the snapshot tracks (top-level `upstream` field; empty on snapshots predating it) |
 
 ---
 
