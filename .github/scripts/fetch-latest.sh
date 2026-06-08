@@ -12,9 +12,11 @@
 #                    first-known-bad            — first_known_bad_commit
 #
 # Writes to GITHUB_OUTPUT:
-#   rev, commit, downstream_name, repo, dependency_name
-#   rev    — the human-readable ref (tag name for last-good-release, SHA otherwise)
-#   commit — commit SHA (resolved from the tag for last-good-release)
+#   rev, commit, downstream_name, repo, dependency_name, upstream
+#   rev      — the human-readable ref (tag name for last-good-release, SHA otherwise)
+#   commit   — commit SHA (resolved from the tag for last-good-release)
+#   upstream — the upstream repo slug the snapshot tracks (top-level `.upstream`),
+#              empty if the snapshot predates the field
 #
 # Exits non-zero with a diagnostic message if the downstream is not found.
 
@@ -68,6 +70,11 @@ DS_NAME=$(printf '%s' "$ENTRY" | jq -r '.name')
 REPO=$(printf '%s' "$ENTRY"    | jq -r '.repo')
 DEP_NAME=$(printf '%s' "$ENTRY" | jq -r '.dependency_name')
 
+# Upstream repo slug is a top-level snapshot field (shared by all downstreams),
+# not part of the per-downstream entry. `// empty` keeps it blank on older
+# snapshots that predate the field so consumers can fall back gracefully.
+UPSTREAM=$(jq -r '.upstream // empty' /tmp/downstream-snapshot.json)
+
 # Select the commit field based on QUERY_TYPE.
 RESOLVED_TYPE="${QUERY_TYPE:-last-known-good}"
 case "$RESOLVED_TYPE" in
@@ -88,6 +95,7 @@ esac
 echo "Downstream:   $DS_NAME"
 echo "Repo:         $REPO"
 echo "Dependency:   $DEP_NAME"
+echo "Upstream:     ${UPSTREAM:-<none>}"
 echo "Commit type:  $RESOLVED_TYPE"
 echo "$COMMIT_LABEL: ${TARGET_COMMIT:-<none>}"
 
@@ -96,3 +104,4 @@ echo "commit=$TARGET_SHA"             >> "$GITHUB_OUTPUT"
 echo "downstream_name=$DS_NAME"       >> "$GITHUB_OUTPUT"
 echo "repo=$REPO"                     >> "$GITHUB_OUTPUT"
 echo "dependency_name=$DEP_NAME"      >> "$GITHUB_OUTPUT"
+echo "upstream=$UPSTREAM"             >> "$GITHUB_OUTPUT"

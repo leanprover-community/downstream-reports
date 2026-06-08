@@ -41,6 +41,9 @@ outputs:
   dependency-name:
     description: 'The dependency name field from the snapshot entry'
     value: ${{ steps.lookup.outputs.dependency_name }}
+  upstream:
+    description: 'The upstream repo slug the snapshot tracks (top-level `upstream` field; empty on snapshots predating it)'
+    value: ${{ steps.lookup.outputs.upstream }}
 
 runs:
   using: 'composite'

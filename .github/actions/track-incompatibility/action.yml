@@ -25,12 +25,6 @@ inputs:
       "physlib") or a GitHub repo slug (e.g. "leanprover-community/physlib").
       Values containing "/" are treated as repo slugs; otherwise as name
       keys.  Defaults to the repository running this action.
-  upstream:
-    required: false
-    default: 'leanprover-community/mathlib4'
-    description: >
-      Upstream repository slug used to fetch commit metadata for the FKB/LKG
-      commits.  Must match the upstream field in the published snapshot.
   label:
     required: false
     default: 'dependency-incompatibility'
@@ -205,6 +199,29 @@ runs:
       run: bash "${{ github.action_path }}/../../scripts/fetch-run-latest.sh"
 
     # ------------------------------------------------------------------
+    # Step 3.5: Resolve the upstream repo slug used by every commit-metadata
+    # lookup below. The snapshot publishes the authoritative `upstream`, so
+    # there is nothing to configure; the hardcoded fallback is only reached on
+    # a snapshot predating the field. Unconditional so both the resolved and
+    # active-incompatibility branches can reference it.
+    # ------------------------------------------------------------------
+    - name: Resolve upstream repo
+      id: resolve-upstream
+      shell: bash
+      env:
+        SNAPSHOT_UPSTREAM: ${{ steps.fkb.outputs.upstream }}
+      run: |
+        set -euo pipefail
+        if [ -n "$SNAPSHOT_UPSTREAM" ]; then
+          EFFECTIVE="$SNAPSHOT_UPSTREAM"
+          echo "Using upstream published in the snapshot: $EFFECTIVE"
+        else
+          EFFECTIVE="leanprover-community/mathlib4"
+          echo "::warning::Snapshot has no 'upstream' field; falling back to $EFFECTIVE."
+        fi
+        echo "effective=$EFFECTIVE" >> "$GITHUB_OUTPUT"
+
+    # ------------------------------------------------------------------
     # Step 4: Ensure the tracking issue label exists in the consuming repo.
     # Skip when the incompatibility is resolved AND close-on-resolve is
     # false (no issue will be touched, so no label needed), or when
@@ -264,7 +281,7 @@ runs:
         CLOSE_ON_RESOLVE: ${{ inputs.close-on-resolve }}
         LKG_COMMIT: ${{ steps.lkg.outputs.commit }}
         RUN_URL: ${{ steps.run.outputs.run_url }}
-        UPSTREAM: ${{ inputs.upstream }}
+        UPSTREAM: ${{ steps.resolve-upstream.outputs.effective }}
       run: |
         set -euo pipefail
 
@@ -331,7 +348,7 @@ runs:
       shell: bash
       env:
         GH_TOKEN: ${{ inputs.issue-token }}
-        UPSTREAM: ${{ inputs.upstream }}
+        UPSTREAM: ${{ steps.resolve-upstream.outputs.effective }}
         FKB_COMMIT: ${{ steps.fkb.outputs.commit }}
         LKG_COMMIT: ${{ steps.lkg.outputs.commit }}
         DS_REPO: ${{ steps.fkb.outputs.repo }}
@@ -399,7 +416,7 @@ runs:
       if: inputs.open-issue == 'true' && steps.fkb.outputs.commit != ''
       shell: bash
       env:
-        UPSTREAM: ${{ inputs.upstream }}
+        UPSTREAM: ${{ steps.resolve-upstream.outputs.effective }}
         DOWNSTREAM: ${{ inputs.downstream }}
         CUSTOM_TITLE: ${{ inputs.title }}
         FKB_COMMIT: ${{ steps.fkb.outputs.commit }}
@@ -575,7 +592,7 @@ runs:
         GH_REPO: ${{ github.repository }}
         PR_LABEL: ${{ inputs.pr-label }}
         LKG_COMMIT: ${{ steps.lkg.outputs.commit }}
-        UPSTREAM: ${{ inputs.upstream }}
+        UPSTREAM: ${{ steps.resolve-upstream.outputs.effective }}
       run: |
         set -euo pipefail
 
@@ -638,7 +655,7 @@ runs:
         FKB_COMMIT: ${{ steps.fkb.outputs.commit }}
         DEPENDENCY_NAME: ${{ inputs.dependency-name }}
         BRANCH_PREFIX: ${{ inputs.branch-prefix }}
-        UPSTREAM: ${{ inputs.upstream }}
+        UPSTREAM: ${{ steps.resolve-upstream.outputs.effective }}
       run: |
         set -euo pipefail
 

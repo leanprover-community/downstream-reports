@@ -282,6 +282,95 @@ runs:
         fi
 
     # ------------------------------------------------------------------
+    # Step 3.4: Resolve the upstream repo slug used by the guardrail and the
+    # commit-description lookups. The snapshot publishes the authoritative
+    # `upstream` — the repo the recorded commits actually live in — so there
+    # is nothing to configure. The hardcoded fallback is only reached on a
+    # snapshot that predates the `upstream` field.
+    # ------------------------------------------------------------------
+    - name: Resolve upstream repo
+      id: resolve-upstream
+      if: steps.compare.outputs.skipped != 'true'
+      shell: bash
+      env:
+        SNAPSHOT_UPSTREAM: ${{ steps.fetch-snapshot.outputs.upstream }}
+      run: |
+        set -euo pipefail
+        if [ -n "$SNAPSHOT_UPSTREAM" ]; then
+          EFFECTIVE="$SNAPSHOT_UPSTREAM"
+          echo "Using upstream published in the snapshot: $EFFECTIVE"
+        else
+          EFFECTIVE="leanprover-community/mathlib4"
+          echo "::warning::Snapshot has no 'upstream' field; falling back to $EFFECTIVE."
+        fi
+        echo "effective=$EFFECTIVE" >> "$GITHUB_OUTPUT"
+
+    # ------------------------------------------------------------------
+    # Step 3.5: Guardrail — refuse to move the pin backwards.
+    #
+    # The published snapshot can lag a downstream's own manifest: the
+    # project may have already advanced its dependency pin past the commit
+    # recorded in the snapshot. Bumping to the snapshot's target in that
+    # case would rewind the pin to an older upstream commit, which is never
+    # what we want. Ask the upstream repo's compare API how the target
+    # relates to the current pin and hard-fail unless it moves forward:
+    #
+    #   status=ahead     → target is a descendant of the pin (forward) — OK
+    #   status=identical → same commit (compare step would have skipped)
+    #   status=behind    → target is an ancestor of the pin (backward) — FAIL
+    #   status=diverged  → neither is an ancestor of the other — FAIL
+    #
+    # A failed or inconclusive API call is a warning, not a hard stop: the
+    # guardrail is a safety net, and a transient API error shouldn't block
+    # an otherwise-legitimate bump (a genuinely-missing target commit is
+    # caught by hopscotch itself further down).
+    # ------------------------------------------------------------------
+    - name: Guard against a backwards pin move
+      if: steps.compare.outputs.skipped != 'true'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        UPSTREAM: ${{ steps.resolve-upstream.outputs.effective }}
+        CURRENT_PIN: ${{ steps.read-manifest.outputs.current_pin }}
+        TARGET_COMMIT: ${{ steps.fetch-snapshot.outputs.commit }}
+        TARGET_REV: ${{ steps.fetch-snapshot.outputs.rev }}
+      run: |
+        set -euo pipefail
+
+        echo "Checking that target ${TARGET_REV} (${TARGET_COMMIT}) is not behind the current pin ${CURRENT_PIN} in ${UPSTREAM}..."
+
+        api_err=$(mktemp)
+        if status=$(gh api \
+            "repos/${UPSTREAM}/compare/${CURRENT_PIN}...${TARGET_COMMIT}" \
+            --jq '.status' 2>"$api_err"); then
+          rm -f "$api_err"
+        else
+          err=$(cat "$api_err" 2>/dev/null || true)
+          rm -f "$api_err"
+          echo "::warning::Could not compare ${CURRENT_PIN}...${TARGET_COMMIT} in ${UPSTREAM}: ${err}"
+          echo "::warning::Skipping the backwards-move guardrail for this run; proceeding with the bump."
+          exit 0
+        fi
+
+        case "$status" in
+          ahead|identical)
+            echo "Target is '${status}' relative to the current pin — safe to proceed."
+            ;;
+          behind)
+            echo "::error::Refusing to bump: target ${TARGET_REV} (${TARGET_COMMIT}) is BEHIND the current pin ${CURRENT_PIN} in ${UPSTREAM}."
+            echo "::error::The published snapshot is older than this project's current dependency pin; bumping would move the pin backwards. No change has been made."
+            exit 1
+            ;;
+          diverged)
+            echo "::error::Refusing to bump: target ${TARGET_REV} (${TARGET_COMMIT}) and the current pin ${CURRENT_PIN} have DIVERGED in ${UPSTREAM} (neither is an ancestor of the other). No change has been made."
+            exit 1
+            ;;
+          *)
+            echo "::warning::Unexpected compare status '${status}' for ${CURRENT_PIN}...${TARGET_COMMIT} in ${UPSTREAM}; proceeding with the bump."
+            ;;
+        esac
+
+    # ------------------------------------------------------------------
     # Step 4: Fetch one-line commit descriptions for the target commit and
     # the current pin, and compose the PR title, body snippet, and git
     # commit message. Runs whenever a bump is needed; outputs are empty
@@ -296,7 +385,7 @@ runs:
         TARGET_COMMIT: ${{ steps.fetch-snapshot.outputs.rev }}
         CURRENT_PIN: ${{ steps.read-manifest.outputs.current_pin }}
         DEPENDENCY_NAME: ${{ inputs.dependency-name }}
-        DEPENDENCY_REPO: leanprover-community/mathlib4
+        DEPENDENCY_REPO: ${{ steps.resolve-upstream.outputs.effective }}
       run: |
         set -euo pipefail
 
