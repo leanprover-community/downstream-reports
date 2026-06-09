@@ -169,7 +169,15 @@ jobs:
     # Runner labels come from `runs_on` on the matrix entry, sourced from
     # the inventory (default `[self-hosted, pr]`).  Downstreams whose build
     # needs a stock image override with `runs_on: ["ubuntu-latest"]`.
-    if: needs.plan.outputs.has_downstreams == 'true'
+    #
+    # `!cancelled()` (rather than the implicit `success()`) is deliberate: the
+    # `select` matrix has `fail-fast: false`, but a failure in *any* select leg
+    # still marks the whole `select` job as failed, which under `success()`
+    # would skip the *entire* probe matrix.  We instead let every probe leg run
+    # and download its own `selection-<name>` artifact; a leg whose select
+    # failed simply fails at download (fail-fast: false keeps the rest going),
+    # so one downstream's transient blip costs one probe, not all of them.
+    if: ${{ !cancelled() && needs.plan.outputs.has_downstreams == 'true' }}
     name: "probe: ${{ matrix.name }}"
     needs:
       - plan

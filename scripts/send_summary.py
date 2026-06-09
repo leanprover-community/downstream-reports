@@ -62,11 +62,10 @@ def main() -> int:
 
     # Lazy import — avoid hard dependency on sqlalchemy when running tests
     # or in environments that only need the dry-run sender.
-    from storage import latest_regression_run_id, load_run_for_site
+    from storage import create_sql_engine, latest_regression_run_id, load_run_for_site
 
     try:
-        import sqlalchemy as sa
-        engine = sa.create_engine(args.dsn)
+        engine = create_sql_engine(args.dsn)
     except Exception as exc:
         print(f"Failed to connect to database: {exc}", file=sys.stderr)
         return 0
