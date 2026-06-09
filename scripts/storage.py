@@ -41,9 +41,12 @@ from __future__ import annotations
 
 import json
 import os
+import random
+import time
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Iterable, Protocol, runtime_checkable
+from typing import Any, Iterable, Iterator, Protocol, runtime_checkable
 
 
 # ---------------------------------------------------------------------------
@@ -713,6 +716,75 @@ def _parse_dt(value: str) -> Any:
     return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(timezone.utc)
 
 
+# ---------------------------------------------------------------------------
+# Resilient connection handling
+# ---------------------------------------------------------------------------
+#
+# Our production database is Neon (serverless Postgres).  When its compute is
+# cold or mid-scale, the pooler occasionally refuses or drops a connection; the
+# failure surfaces as a SQLAlchemy ``OperationalError`` wrapping a psycopg2
+# "connection timed out".  These blips clear on a retry within a few seconds.
+# Without a connect timeout the OS waits out the full TCP timeout (minutes), so
+# a single blip can burn a whole job — and because the regression workflow fans
+# out ~30 select legs that all dial the pooler on the same cron tick, the burst
+# itself can provoke a cold-start timeout.  We fail fast, then retry with
+# exponential backoff and full jitter to ride out the blip and spread the herd.
+
+# psycopg2 honours connect_timeout (seconds); keep it short so a dead endpoint
+# fails fast enough to retry rather than hanging on the OS TCP timeout.
+_CONNECT_TIMEOUT_SECONDS = 10
+
+_DEFAULT_CONNECT_ATTEMPTS = 4
+_DEFAULT_CONNECT_BASE_DELAY = 1.0
+_DEFAULT_CONNECT_MAX_DELAY = 8.0
+
+
+def create_sql_engine(dsn: str) -> Any:
+    """Create a SQLAlchemy engine hardened against transient endpoint blips.
+
+    ``pool_pre_ping`` discards a stale pooled connection and transparently
+    reconnects on checkout; ``connect_timeout`` (Postgres only) bounds how long
+    a single connection attempt may hang.  Retry-on-connect is layered on top by
+    ``connect_with_retry`` / ``SqlBackend``.
+    """
+    from sqlalchemy import create_engine
+
+    connect_args: dict[str, Any] = {}
+    if dsn.startswith("postgres"):
+        connect_args["connect_timeout"] = _CONNECT_TIMEOUT_SECONDS
+    return create_engine(dsn, pool_pre_ping=True, connect_args=connect_args)
+
+
+def connect_with_retry(
+    engine: Any,
+    *,
+    attempts: int = _DEFAULT_CONNECT_ATTEMPTS,
+    base_delay: float = _DEFAULT_CONNECT_BASE_DELAY,
+    max_delay: float = _DEFAULT_CONNECT_MAX_DELAY,
+    sleep: Any = time.sleep,
+    rng: Any = random.random,
+) -> Any:
+    """Acquire a live connection from *engine*, retrying transient failures.
+
+    Retries only ``OperationalError`` (connection-level blips); any other error
+    is a genuine fault and is re-raised immediately.  Backoff is exponential
+    with full jitter: ``random() * min(max_delay, base_delay * 2**attempt)``.
+    The final attempt's exception is re-raised so callers see the real cause.
+    """
+    if not _SA_AVAILABLE:
+        return engine.connect()
+    from sqlalchemy.exc import OperationalError
+
+    for attempt in range(attempts):
+        try:
+            return engine.connect()
+        except OperationalError:
+            if attempt == attempts - 1:
+                raise
+            delay = min(max_delay, base_delay * (2 ** attempt))
+            sleep(delay * rng())
+
+
 class SqlBackend:
     """Storage backend backed by a SQL database via SQLAlchemy Core.
 
@@ -722,17 +794,46 @@ class SqlBackend:
 
     Usage::
 
-        from sqlalchemy import create_engine
-        from scripts.storage import SqlBackend
+        from scripts.storage import SqlBackend, create_sql_engine
 
-        engine = create_engine("postgresql://user:pass@host/dbname")
+        engine = create_sql_engine("postgresql://user:pass@host/dbname")
         backend = SqlBackend(engine)
+
+    Prefer ``create_sql_engine`` over a bare ``create_engine`` so the engine is
+    hardened against transient endpoint blips (see ``connect_with_retry``).
     """
 
     def __init__(self, engine: Any) -> None:
         if not _SA_AVAILABLE:
             raise ImportError("sqlalchemy is required; pip install sqlalchemy")
         self._engine = engine
+
+    # ------------------------------------------------------------------
+    # Connection helpers
+    # ------------------------------------------------------------------
+    #
+    # Every read/write below goes through these so transient connection blips
+    # against the production endpoint are retried rather than failing the job.
+    # See ``connect_with_retry`` for the rationale.
+
+    def _connect(self) -> Any:
+        """Open a read connection, retrying transient connection failures."""
+        return connect_with_retry(self._engine)
+
+    @contextmanager
+    def _begin(self) -> Iterator[Any]:
+        """Open a transactional connection, retrying transient connection failures.
+
+        Mirrors ``engine.begin()``: commits on clean exit, rolls back on error.
+        Only the initial connect is retried — work inside the transaction is
+        not replayed.
+        """
+        conn = connect_with_retry(self._engine)
+        try:
+            with conn.begin():
+                yield conn
+        finally:
+            conn.close()
 
     # ------------------------------------------------------------------
     # Dialect-level helpers
@@ -778,7 +879,7 @@ class SqlBackend:
             t.c.pinned_commit, t.c.downstream_commit,
             t.c.last_good_release, t.c.last_good_release_commit,
         ).where(t.c.workflow == workflow, t.c.upstream == upstream)
-        with self._engine.connect() as conn:
+        with self._connect() as conn:
             rows = conn.execute(stmt).fetchall()
         return {
             row[0]: DownstreamStatusRecord(
@@ -817,7 +918,7 @@ class SqlBackend:
             if starts:
                 started_dt = min(starts)
 
-        with self._engine.begin() as conn:
+        with self._begin() as conn:
             self._insert_ignore(conn, _sa_run, {
                 "run_id": run_id,
                 "workflow": workflow,
@@ -903,7 +1004,7 @@ class SqlBackend:
             )
             .distinct()
         )
-        with self._engine.connect() as conn:
+        with self._connect() as conn:
             rows = conn.execute(stmt).fetchall()
         return {(row[0], row[1]) for row in rows}
 
@@ -971,7 +1072,7 @@ class SqlBackend:
             .where(ranked.c.rn == 1)
         )
 
-        with self._engine.connect() as conn:
+        with self._connect() as conn:
             rows = conn.execute(stmt).fetchall()
 
         result: dict[tuple[str, str], dict[str, Any]] = {}
@@ -992,7 +1093,7 @@ class SqlBackend:
     def load_known_warm_shas(self, upstream: str) -> set[str]:
         t = _sa_cache_warmth
         stmt = sa_select(t.c.sha).where(t.c.upstream == upstream)
-        with self._engine.connect() as conn:
+        with self._connect() as conn:
             return {row[0] for row in conn.execute(stmt).fetchall()}
 
     def record_warm_shas(self, upstream: str, shas: Iterable[str]) -> None:
@@ -1002,7 +1103,7 @@ class SqlBackend:
         if not deduped:
             return
         warmed_at = datetime.now(timezone.utc)
-        with self._engine.begin() as conn:
+        with self._begin() as conn:
             for sha in deduped:
                 self._upsert(
                     conn,
@@ -1019,7 +1120,7 @@ class SqlBackend:
         stmt = sa_select(
             t.c.downstream, t.c.observed_pin, t.c.dispatched_at, t.c.run_url,
         ).where(t.c.upstream == upstream)
-        with self._engine.connect() as conn:
+        with self._connect() as conn:
             rows = conn.execute(stmt).fetchall()
         result: dict[str, ManifestWatcherLedgerRow] = {}
         for row in rows:
@@ -1042,7 +1143,7 @@ class SqlBackend:
     ) -> None:
         if not rows:
             return
-        with self._engine.begin() as conn:
+        with self._begin() as conn:
             for row in rows:
                 self._upsert(
                     conn,
@@ -1074,7 +1175,7 @@ def latest_regression_run_id(engine: Any) -> str | None:
         .order_by(_sa_run.c.reported_at.desc())
         .limit(1)
     )
-    with engine.connect() as conn:
+    with connect_with_retry(engine) as conn:
         return conn.execute(stmt).scalar()
 
 
@@ -1141,7 +1242,7 @@ def load_latest_run_per_downstream(
         )
     )
 
-    with engine.connect() as conn:
+    with connect_with_retry(engine) as conn:
         rows = conn.execute(stmt).fetchall()
 
     result: dict[str, LatestRunRecord] = {}
@@ -1182,7 +1283,7 @@ def load_run_for_site(engine: Any, run_id: str) -> tuple[dict, list[dict]]:
     if not _SA_AVAILABLE:
         raise ImportError("sqlalchemy is required; pip install sqlalchemy")
 
-    with engine.connect() as conn:
+    with connect_with_retry(engine) as conn:
         run_row = conn.execute(
             sa_select(
                 _sa_run.c.run_id,
@@ -1408,8 +1509,7 @@ def create_backend(
         dsn = dsn or os.environ.get("POSTGRES_DSN")
         if not dsn:
             raise SystemExit("--dsn or POSTGRES_DSN environment variable is required when --backend=sql")
-        from sqlalchemy import create_engine
-        return SqlBackend(create_engine(dsn))
+        return SqlBackend(create_sql_engine(dsn))
     if not state_root:
         raise SystemExit("--state-root is required when --backend=filesystem")
     return FilesystemBackend(state_root)

@@ -98,11 +98,9 @@ def _fetch_source_run(dsn: str | None) -> dict[str, str] | None:
     if not dsn:
         return None
     try:
-        from sqlalchemy import create_engine  # type: ignore[import]
+        from scripts.storage import create_sql_engine, latest_regression_run_id
 
-        from scripts.storage import latest_regression_run_id
-
-        engine = create_engine(dsn)
+        engine = create_sql_engine(dsn)
         run_id = latest_regression_run_id(engine)
         if not run_id:
             return None

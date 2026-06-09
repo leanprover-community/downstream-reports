@@ -48,10 +48,13 @@ from scripts.storage import (
     DownstreamStatusRecord,
     FilesystemBackend,
     RunResultRecord,
+    connect_with_retry,
     create_backend,
+    create_sql_engine,
     result_to_row,
 )
 import pytest
+from sqlalchemy.exc import OperationalError
 
 
 # ----------------------------------------------------------------------
@@ -231,6 +234,179 @@ class TestCreateBackendFactory:
             # Restore so subsequent tests see the original environment.
             if old_dsn is not None:
                 os.environ["POSTGRES_DSN"] = old_dsn
+
+
+# ----------------------------------------------------------------------
+# Resilient connection handling — guards against transient Neon endpoint
+# blips wiping out a whole select fan-out.  ``connect_with_retry`` is the
+# primitive every SqlBackend read/write routes through; ``create_sql_engine``
+# is the hardened engine factory.
+# ----------------------------------------------------------------------
+
+
+class _FlakyEngine:
+    """Fake engine whose ``connect()`` fails a fixed number of times.
+
+    Records how many times ``connect()`` was called so a test can assert the
+    retry loop stopped as soon as a live connection was obtained.
+    """
+
+    def __init__(self, *, fail_times: int, exc: Exception, ok: object = "LIVE_CONN") -> None:
+        self._fail_times = fail_times
+        self._exc = exc
+        self._ok = ok
+        self.calls = 0
+
+    def connect(self) -> object:
+        self.calls += 1
+        if self.calls <= self._fail_times:
+            raise self._exc
+        return self._ok
+
+
+def _operational_error() -> OperationalError:
+    """Build an OperationalError shaped like a psycopg2 connection timeout."""
+    return OperationalError("SELECT 1", {}, Exception("connection timed out"))
+
+
+class TestConnectWithRetry:
+    """Tests for ``connect_with_retry`` — the transient-blip retry primitive."""
+
+    def test_returns_immediately_when_first_connect_succeeds(self) -> None:
+        """
+        The happy path must not sleep or retry: a healthy endpoint pays no
+        latency tax.  A live connection on the first attempt returns straight
+        through with zero backoff sleeps.
+        """
+        # Arrange
+        engine = _FlakyEngine(fail_times=0, exc=_operational_error())
+        sleeps: list[float] = []
+
+        # Act
+        conn = connect_with_retry(engine, sleep=sleeps.append, rng=lambda: 1.0)
+
+        # Assert
+        assert conn == "LIVE_CONN"
+        assert engine.calls == 1
+        assert sleeps == [], "the happy path must not back off"
+
+    def test_retries_operational_error_then_succeeds(self) -> None:
+        """
+        A Neon connection timeout that clears on a later attempt is exactly the
+        failure this primitive exists for: two blips, then success, must yield
+        a live connection after backing off between attempts (one sleep per
+        retry, never after the final success).
+        """
+        # Arrange
+        engine = _FlakyEngine(fail_times=2, exc=_operational_error())
+        sleeps: list[float] = []
+
+        # Act — rng pinned to 1.0 so full-jitter delay equals the cap and the
+        # exponential schedule is observable.
+        conn = connect_with_retry(
+            engine,
+            attempts=4,
+            base_delay=1.0,
+            max_delay=8.0,
+            sleep=sleeps.append,
+            rng=lambda: 1.0,
+        )
+
+        # Assert
+        assert conn == "LIVE_CONN"
+        assert engine.calls == 3, "two failures plus the successful third attempt"
+        assert sleeps == [1.0, 2.0], "exponential backoff: 1*2**0, then 1*2**1"
+
+    def test_reraises_after_exhausting_attempts(self) -> None:
+        """
+        A sticky outage (every attempt times out) must surface the real
+        OperationalError after the last attempt — never a generic or swallowed
+        error — so the failing job log names the true cause.
+        """
+        # Arrange
+        exc = _operational_error()
+        engine = _FlakyEngine(fail_times=99, exc=exc)
+        sleeps: list[float] = []
+
+        # Act / Assert
+        with pytest.raises(OperationalError) as caught:
+            connect_with_retry(engine, attempts=3, sleep=sleeps.append, rng=lambda: 1.0)
+        assert caught.value is exc
+        assert engine.calls == 3, "exactly `attempts` connection attempts, no more"
+        assert len(sleeps) == 2, "backs off between attempts but not after the last"
+
+    def test_does_not_retry_non_operational_errors(self) -> None:
+        """
+        Only connection-level blips are transient.  A programming error (here a
+        ValueError) is a genuine fault — retrying would just delay the
+        traceback, so it must propagate on the first attempt with no backoff.
+        """
+        # Arrange
+        engine = _FlakyEngine(fail_times=99, exc=ValueError("bad SQL"))
+        sleeps: list[float] = []
+
+        # Act / Assert
+        with pytest.raises(ValueError):
+            connect_with_retry(engine, attempts=4, sleep=sleeps.append, rng=lambda: 1.0)
+        assert engine.calls == 1, "non-transient errors must not be retried"
+        assert sleeps == []
+
+
+class TestCreateSqlEngine:
+    """Tests for ``create_sql_engine`` — the hardened engine factory."""
+
+    def test_postgres_dsn_sets_fast_connect_timeout_and_pre_ping(self, monkeypatch) -> None:
+        """
+        Production runs against Postgres (Neon).  Without a connect timeout a
+        dead endpoint hangs on the OS TCP timeout (minutes); with pre-ping a
+        stale pooled connection silently reconnects.  Both must be wired in for
+        the Postgres dialect.
+        """
+        # Arrange — capture the kwargs handed to SQLAlchemy without opening a
+        # real connection.
+        captured: dict[str, object] = {}
+
+        def fake_create_engine(dsn: str, **kwargs: object) -> str:
+            captured["dsn"] = dsn
+            captured.update(kwargs)
+            return "ENGINE"
+
+        import sqlalchemy
+
+        monkeypatch.setattr(sqlalchemy, "create_engine", fake_create_engine)
+
+        # Act
+        engine = create_sql_engine("postgresql://u:p@host/db")
+
+        # Assert
+        assert engine == "ENGINE"
+        assert captured["pool_pre_ping"] is True
+        assert captured["connect_args"] == {"connect_timeout": 10}
+
+    def test_non_postgres_dsn_omits_connect_timeout(self, monkeypatch) -> None:
+        """
+        ``connect_timeout`` is a psycopg2 keyword; passing it to a non-Postgres
+        driver (e.g. the SQLite engine the test suite uses) would error.  For
+        those DSNs the factory still enables pre-ping but leaves connect_args
+        empty.
+        """
+        # Arrange
+        captured: dict[str, object] = {}
+
+        def fake_create_engine(dsn: str, **kwargs: object) -> str:
+            captured.update(kwargs)
+            return "ENGINE"
+
+        import sqlalchemy
+
+        monkeypatch.setattr(sqlalchemy, "create_engine", fake_create_engine)
+
+        # Act
+        create_sql_engine("sqlite:///tmp.db")
+
+        # Assert
+        assert captured["pool_pre_ping"] is True
+        assert captured["connect_args"] == {}
 
 
 # ----------------------------------------------------------------------

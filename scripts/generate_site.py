@@ -1082,10 +1082,9 @@ def main() -> None:
         if not dsn:
             ap.error("POSTGRES_DSN environment variable is required for --backend sql")
 
-        from sqlalchemy import create_engine
-        from scripts.storage import latest_regression_run_id, load_run_for_site
+        from scripts.storage import create_sql_engine, latest_regression_run_id, load_run_for_site
 
-        engine = create_engine(dsn)
+        engine = create_sql_engine(dsn)
 
         run_id = args.run_id
         if not run_id:
