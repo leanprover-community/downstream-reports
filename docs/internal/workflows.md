@@ -9,11 +9,17 @@ commit introduced the breakage?*
 **Jobs:**
 
 1. **`plan`** — reads `ci/inventory/downstreams.json` to build a job matrix.
+   Also runs `export_status_snapshot.py` to read the `downstream_status` table
+   once and uploads it as the `status-snapshot` artifact (in the
+   `FilesystemBackend` on-disk layout). This is the run's only pre-report
+   database read: the select fan-out reads prior state from the artifact, so
+   ~30 legs never dial the database pooler simultaneously.
 
-2. **`select`** (per downstream, `ubuntu-latest`, **has secrets**) — runs
+2. **`select`** (per downstream, `ubuntu-latest`) — runs
    `select_downstream_regression_window.py`. Clones mathlib and the downstream,
-   reads the database for prior episode state, computes a candidate bisect
-   window, and writes `selection.json`. **Never invokes hopscotch.**
+   reads prior episode state from the `status-snapshot` artifact
+   (`--backend filesystem`), computes a candidate bisect window, and writes
+   `selection.json`. **Never invokes hopscotch.**
 
    The select step may short-circuit via `try_skip_already_good`: if the
    target commit and downstream HEAD are identical to the last verified-passing
@@ -68,8 +74,8 @@ commit introduced the breakage?*
 
 **Security invariant:** any job that runs hopscotch has no secrets in its
 `env:` blocks. The `probe` job runs on ephemeral self-hosted runners; the
-`select` job holds `GITHUB_TOKEN` and `POSTGRES_DSN` but never invokes
-hopscotch or lake.
+`select` job holds `GITHUB_TOKEN` but never invokes hopscotch or lake.
+`POSTGRES_DSN` appears only in the single-leg `plan` and `report` jobs.
 
 **Job summary report.** The aggregation script renders a Markdown report that is
 appended directly to the GitHub Actions job summary. It contains:

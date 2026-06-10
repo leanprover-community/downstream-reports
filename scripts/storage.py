@@ -315,6 +315,53 @@ def result_to_row(r: RunResultRecord) -> dict[str, Any]:
     return asdict(r)
 
 
+def status_snapshot_payload(
+    statuses: dict[str, DownstreamStatusRecord], reported_at: str
+) -> dict[str, Any]:
+    """JSON-shaped episode-state snapshot, as stored in ``status/{key}.json``.
+
+    Shared by ``FilesystemBackend.save_run`` and ``export_status_snapshot.py``
+    so a snapshot staged by a workflow's plan job is exactly what
+    ``FilesystemBackend.load_all_statuses`` expects to read back.
+    """
+    return {
+        "schema_version": 2,
+        "reported_at": reported_at,
+        "downstreams": {
+            name: {
+                "last_known_good_commit": s.last_known_good_commit,
+                "first_known_bad_commit": s.first_known_bad_commit,
+                "pinned_commit": s.pinned_commit,
+                "downstream_commit": s.downstream_commit,
+                "last_good_release": s.last_good_release,
+                "last_good_release_commit": s.last_good_release_commit,
+            }
+            for name, s in sorted(statuses.items())
+        },
+    }
+
+
+def write_status_snapshot(
+    state_root: Path,
+    workflow: str,
+    statuses: dict[str, DownstreamStatusRecord],
+    *,
+    reported_at: str,
+) -> Path:
+    """Write the episode-state snapshot for *workflow* under *state_root*.
+
+    The file lands where ``FilesystemBackend.load_all_statuses`` looks for it,
+    so any directory populated this way is a valid ``--state-root``.
+    """
+    path = state_root / "status" / f"{_WORKFLOW_STATUS_KEY[workflow]}.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(status_snapshot_payload(statuses, reported_at), indent=2, sort_keys=True)
+        + "\n"
+    )
+    return path
+
+
 class FilesystemBackend:
     """State backend backed by a local directory tree.
 
@@ -377,35 +424,11 @@ class FilesystemBackend:
     ) -> None:
         # validate_jobs is not persisted by the filesystem backend — the job
         # URL is already embedded in the rendered markdown report.
-        status_key = _WORKFLOW_STATUS_KEY[workflow]
         report_key = _WORKFLOW_REPORT_KEY[workflow]
         history_prefix = _WORKFLOW_HISTORY_PREFIX[workflow]
 
         # Episode-state snapshot
-        status_path = self._root / "status" / f"{status_key}.json"
-        status_path.parent.mkdir(parents=True, exist_ok=True)
-        status_path.write_text(
-            json.dumps(
-                {
-                    "schema_version": 2,
-                    "reported_at": created_at,
-                    "downstreams": {
-                        name: {
-                            "last_known_good_commit": s.last_known_good_commit,
-                            "first_known_bad_commit": s.first_known_bad_commit,
-                            "pinned_commit": s.pinned_commit,
-                            "downstream_commit": s.downstream_commit,
-                            "last_good_release": s.last_good_release,
-                            "last_good_release_commit": s.last_good_release_commit,
-                        }
-                        for name, s in sorted(updated_statuses.items())
-                    },
-                },
-                indent=2,
-                sort_keys=True,
-            )
-            + "\n"
-        )
+        write_status_snapshot(self._root, workflow, updated_statuses, reported_at=created_at)
 
         # Latest-run JSON report
         rows = [result_to_row(r) for r in results]

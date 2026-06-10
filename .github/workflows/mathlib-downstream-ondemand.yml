@@ -118,6 +118,33 @@ jobs:
             echo "has_skipped=false" >> "$GITHUB_OUTPUT"
           fi
 
+      # The select matrix's only database read is load_all_statuses — the same
+      # query with the same answer for every leg.  Stage it once here and hand
+      # it to the legs as an artifact so the fan-out never dials the database
+      # (parallel connection bursts provoke Neon pooler cold-start timeouts).
+      - name: Stage status snapshot
+        if: steps.matrix.outputs.has_downstreams == 'true'
+        env:
+          POSTGRES_DSN: ${{ steps.dry_run.outputs.value == 'true' && '' || secrets.POSTGRES_DSN }}
+          BACKEND: ${{ steps.dry_run.outputs.value == 'true' && 'dry-run' || 'sql' }}
+        run: |
+          python3 scripts/export_status_snapshot.py \
+            --backend "$BACKEND" \
+            --workflow ondemand \
+            --upstream leanprover-community/mathlib4 \
+            --output-root status-snapshot
+
+      - name: Upload status snapshot
+        if: steps.matrix.outputs.has_downstreams == 'true'
+        uses: actions/upload-artifact@v7.0.0
+        with:
+          name: status-snapshot
+          path: status-snapshot
+          if-no-files-found: error
+          # Lets "re-run all jobs" replace a snapshot left behind when the
+          # previous attempt's report-job artifact cleanup did not run.
+          overwrite: true
+
       - name: Upload skipped downstreams
         if: always()
         uses: actions/upload-artifact@v7.0.0
@@ -127,8 +154,10 @@ jobs:
           if-no-files-found: ignore
 
   select:
-    # Runs on a hosted runner with access to secrets.  Clones repos, reads the
-    # database, and computes the bisect window.  Never invokes hopscotch.
+    # Runs on a hosted runner with access to secrets.  Clones repos, reads
+    # prior episode state from the status snapshot staged by the plan job
+    # (never the database), and computes the bisect window.  Never invokes
+    # hopscotch.
     if: ${{ needs.plan.outputs.has_downstreams == 'true' }}
     name: "select: ${{ matrix.name }}"
     needs:
@@ -150,20 +179,28 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r scripts/requirements.txt
 
+      - name: Download status snapshot
+        uses: actions/download-artifact@v8.0.1
+        with:
+          name: status-snapshot
+          path: ${{ runner.temp }}/status-snapshot
+
       - name: Select validation window
         env:
           DOWNSTREAM_NAME: ${{ matrix.name }}
           BUMPING_BRANCH: ${{ matrix.bumping_branch }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           OUTPUT_DIR: ${{ runner.temp }}/artifacts/${{ matrix.name }}
-          POSTGRES_DSN: ${{ needs.plan.outputs.dry_run == 'true' && '' || secrets.POSTGRES_DSN }}
           PYTHONUNBUFFERED: "1"
+          # Prior episode state comes from the status snapshot staged by the
+          # plan job; select legs hold no database credentials.
+          STATE_ROOT: ${{ runner.temp }}/status-snapshot
           WORKDIR: ${{ runner.temp }}/downstream-regression
-          BACKEND: ${{ needs.plan.outputs.dry_run == 'true' && 'dry-run' || 'sql' }}
         run: |
           python3 -u scripts/select_ondemand_window.py \
             --inventory ci/inventory/downstreams.json \
-            --backend "$BACKEND" \
+            --backend filesystem \
+            --state-root "$STATE_ROOT" \
             --workflow ondemand \
             --downstream "$DOWNSTREAM_NAME" \
             --branch-override "$BUMPING_BRANCH" \
@@ -444,7 +481,7 @@ jobs:
         run: |
           gh api --paginate \
             "repos/$GH_REPO/actions/runs/$RUN_ID/artifacts" \
-            --jq '.artifacts[] | select(.name | test("^selection-|^skipped-downstreams$")) | "\(.id) \(.name)"' \
+            --jq '.artifacts[] | select(.name | test("^selection-|^skipped-downstreams$|^status-snapshot$")) | "\(.id) \(.name)"' \
           | while IFS=" " read -r id name; do
               gh api -X DELETE "repos/$GH_REPO/actions/artifacts/$id" \
                 && echo "deleted $name" \
