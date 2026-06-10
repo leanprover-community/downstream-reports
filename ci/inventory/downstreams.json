@@ -211,6 +211,13 @@
       "default_branch": "main",
       "dependency_name": "mathlib",
       "enabled": true
+    },
+    {
+      "name": "TauCeti",
+      "repo": "FormalFrontier/TauCeti",
+      "default_branch": "main",
+      "dependency_name": "mathlib",
+      "enabled": true
     }
   ]
 }
