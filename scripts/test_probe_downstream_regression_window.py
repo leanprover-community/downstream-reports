@@ -48,6 +48,7 @@ from scripts.models import CommitDetail, Outcome
 from scripts.probe_downstream_regression_window import (
     build_parser as probe_build_parser,
     run_culprit_probe,
+    try_revalidate_known_endpoints,
     try_skip_known_bad_bisect,
 )
 from scripts.storage import DownstreamStatusRecord
@@ -204,6 +205,209 @@ class TestTrySkipKnownBadBisect:
         assert "Skip the bisect" in selection.next_action
 
 
+class TestTryRevalidateKnownEndpoints:
+    """``try_revalidate_known_endpoints`` — the endpoint-revalidation heuristic.
+
+    Fires only when the downstream changed (so the known-bad skip could not),
+    its manifest did not (no dependency bump), and both stored endpoints
+    re-confirm under the current downstream source.  Every other combination
+    must return None so the caller falls through to the full bisect.
+    """
+
+    _head_probe_run = subprocess.CompletedProcess(
+        ["tool"], 1, stdout="failed", stderr="failed"
+    )
+    _head_probe_state: dict = {
+        "failureStage": "lake build",
+        "firstFailingCommit": "t" * 40,
+    }
+
+    def _call(
+        self,
+        *,
+        revalidate_enabled: bool = True,
+        previous: DownstreamStatusRecord | None = None,
+        manifest_changed: bool | None = False,
+        ancestor: bool = True,
+        lkg_passes: bool = True,
+        fkb_exit_code: int = 1,
+    ):
+        """Invoke the heuristic with ``is_strict_ancestor`` patched.
+
+        ``verify_last_known_good`` / ``probe_first_known_bad`` are recorded
+        fakes so each test can assert which endpoint builds actually ran —
+        the cost model (zero, one, or two builds) is part of the contract.
+        """
+        selection = make_selection(
+            head_probe_outcome="failed",
+            head_probe_failure_stage="build",
+            head_probe_summary="failed",
+            manifest_changed_since_last_run=manifest_changed,
+            tested_commit_details=[CommitDetail(sha="t" * 40, title="test")],
+        )
+        verified: list[str] = []
+        probed: list[str] = []
+
+        def fake_verify(candidate: str) -> bool:
+            verified.append(candidate)
+            return lkg_passes
+
+        def fake_probe(candidate: str) -> int:
+            probed.append(candidate)
+            return fkb_exit_code
+
+        with patch(
+            "scripts.probe_downstream_regression_window.is_strict_ancestor",
+            return_value=ancestor,
+        ):
+            result = try_revalidate_known_endpoints(
+                revalidate_enabled=revalidate_enabled,
+                selection=selection,
+                previous=previous,
+                config=PHYSLIB_CONFIG,
+                upstream_ref="master",
+                upstream_dir=Path("/dummy"),
+                head_probe_run=self._head_probe_run,
+                head_probe_state=self._head_probe_state,
+                head_probe_summary_text="failed",
+                verify_last_known_good=fake_verify,
+                probe_first_known_bad=fake_probe,
+            )
+        return result, selection, verified, probed
+
+    _previous = DownstreamStatusRecord(
+        last_known_good_commit="g" * 40,
+        first_known_bad_commit="b" * 40,
+        downstream_commit="old" * 13 + "d",
+    )
+
+    def test_returns_none_when_disabled(self) -> None:
+        """Disabled (inventory opt-out or --no-revalidate-known-endpoints) → no builds.
+
+        The heuristic is opt-in per downstream; with it off the probe must
+        fall straight through to the bisect path without spending builds.
+        """
+        # Act
+        result, _, verified, probed = self._call(
+            revalidate_enabled=False, previous=self._previous
+        )
+
+        # Assert
+        assert result is None
+        assert verified == [] and probed == [], "a disabled heuristic must not spend any builds"
+
+    def test_returns_none_without_stored_endpoint_pair(self) -> None:
+        """Both stored endpoints are required — there is nothing to re-validate otherwise."""
+        # Arrange — FKB set but no LKG.
+        previous = DownstreamStatusRecord(
+            first_known_bad_commit="b" * 40, downstream_commit="d" * 40
+        )
+
+        # Act
+        result, _, verified, probed = self._call(previous=previous)
+
+        # Assert
+        assert result is None
+        assert verified == [] and probed == []
+
+    def test_returns_none_when_manifest_changed(self) -> None:
+        """A manifest change (dependency bump) invalidates the monotonicity assumption.
+
+        A bump can move the regression boundary anywhere, so even a
+        passing-LKG/failing-FKB revalidation could silently confirm a stale
+        pair.  The guard must reject before spending any builds.
+        """
+        # Act
+        result, _, verified, probed = self._call(
+            previous=self._previous, manifest_changed=True
+        )
+
+        # Assert
+        assert result is None
+        assert verified == [] and probed == []
+
+    def test_returns_none_when_manifest_comparison_unavailable(self) -> None:
+        """None (no prior commit, or comparison failed) is treated as changed.
+
+        Conservative default: only an affirmative "manifest unchanged" from
+        the select step unlocks the shortcut.
+        """
+        # Act
+        result, _, verified, probed = self._call(
+            previous=self._previous, manifest_changed=None
+        )
+
+        # Assert
+        assert result is None
+        assert verified == [] and probed == []
+
+    def test_returns_none_when_fkb_not_ancestor(self) -> None:
+        """The stored FKB outside the target's ancestry means the boundary moved upstream."""
+        # Act
+        result, _, verified, probed = self._call(previous=self._previous, ancestor=False)
+
+        # Assert
+        assert result is None
+        assert verified == [] and probed == []
+
+    def test_falls_back_when_stored_lkg_fails(self) -> None:
+        """A failing LKG rebuild disproves the stored pair — bisect must re-run.
+
+        The FKB probe is skipped: with the LKG already disproven the pair
+        cannot be confirmed, and the bisect path re-uses the (memoized) LKG
+        verification, so stopping early costs nothing.
+        """
+        # Act
+        result, _, verified, probed = self._call(previous=self._previous, lkg_passes=False)
+
+        # Assert
+        assert result is None
+        assert verified == ["g" * 40]
+        assert probed == [], "no FKB build once the LKG has been disproven"
+
+    def test_falls_back_when_stored_fkb_passes(self) -> None:
+        """A passing FKB rebuild disproves the stored pair — bisect must re-run."""
+        # Act
+        result, _, verified, probed = self._call(previous=self._previous, fkb_exit_code=0)
+
+        # Assert
+        assert result is None
+        assert verified == ["g" * 40]
+        assert probed == ["b" * 40]
+
+    def test_falls_back_when_fkb_probe_errors(self) -> None:
+        """An erroring FKB rebuild is inconclusive — bisect must re-run.
+
+        Exit codes other than 0/1 mean the build never reached a verdict
+        (runner error, network failure); confirming the pair on an
+        inconclusive build would persist an unverified boundary.
+        """
+        # Act
+        result, _, verified, probed = self._call(previous=self._previous, fkb_exit_code=2)
+
+        # Assert
+        assert result is None
+
+    def test_returns_failing_result_when_both_endpoints_confirm(self) -> None:
+        """LKG passes + FKB fails: emit an ``endpoints-revalidated`` failed result.
+
+        The distinct ``search_mode`` keeps this run out of apply_result's
+        fresh-bisect branch, so the stored (LKG, FKB) pair is preserved
+        verbatim — exactly the boundary the two builds just confirmed.
+        """
+        # Act
+        result, selection, verified, probed = self._call(previous=self._previous)
+
+        # Assert
+        assert result is not None
+        assert result.outcome == Outcome.FAILED
+        assert result.search_mode == "endpoints-revalidated"
+        assert verified == ["g" * 40]
+        assert probed == ["b" * 40]
+        assert "re-validated" in selection.decision_reason
+        assert "Skip the bisect" in selection.next_action
+
+
 class TestRunCulpritProbe:
     """``run_culprit_probe`` — the culprit re-build that follows a known-bad skip."""
 
@@ -305,6 +509,31 @@ class TestProbeParser:
 
         # Assert
         assert args.skip_known_bad_bisect
+
+    def test_revalidate_known_endpoints_defaults_to_true(self) -> None:
+        """Opt-out flag — defaults on; the per-downstream inventory flag is the real gate.
+
+        The effective setting is ``args.revalidate_known_endpoints AND
+        selection.revalidate_known_endpoints``, so a default-on CLI means
+        inventory opt-ins work without workflow changes while
+        ``--no-revalidate-known-endpoints`` (force_rebisect) can still force
+        a full bisect.
+        """
+        # Arrange / Act
+        args = probe_build_parser().parse_args(self._REQUIRED)
+
+        # Assert
+        assert args.revalidate_known_endpoints
+
+    def test_revalidate_known_endpoints_can_be_disabled(self) -> None:
+        """``--no-revalidate-known-endpoints`` forces the full-bisect path."""
+        # Arrange / Act
+        args = probe_build_parser().parse_args(
+            [*self._REQUIRED, "--no-revalidate-known-endpoints"]
+        )
+
+        # Assert
+        assert not args.revalidate_known_endpoints
 
     def test_max_commits_defaults_and_overrides(self) -> None:
         """``--max-commits`` defaults to 100000 and can be lowered for slow downstreams.

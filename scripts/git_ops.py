@@ -293,6 +293,63 @@ def git_url_from_manifest(project_dir: Path, dependency_name: str) -> str | None
     return None
 
 
+def manifest_blob_id(repo_dir: Path, commit: str, manifest_name: str = "lake-manifest.json") -> str | None:
+    """Return the git blob id of the manifest at `commit`, or None if unavailable.
+
+    Resolving `<commit>:<path>` needs the commit and its root tree locally but
+    never reads the blob content, so it works in shallow and partial clones as
+    long as the commit itself has been fetched.
+    """
+    try:
+        return git(repo_dir, "rev-parse", f"{commit}:{manifest_name}")
+    except subprocess.CalledProcessError:
+        return None
+
+
+def fetch_commit(repo_dir: Path, commit: str) -> bool:
+    """Shallow-fetch one commit by SHA from origin; return whether it succeeded.
+
+    Fetching an arbitrary (non-ref-tip) SHA requires the server to enable
+    `uploadpack.allowAnySHA1InWant` or similar — GitHub does.  A False return
+    typically means the commit was garbage-collected after a force push, or
+    the remote rejects SHA fetches.
+    """
+    try:
+        run(["git", "fetch", "--quiet", "--depth", "1", "origin", commit], cwd=repo_dir)
+        return True
+    except subprocess.CalledProcessError:
+        return False
+
+
+def manifest_changed_between(
+    repo_dir: Path,
+    previous_commit: str,
+    current_commit: str,
+    manifest_name: str = "lake-manifest.json",
+) -> bool | None:
+    """Compare the manifest blob between two downstream commits.
+
+    Returns False when the manifest is byte-identical at both commits, True
+    when it differs, and None when the comparison cannot be made (the previous
+    commit is unfetchable, or the manifest is missing at either commit).
+    Callers treating None as "changed" stay conservative.
+
+    `repo_dir` is the downstream clone, which is shallow (depth 1) and so does
+    not contain `previous_commit` — it is fetched on demand.
+    """
+    if previous_commit == current_commit:
+        return False
+    previous_blob = manifest_blob_id(repo_dir, previous_commit, manifest_name)
+    if previous_blob is None:
+        if not fetch_commit(repo_dir, previous_commit):
+            return None
+        previous_blob = manifest_blob_id(repo_dir, previous_commit, manifest_name)
+    current_blob = manifest_blob_id(repo_dir, current_commit, manifest_name)
+    if previous_blob is None or current_blob is None:
+        return None
+    return previous_blob != current_blob
+
+
 def resolve_search_base_commit(
     *,
     project_dir: Path,

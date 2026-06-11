@@ -27,6 +27,7 @@ from scripts.git_ops import (
     clone_upstream,
     describe_commits,
     is_strict_ancestor,
+    manifest_changed_between,
     parent_commit,
     resolve_search_base_commit,
     resolve_upstream_target,
@@ -177,6 +178,7 @@ def main() -> int:
         dependency_name=config.dependency_name,
         upstream_ref=args.upstream_ref,
         skip_known_bad_bisect=config.skip_known_bad_bisect,
+        revalidate_known_endpoints=config.revalidate_known_endpoints,
         nuke_lakedir=config.nuke_lakedir,
     )
 
@@ -215,6 +217,24 @@ def main() -> int:
             upstream_dir=upstream_dir,
             last_known_good=None,
         )
+
+        # Endpoint revalidation (probe step) is only sound while the
+        # downstream's dependency set is unchanged; compare the manifest blob
+        # against the previously-validated downstream commit so the probe can
+        # gate on it.  Skipped (left None — revalidation stays off) when the
+        # heuristic is not enabled for this downstream or there is no prior
+        # commit to compare against.
+        if (
+            config.revalidate_known_endpoints
+            and previous is not None
+            and previous.downstream_commit is not None
+            and selection.downstream_commit is not None
+        ):
+            selection.manifest_changed_since_last_run = manifest_changed_between(
+                downstream_dir,
+                previous.downstream_commit,
+                selection.downstream_commit,
+            )
 
         # Fast-path: if the target and downstream are identical to the last
         # verified-passing run, skip all probes and embed the result directly.
