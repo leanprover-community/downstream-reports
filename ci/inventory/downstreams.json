@@ -68,7 +68,7 @@
       "repo": "google-deepmind/formal-conjectures",
       "default_branch": "main",
       "dependency_name": "mathlib",
-      "enabled": true,
+      "enabled": false,
       "nuke_lakedir": true
     },
     {
@@ -209,6 +209,20 @@
       "name": "LeanMachineLearning",
       "repo": "LeanMachineLearning/LML",
       "default_branch": "main",
+      "dependency_name": "mathlib",
+      "enabled": true
+    },
+    {
+      "name": "TauCeti",
+      "repo": "FormalFrontier/TauCeti",
+      "default_branch": "main",
+      "dependency_name": "mathlib",
+      "enabled": true
+    },
+    {
+      "name": "PFR",
+      "repo": "teorth/pfr",
+      "default_branch": "master",
       "dependency_name": "mathlib",
       "enabled": true
     }
