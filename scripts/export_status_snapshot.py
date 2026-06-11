@@ -48,6 +48,12 @@ def main() -> int:
     args = build_parser().parse_args()
     backend = create_backend(args.backend, dsn=args.dsn)
     statuses = backend.load_all_statuses(args.workflow, args.upstream)
+    # Attach each downstream's most recent fresh-bisect time so the select
+    # legs can apply the boundary-revalidation staleness valve without their
+    # own database read.
+    bisect_times = backend.load_last_fresh_bisect_times(args.workflow, args.upstream)
+    for name, status in statuses.items():
+        status.last_fresh_bisect_at = bisect_times.get(name)
     path = write_status_snapshot(
         args.output, statuses,
         workflow=args.workflow, upstream=args.upstream, reported_at=utc_now(),

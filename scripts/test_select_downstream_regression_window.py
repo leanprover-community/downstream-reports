@@ -32,6 +32,7 @@ the report.
 from __future__ import annotations
 
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -39,6 +40,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from scripts.conftest import PHYSLIB_CONFIG, make_selection
 from scripts.models import Outcome
 from scripts.select_downstream_regression_window import (
+    boundary_bisect_overdue,
     build_parser as select_build_parser,
     try_skip_already_good,
 )
@@ -180,6 +182,53 @@ class TestTrySkipAlreadyGood:
         assert "Skip all probes" in selection.next_action
 
 
+class TestBoundaryBisectOverdue:
+    """``boundary_bisect_overdue`` — the staleness valve's age comparison.
+
+    The valve bounds how long boundary revalidation may keep confirming a
+    stored pair without a real bisect re-deriving it.  A wrong False keeps a
+    potentially misleading pair alive past its deadline; a wrong True only
+    costs one redundant bisect.
+    """
+
+    _NOW = datetime(2026, 6, 11, 12, 0, 0, tzinfo=timezone.utc)
+
+    def test_recent_bisect_is_not_overdue(self) -> None:
+        """A bisect inside the age window keeps revalidation available."""
+        assert (
+            boundary_bisect_overdue("2026-06-08T00:00:00Z", max_age_days=7, now=self._NOW)
+            is False
+        )
+
+    def test_old_bisect_is_overdue(self) -> None:
+        """A bisect past the age window forces the next run to re-bisect."""
+        assert (
+            boundary_bisect_overdue("2026-06-01T00:00:00Z", max_age_days=7, now=self._NOW)
+            is True
+        )
+
+    def test_missing_timestamp_is_overdue(self) -> None:
+        """No fresh bisect on record → overdue.
+
+        Covers boundaries that predate the valve (no run_result row with
+        search_mode='bisect') and first runs after enabling revalidation —
+        both start with a real bisect before any revalidation may fire.
+        """
+        assert boundary_bisect_overdue(None, max_age_days=7, now=self._NOW) is True
+
+    def test_naive_timestamp_is_read_as_utc(self) -> None:
+        """A timestamp without timezone info compares as UTC.
+
+        SQLite (used in tests and local dev) stores DateTime columns
+        naively; production Postgres returns aware values.  Both must
+        compare against the same clock.
+        """
+        assert (
+            boundary_bisect_overdue("2026-06-08T00:00:00", max_age_days=7, now=self._NOW)
+            is False
+        )
+
+
 class TestSelectParserSkipAlreadyGood:
     """``select_build_parser()`` — ``--skip-already-good`` flag surface."""
 
@@ -207,6 +256,23 @@ class TestSelectParserSkipAlreadyGood:
 
         # Assert
         assert not args.skip_already_good
+
+    def test_max_boundary_age_days_defaults_and_overrides(self) -> None:
+        """``--max-boundary-age-days`` defaults to 7 and can be tuned per dispatch.
+
+        Pinning the default here means changing the staleness valve's
+        cadence requires updating this test — the weekly full bisect is a
+        correctness backstop, not just a tuning knob.
+        """
+        # Arrange / Act / Assert — default
+        args = select_build_parser().parse_args(self._REQUIRED)
+        assert args.max_boundary_age_days == 7
+
+        # Act / Assert — override
+        args = select_build_parser().parse_args(
+            [*self._REQUIRED, "--max-boundary-age-days", "3"]
+        )
+        assert args.max_boundary_age_days == 3
 
     def test_skip_already_good_can_be_explicitly_enabled(self) -> None:
         """``--skip-already-good`` is accepted as an explicit confirmation.

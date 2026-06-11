@@ -121,11 +121,11 @@ def try_skip_known_bad_bisect(
 
 
 # ---------------------------------------------------------------------------
-# Skip heuristic: endpoint revalidation ("monotonicity skip")
+# Skip heuristic: boundary revalidation ("monotonicity skip")
 # ---------------------------------------------------------------------------
 
 
-def try_revalidate_known_endpoints(
+def try_revalidate_boundary(
     *,
     revalidate_enabled: bool,
     selection: WindowSelection,
@@ -142,9 +142,10 @@ def try_revalidate_known_endpoints(
     """Re-validate the stored (LKG, FKB) pair instead of re-bisecting.
 
     When the downstream source has changed, try_skip_known_bad_bisect cannot
-    fire — but as long as the downstream's lake-manifest.json is unchanged
-    (no dependency bump), the regression boundary is assumed not to move with
-    downstream source changes.  Rather than trusting that assumption blindly,
+    fire — but as long as the downstream's dependency files are unchanged (no
+    manifest or toolchain bump; see git_ops.DEPENDENCY_FILES), the regression
+    boundary is assumed not to move with downstream source changes.  Rather
+    than trusting that assumption blindly,
     rebuild both stored endpoints with the current downstream: if the stored
     last-known-good still passes and the stored first-known-bad still fails,
     the boundary is confirmed at two builds instead of a full bisect.  Any
@@ -152,6 +153,12 @@ def try_revalidate_known_endpoints(
 
     The first-known-bad rebuild doubles as the culprit re-probe: its failure
     log lands in this job's artifacts via the culprit-probe output directory.
+
+    Two select-step gates bound the trust placed in the stored pair: the
+    dependency-files comparison (a manifest or toolchain bump voids the
+    monotonicity assumption outright) and the staleness valve
+    (boundary_bisect_overdue — a fresh bisect re-derives the pair once the
+    last one is older than the configured age).
     """
     if not revalidate_enabled:
         return None
@@ -159,10 +166,20 @@ def try_revalidate_known_endpoints(
         return None
     if previous.first_known_bad_commit is None or previous.last_known_good_commit is None:
         return None
-    if selection.manifest_changed_since_last_run is not False:
-        # True: a dependency bump invalidates the monotonicity assumption.
-        # None: no prior commit to compare against, or the comparison failed —
-        # treat unknown as changed.
+    if selection.boundary_bisect_overdue:
+        # Staleness valve: the boundary has gone too long without a real
+        # bisect.  Revalidation could keep confirming a pair that is true at
+        # both endpoints yet no longer the commit blocking HEAD; a periodic
+        # full bisect re-derives the pair first-hand.
+        print(
+            f"[{config.name}] stored boundary is due a scheduled fresh bisect "
+            f"(staleness valve); skipping revalidation"
+        )
+        return None
+    if selection.dependency_files_changed_since_last_run is not False:
+        # True: a manifest or toolchain bump invalidates the monotonicity
+        # assumption.  None: no prior commit to compare against, or the
+        # comparison failed — treat unknown as changed.
         return None
     if not is_strict_ancestor(upstream_dir, previous.first_known_bad_commit, selection.target_commit):
         return None
@@ -189,10 +206,10 @@ def try_revalidate_known_endpoints(
         f"downstream (LKG passes, FKB fails); skipping bisect"
     )
     selection.decision_reason = (
-        "The HEAD probe failed and the downstream changed, but its manifest is "
-        "unchanged and both stored endpoints re-validated: the last-known-good "
-        "still passes and the first-known-bad still fails.  The boundary is "
-        "confirmed without a bisect."
+        "The HEAD probe failed and the downstream changed, but its dependency "
+        "files (manifest, toolchain) are unchanged and both stored endpoints "
+        "re-validated: the last-known-good still passes and the first-known-bad "
+        "still fails.  The boundary is confirmed without a bisect."
     )
     selection.next_action = "Skip the bisect probe and report the re-validated failing result."
     return build_result_from_tool(
@@ -200,7 +217,7 @@ def try_revalidate_known_endpoints(
         downstream_commit=selection.downstream_commit,
         upstream_ref=upstream_ref,
         target_commit=selection.target_commit,
-        search_mode="endpoints-revalidated",
+        search_mode="boundary-revalidated",
         tested_commits=[selection.target_commit],
         tested_commit_details=selection.tested_commit_details,
         truncated=False,
@@ -286,11 +303,12 @@ def build_parser() -> argparse.ArgumentParser:
              "that is an ancestor of the target and the downstream is unchanged.",
     )
     parser.add_argument(
-        "--revalidate-known-endpoints", action=argparse.BooleanOptionalAction, default=True,
-        help="When the downstream changed but its manifest did not, re-validate the "
-             "stored LKG/FKB pair (two builds) instead of re-bisecting.  Only applies "
-             "to downstreams that opt in via the inventory; this flag is the operator "
-             "escape hatch to force a full bisect.",
+        "--revalidate-boundary", action=argparse.BooleanOptionalAction, default=True,
+        help="When the downstream changed but its dependency files (manifest, "
+             "toolchain) did not, re-validate the stored LKG/FKB pair (two builds) "
+             "instead of re-bisecting.  Only applies to downstreams that opt in via "
+             "the inventory; this flag is the operator escape hatch to force a full "
+             "bisect.",
     )
     return parser
 
@@ -467,7 +485,7 @@ def main() -> int:
         def verify_last_known_good(candidate: str) -> bool:
             """Run hopscotch against the stored LKG to confirm it still passes.
 
-            Memoized: endpoint revalidation and the bisect fallback both
+            Memoized: boundary revalidation and the bisect fallback both
             verify the same candidate, and one full build is enough.
             """
             if candidate in lkg_verification_outcomes:
@@ -552,8 +570,8 @@ def main() -> int:
         # The downstream changed, so the known-bad skip could not fire — try
         # re-validating the stored endpoint pair before committing to a full
         # bisect.  Falls through (None) unless both endpoints confirm.
-        result = try_revalidate_known_endpoints(
-            revalidate_enabled=args.revalidate_known_endpoints and selection.revalidate_known_endpoints,
+        result = try_revalidate_boundary(
+            revalidate_enabled=args.revalidate_boundary and selection.revalidate_boundary,
             selection=selection,
             previous=previous,
             config=config,

@@ -66,6 +66,13 @@ class DownstreamStatusRecord:
     downstream_commit: str | None = None
     last_good_release: str | None = None         # e.g. "v4.13.0"
     last_good_release_commit: str | None = None  # resolved SHA for that tag
+    # Derived field, populated only inside the staged status-snapshot file by
+    # export_status_snapshot.py: ISO-8601 time of this downstream's most
+    # recent fresh bisect (see load_last_fresh_bisect_times).  Not a
+    # downstream_status column — load_all_statuses leaves it None and
+    # save_run never writes it.  Consumed by the select step's staleness
+    # valve for boundary revalidation.
+    last_fresh_bisect_at: str | None = None
 
 
 @dataclass
@@ -186,6 +193,18 @@ class StorageBackend(Protocol):
         """Return current episode state for every downstream in *workflow*.
 
         Returns an empty dict when no state has been stored yet.
+        """
+        ...
+
+    def load_last_fresh_bisect_times(self, workflow: str, upstream: str) -> dict[str, str]:
+        """Return, per downstream, the ISO time of its most recent fresh bisect.
+
+        A fresh bisect is a ``run_result`` row with ``search_mode='bisect'``
+        and ``outcome='failed'`` — the runs that establish a (LKG, FKB) pair
+        first-hand rather than inheriting it.  Downstreams with no such run
+        are absent from the dict.  Feeds the staleness valve that bounds how
+        long boundary revalidation may keep confirming a pair without a real
+        bisect.
         """
         ...
 
@@ -694,6 +713,27 @@ class SqlBackend:
                 last_good_release_commit=row[6],
             )
             for row in rows
+        }
+
+    def load_last_fresh_bisect_times(self, workflow: str, upstream: str) -> dict[str, str]:
+        rr, r = _sa_run_result, _sa_run
+        stmt = (
+            sa_select(rr.c.downstream, func.max(r.c.reported_at))
+            .select_from(rr.join(r, rr.c.run_id == r.c.run_id))
+            .where(
+                r.c.workflow == workflow,
+                rr.c.upstream == upstream,
+                rr.c.search_mode == "bisect",
+                rr.c.outcome == "failed",
+            )
+            .group_by(rr.c.downstream)
+        )
+        with self._connect() as conn:
+            rows = conn.execute(stmt).fetchall()
+        return {
+            row[0]: row[1].isoformat().replace("+00:00", "Z")
+            for row in rows
+            if row[1] is not None
         }
 
     def save_run(
@@ -1225,6 +1265,13 @@ class DryRunBackend:
 
     def load_all_statuses(self, workflow: str, upstream: str) -> dict[str, DownstreamStatusRecord]:
         print(f"[dry-run] load_all_statuses(workflow={workflow!r}, upstream={upstream!r}) -> {{}}")
+        return {}
+
+    def load_last_fresh_bisect_times(self, workflow: str, upstream: str) -> dict[str, str]:
+        print(
+            f"[dry-run] load_last_fresh_bisect_times(workflow={workflow!r}, "
+            f"upstream={upstream!r}) -> {{}}"
+        )
         return {}
 
     def save_run(

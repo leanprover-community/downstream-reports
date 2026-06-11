@@ -48,7 +48,7 @@ from scripts.models import CommitDetail, Outcome
 from scripts.probe_downstream_regression_window import (
     build_parser as probe_build_parser,
     run_culprit_probe,
-    try_revalidate_known_endpoints,
+    try_revalidate_boundary,
     try_skip_known_bad_bisect,
 )
 from scripts.storage import DownstreamStatusRecord
@@ -205,8 +205,8 @@ class TestTrySkipKnownBadBisect:
         assert "Skip the bisect" in selection.next_action
 
 
-class TestTryRevalidateKnownEndpoints:
-    """``try_revalidate_known_endpoints`` — the endpoint-revalidation heuristic.
+class TestTryRevalidateBoundary:
+    """``try_revalidate_boundary`` — the boundary-revalidation heuristic.
 
     Fires only when the downstream changed (so the known-bad skip could not),
     its manifest did not (no dependency bump), and both stored endpoints
@@ -227,7 +227,8 @@ class TestTryRevalidateKnownEndpoints:
         *,
         revalidate_enabled: bool = True,
         previous: DownstreamStatusRecord | None = None,
-        manifest_changed: bool | None = False,
+        dependency_files_changed: bool | None = False,
+        boundary_overdue: bool = False,
         ancestor: bool = True,
         lkg_passes: bool = True,
         fkb_exit_code: int = 1,
@@ -242,7 +243,8 @@ class TestTryRevalidateKnownEndpoints:
             head_probe_outcome="failed",
             head_probe_failure_stage="build",
             head_probe_summary="failed",
-            manifest_changed_since_last_run=manifest_changed,
+            dependency_files_changed_since_last_run=dependency_files_changed,
+            boundary_bisect_overdue=boundary_overdue,
             tested_commit_details=[CommitDetail(sha="t" * 40, title="test")],
         )
         verified: list[str] = []
@@ -260,7 +262,7 @@ class TestTryRevalidateKnownEndpoints:
             "scripts.probe_downstream_regression_window.is_strict_ancestor",
             return_value=ancestor,
         ):
-            result = try_revalidate_known_endpoints(
+            result = try_revalidate_boundary(
                 revalidate_enabled=revalidate_enabled,
                 selection=selection,
                 previous=previous,
@@ -282,7 +284,7 @@ class TestTryRevalidateKnownEndpoints:
     )
 
     def test_returns_none_when_disabled(self) -> None:
-        """Disabled (inventory opt-out or --no-revalidate-known-endpoints) → no builds.
+        """Disabled (inventory opt-out or --no-revalidate-boundary) → no builds.
 
         The heuristic is opt-in per downstream; with it off the probe must
         fall straight through to the bisect path without spending builds.
@@ -310,7 +312,26 @@ class TestTryRevalidateKnownEndpoints:
         assert result is None
         assert verified == [] and probed == []
 
-    def test_returns_none_when_manifest_changed(self) -> None:
+    def test_returns_none_when_boundary_bisect_overdue(self) -> None:
+        """The staleness valve forces a real bisect on a bounded cadence.
+
+        Revalidation could otherwise keep confirming a pair that is true at
+        both endpoints yet no longer the commit blocking HEAD (original
+        breakage fixed upstream, new downstream code broken against a later
+        commit).  When the select step marks the boundary overdue, the
+        heuristic must stand aside without spending builds so the full
+        bisect re-derives the pair first-hand.
+        """
+        # Act
+        result, _, verified, probed = self._call(
+            previous=self._previous, boundary_overdue=True
+        )
+
+        # Assert
+        assert result is None
+        assert verified == [] and probed == [], "the valve must reject before spending any builds"
+
+    def test_returns_none_when_dependency_files_changed(self) -> None:
         """A manifest change (dependency bump) invalidates the monotonicity assumption.
 
         A bump can move the regression boundary anywhere, so even a
@@ -319,7 +340,7 @@ class TestTryRevalidateKnownEndpoints:
         """
         # Act
         result, _, verified, probed = self._call(
-            previous=self._previous, manifest_changed=True
+            previous=self._previous, dependency_files_changed=True
         )
 
         # Assert
@@ -334,7 +355,7 @@ class TestTryRevalidateKnownEndpoints:
         """
         # Act
         result, _, verified, probed = self._call(
-            previous=self._previous, manifest_changed=None
+            previous=self._previous, dependency_files_changed=None
         )
 
         # Assert
@@ -389,7 +410,7 @@ class TestTryRevalidateKnownEndpoints:
         assert result is None
 
     def test_returns_failing_result_when_both_endpoints_confirm(self) -> None:
-        """LKG passes + FKB fails: emit an ``endpoints-revalidated`` failed result.
+        """LKG passes + FKB fails: emit an ``boundary-revalidated`` failed result.
 
         The distinct ``search_mode`` keeps this run out of apply_result's
         fresh-bisect branch, so the stored (LKG, FKB) pair is preserved
@@ -401,7 +422,7 @@ class TestTryRevalidateKnownEndpoints:
         # Assert
         assert result is not None
         assert result.outcome == Outcome.FAILED
-        assert result.search_mode == "endpoints-revalidated"
+        assert result.search_mode == "boundary-revalidated"
         assert verified == ["g" * 40]
         assert probed == ["b" * 40]
         assert "re-validated" in selection.decision_reason
@@ -510,30 +531,30 @@ class TestProbeParser:
         # Assert
         assert args.skip_known_bad_bisect
 
-    def test_revalidate_known_endpoints_defaults_to_true(self) -> None:
+    def test_revalidate_boundary_defaults_to_true(self) -> None:
         """Opt-out flag — defaults on; the per-downstream inventory flag is the real gate.
 
-        The effective setting is ``args.revalidate_known_endpoints AND
-        selection.revalidate_known_endpoints``, so a default-on CLI means
+        The effective setting is ``args.revalidate_boundary AND
+        selection.revalidate_boundary``, so a default-on CLI means
         inventory opt-ins work without workflow changes while
-        ``--no-revalidate-known-endpoints`` (force_rebisect) can still force
+        ``--no-revalidate-boundary`` (force_rebisect) can still force
         a full bisect.
         """
         # Arrange / Act
         args = probe_build_parser().parse_args(self._REQUIRED)
 
         # Assert
-        assert args.revalidate_known_endpoints
+        assert args.revalidate_boundary
 
-    def test_revalidate_known_endpoints_can_be_disabled(self) -> None:
-        """``--no-revalidate-known-endpoints`` forces the full-bisect path."""
+    def test_revalidate_boundary_can_be_disabled(self) -> None:
+        """``--no-revalidate-boundary`` forces the full-bisect path."""
         # Arrange / Act
         args = probe_build_parser().parse_args(
-            [*self._REQUIRED, "--no-revalidate-known-endpoints"]
+            [*self._REQUIRED, "--no-revalidate-boundary"]
         )
 
         # Assert
-        assert not args.revalidate_known_endpoints
+        assert not args.revalidate_boundary
 
     def test_max_commits_defaults_and_overrides(self) -> None:
         """``--max-commits`` defaults to 100000 and can be lowered for slow downstreams.

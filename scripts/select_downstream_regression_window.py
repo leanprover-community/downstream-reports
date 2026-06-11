@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -27,7 +28,7 @@ from scripts.git_ops import (
     clone_upstream,
     describe_commits,
     is_strict_ancestor,
-    manifest_changed_between,
+    dependency_files_changed_between,
     parent_commit,
     resolve_search_base_commit,
     resolve_upstream_target,
@@ -45,6 +46,36 @@ from scripts.validation import (
     selection_summary_path,
     write_selection,
 )
+
+
+# ---------------------------------------------------------------------------
+# Boundary-revalidation staleness valve
+# ---------------------------------------------------------------------------
+
+
+def boundary_bisect_overdue(
+    last_fresh_bisect_at: str | None,
+    *,
+    max_age_days: int,
+    now: datetime | None = None,
+) -> bool:
+    """Return whether the stored boundary is due a scheduled fresh bisect.
+
+    Boundary revalidation can keep confirming a (LKG, FKB) pair indefinitely
+    — including a pair that is literally true but no longer the commit that
+    actually blocks HEAD (e.g. the original breakage was fixed upstream while
+    new downstream code broke against a later commit).  Forcing a real bisect
+    once the last one is older than *max_age_days* caps how long such a pair
+    can persist.  A missing timestamp (no fresh bisect recorded) counts as
+    overdue.
+    """
+    if last_fresh_bisect_at is None:
+        return True
+    moment = datetime.fromisoformat(last_fresh_bisect_at.replace("Z", "+00:00"))
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    current = now if now is not None else datetime.now(timezone.utc)
+    return current - moment > timedelta(days=max_age_days)
 
 
 # ---------------------------------------------------------------------------
@@ -128,6 +159,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="Skip validation when target == last-known-good and downstream unchanged.",
     )
     parser.add_argument(
+        "--max-boundary-age-days", type=int, default=7,
+        help=(
+            "Staleness valve for boundary revalidation: when the downstream's "
+            "most recent fresh bisect is older than this many days (or none is "
+            "recorded), the probe runs a full bisect instead of revalidating "
+            "the stored boundary."
+        ),
+    )
+    parser.add_argument(
         "--status-snapshot", type=Path, default=None,
         help=(
             "Status-snapshot file staged by the plan job; prior episode state "
@@ -178,7 +218,7 @@ def main() -> int:
         dependency_name=config.dependency_name,
         upstream_ref=args.upstream_ref,
         skip_known_bad_bisect=config.skip_known_bad_bisect,
-        revalidate_known_endpoints=config.revalidate_known_endpoints,
+        revalidate_boundary=config.revalidate_boundary,
         nuke_lakedir=config.nuke_lakedir,
     )
 
@@ -218,22 +258,27 @@ def main() -> int:
             last_known_good=None,
         )
 
-        # Endpoint revalidation (probe step) is only sound while the
-        # downstream's dependency set is unchanged; compare the manifest blob
-        # against the previously-validated downstream commit so the probe can
-        # gate on it.  Skipped (left None — revalidation stays off) when the
-        # heuristic is not enabled for this downstream or there is no prior
-        # commit to compare against.
+        # Boundary revalidation (probe step) is only sound while the
+        # downstream's dependency context is unchanged; compare the
+        # dependency-file blobs (lake-manifest.json, lean-toolchain) against
+        # the previously-validated downstream commit so the probe can gate on
+        # it.  Skipped (left None — revalidation stays off) when the heuristic
+        # is not enabled for this downstream or there is no prior commit to
+        # compare against.
         if (
-            config.revalidate_known_endpoints
+            config.revalidate_boundary
             and previous is not None
             and previous.downstream_commit is not None
             and selection.downstream_commit is not None
         ):
-            selection.manifest_changed_since_last_run = manifest_changed_between(
+            selection.dependency_files_changed_since_last_run = dependency_files_changed_between(
                 downstream_dir,
                 previous.downstream_commit,
                 selection.downstream_commit,
+            )
+            selection.boundary_bisect_overdue = boundary_bisect_overdue(
+                previous.last_fresh_bisect_at,
+                max_age_days=args.max_boundary_age_days,
             )
 
         # Fast-path: if the target and downstream are identical to the last
