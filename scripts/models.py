@@ -42,7 +42,7 @@ class DownstreamConfig:
     # actively-developed downstreams in long failing episodes, where
     # try_skip_known_bad_bisect never fires because downstream_commit moves
     # between runs.
-    revalidate_known_endpoints: bool = False
+    revalidate_boundary: bool = False
     warm_cache: bool = False
     # When True, the probe step sets HOPSCOTCH_DEBUG_NUKE_LAKEDIR=1 in the
     # hopscotch subprocess environment.  Hopscotch then wipes <projectDir>/.lake
@@ -120,14 +120,14 @@ class WindowSelection:
     # Per-downstream skip flag from the inventory, forwarded so the probe step
     # respects inventory-level overrides without access to the inventory file.
     skip_known_bad_bisect: bool = True
-    # Per-downstream endpoint-revalidation flag from the inventory, forwarded
-    # like skip_known_bad_bisect.  See DownstreamConfig.revalidate_known_endpoints.
-    revalidate_known_endpoints: bool = False
+    # Per-downstream boundary-revalidation flag from the inventory, forwarded
+    # like skip_known_bad_bisect.  See DownstreamConfig.revalidate_boundary.
+    revalidate_boundary: bool = False
     # Whether the downstream's lake-manifest.json differs between the
     # previously-validated downstream commit and the current one.  Computed by
     # the select step (which has the downstream clone); None when there is no
     # prior commit to compare against or the comparison could not be made.
-    # The probe step only applies endpoint revalidation when this is False.
+    # The probe step only applies boundary revalidation when this is False.
     manifest_changed_since_last_run: bool | None = None
     # Per-downstream nuke-lakedir flag from the inventory, forwarded so the
     # probe step can set HOPSCOTCH_DEBUG_NUKE_LAKEDIR=1 without re-reading the

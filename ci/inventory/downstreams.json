@@ -14,7 +14,7 @@
       "default_branch": "master",
       "dependency_name": "mathlib",
       "enabled": true,
-      "revalidate_known_endpoints": true
+      "revalidate_boundary": true
     },
     {
       "name": "PrimeNumberTheoremAnd",

@@ -121,11 +121,11 @@ def try_skip_known_bad_bisect(
 
 
 # ---------------------------------------------------------------------------
-# Skip heuristic: endpoint revalidation ("monotonicity skip")
+# Skip heuristic: boundary revalidation ("monotonicity skip")
 # ---------------------------------------------------------------------------
 
 
-def try_revalidate_known_endpoints(
+def try_revalidate_boundary(
     *,
     revalidate_enabled: bool,
     selection: WindowSelection,
@@ -200,7 +200,7 @@ def try_revalidate_known_endpoints(
         downstream_commit=selection.downstream_commit,
         upstream_ref=upstream_ref,
         target_commit=selection.target_commit,
-        search_mode="endpoints-revalidated",
+        search_mode="boundary-revalidated",
         tested_commits=[selection.target_commit],
         tested_commit_details=selection.tested_commit_details,
         truncated=False,
@@ -286,7 +286,7 @@ def build_parser() -> argparse.ArgumentParser:
              "that is an ancestor of the target and the downstream is unchanged.",
     )
     parser.add_argument(
-        "--revalidate-known-endpoints", action=argparse.BooleanOptionalAction, default=True,
+        "--revalidate-boundary", action=argparse.BooleanOptionalAction, default=True,
         help="When the downstream changed but its manifest did not, re-validate the "
              "stored LKG/FKB pair (two builds) instead of re-bisecting.  Only applies "
              "to downstreams that opt in via the inventory; this flag is the operator "
@@ -467,7 +467,7 @@ def main() -> int:
         def verify_last_known_good(candidate: str) -> bool:
             """Run hopscotch against the stored LKG to confirm it still passes.
 
-            Memoized: endpoint revalidation and the bisect fallback both
+            Memoized: boundary revalidation and the bisect fallback both
             verify the same candidate, and one full build is enough.
             """
             if candidate in lkg_verification_outcomes:
@@ -552,8 +552,8 @@ def main() -> int:
         # The downstream changed, so the known-bad skip could not fire — try
         # re-validating the stored endpoint pair before committing to a full
         # bisect.  Falls through (None) unless both endpoints confirm.
-        result = try_revalidate_known_endpoints(
-            revalidate_enabled=args.revalidate_known_endpoints and selection.revalidate_known_endpoints,
+        result = try_revalidate_boundary(
+            revalidate_enabled=args.revalidate_boundary and selection.revalidate_boundary,
             selection=selection,
             previous=previous,
             config=config,

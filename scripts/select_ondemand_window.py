@@ -133,9 +133,9 @@ def main() -> int:
     # selection.default_branch is set to the target branch so that the probe
     # step (which reconstructs DownstreamConfig from selection.json) also
     # clones the correct branch when running the bisect.
-    # revalidate_known_endpoints stays at its False default: the bumping
+    # revalidate_boundary stays at its False default: the bumping
     # branch exists to move lake-manifest.json, so the manifest-unchanged
-    # guard behind endpoint revalidation would reject nearly every run.
+    # guard behind boundary revalidation would reject nearly every run.
     selection = WindowSelection(
         downstream=config.name,
         repo=config.repo,

@@ -484,7 +484,7 @@ def manifest_fixture() -> _ManifestFixture:
 
 
 class TestManifestChangedBetween:
-    """``manifest_changed_between`` — the dependency-bump guard for endpoint revalidation.
+    """``manifest_changed_between`` — the dependency-bump guard for boundary revalidation.
 
     A wrong False here lets the probe confirm a stale (LKG, FKB) pair after a
     dependency bump; a wrong True only costs a redundant bisect.  The tests

@@ -24,7 +24,7 @@ on:
         default: false
         type: boolean
       force_rebisect:
-        description: "Disable try_skip_known_bad_bisect and endpoint revalidation so the probe re-runs the bisect even when the stored first-known-bad commit is still an ancestor of the target."
+        description: "Disable try_skip_known_bad_bisect and boundary revalidation so the probe re-runs the bisect even when the stored first-known-bad commit is still an ancestor of the target."
         required: false
         default: false
         type: boolean
@@ -302,7 +302,7 @@ jobs:
           fi
           SKIP_FLAG=""
           if [ "$FORCE_REBISECT" = "true" ]; then
-            SKIP_FLAG="--no-skip-known-bad-bisect --no-revalidate-known-endpoints"
+            SKIP_FLAG="--no-skip-known-bad-bisect --no-revalidate-boundary"
           fi
           python3 -u scripts/probe_downstream_regression_window.py \
             --selection "$OUTPUT_DIR/selection.json" \
