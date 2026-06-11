@@ -31,6 +31,18 @@ class DownstreamConfig:
     bumping_branch: str | None = None
     skip_already_good: bool = True
     skip_known_bad_bisect: bool = True
+    # When True, a failing HEAD probe on a changed downstream re-validates the
+    # stored (LKG, FKB) pair — one build each — instead of re-bisecting the
+    # whole window.  The monotonicity assumption (downstream source changes
+    # don't move the regression boundary) is only trusted when the
+    # downstream's lake-manifest.json is unchanged since the last validated
+    # run; any manifest change (a dependency bump) disables the shortcut for
+    # that run.  A full bisect still runs whenever the revalidation fails
+    # (stored LKG now fails, or stored FKB now passes).  Enable for
+    # actively-developed downstreams in long failing episodes, where
+    # try_skip_known_bad_bisect never fires because downstream_commit moves
+    # between runs.
+    revalidate_known_endpoints: bool = False
     warm_cache: bool = False
     # When True, the probe step sets HOPSCOTCH_DEBUG_NUKE_LAKEDIR=1 in the
     # hopscotch subprocess environment.  Hopscotch then wipes <projectDir>/.lake
@@ -108,6 +120,15 @@ class WindowSelection:
     # Per-downstream skip flag from the inventory, forwarded so the probe step
     # respects inventory-level overrides without access to the inventory file.
     skip_known_bad_bisect: bool = True
+    # Per-downstream endpoint-revalidation flag from the inventory, forwarded
+    # like skip_known_bad_bisect.  See DownstreamConfig.revalidate_known_endpoints.
+    revalidate_known_endpoints: bool = False
+    # Whether the downstream's lake-manifest.json differs between the
+    # previously-validated downstream commit and the current one.  Computed by
+    # the select step (which has the downstream clone); None when there is no
+    # prior commit to compare against or the comparison could not be made.
+    # The probe step only applies endpoint revalidation when this is False.
+    manifest_changed_since_last_run: bool | None = None
     # Per-downstream nuke-lakedir flag from the inventory, forwarded so the
     # probe step can set HOPSCOTCH_DEBUG_NUKE_LAKEDIR=1 without re-reading the
     # inventory file.  See DownstreamConfig.nuke_lakedir.

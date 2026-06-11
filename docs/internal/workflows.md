@@ -54,11 +54,28 @@ commit introduced the breakage?*
         is an ancestor of the target and the downstream is unchanged, skips
         the bisect and runs a `run_culprit_probe` instead to capture fresh
         failure logs.
-     2. Otherwise attempts **LKG verification**: if a stored last-known-good
+     2. Tries `try_revalidate_known_endpoints` (per-downstream opt-in via
+        `"revalidate_known_endpoints": true` in the inventory) — when the
+        downstream *did* change but its `lake-manifest.json` did not (the
+        select step compares the manifest blob against the
+        previously-validated downstream commit), rebuilds both stored
+        endpoints with the current downstream source: if the stored LKG
+        still passes and the stored FKB still fails, the boundary is
+        confirmed at two builds and the result is reported with
+        `search_mode="endpoints-revalidated"` (endpoints preserved verbatim
+        by aggregation, exactly like `head-only-known-bad`). The FKB rebuild
+        writes to the `culprit-probe` directory, so it doubles as the
+        culprit log for this run. Any manifest change or comparison failure,
+        a failing LKG rebuild, or a non-failing FKB rebuild falls through to
+        the full bisect. The `force_rebisect` dispatch input disables this
+        heuristic together with the known-bad skip.
+     3. Otherwise attempts **LKG verification**: if a stored last-known-good
         is newer than the pinned commit, runs hopscotch against it. If it
         passes, re-derives the bisect window with the wider lower bound. If
-        it fails, falls back to the pinned-commit-based window.
-     3. Runs `hopscotch` in bisect mode over the final window.
+        it fails, falls back to the pinned-commit-based window. (The
+        verification outcome is memoized, so an LKG already built during
+        endpoint revalidation is reused here.)
+     4. Runs `hopscotch` in bisect mode over the final window.
 
    All hopscotch invocations go through `cache_env()`, which strips CI secrets
    as a defence-in-depth measure. Uploads a `result-<name>` artifact.
