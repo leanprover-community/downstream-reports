@@ -78,10 +78,14 @@ as-is.
 > GitHub App token ([Option B](#option-b--github-app-installation-token-recommended-for-ci-on-pr))
 > instead.
 >
-> To kick CI off on a single such PR without setting up an App, close and
-> reopen it or push a commit yourself (e.g. `git commit --allow-empty -m "run
-> CI"`) — a human-triggered event isn't suppressed. (On a `track-incompatibility`
-> fix PR this is automatic: the fix commits you push trigger CI anyway.)
+> To kick CI off on a single such PR without setting up an App, push a commit
+> yourself (e.g. `git commit --allow-empty -m "run CI"`) — a human-triggered
+> event isn't suppressed. Prefer this over closing and reopening the PR:
+> `open-bump-pr` only updates an *open* PR, so a cron tick while it's closed
+> would open a duplicate. An empty commit is tree-identical, so the
+> `tree_unchanged` short-circuit leaves it in place. (On a
+> `track-incompatibility` fix PR this is moot: the fix commits you push
+> trigger CI anyway.)
 
 ### Option B — GitHub App installation token (recommended for CI-on-PR)
 
