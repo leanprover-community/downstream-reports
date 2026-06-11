@@ -1179,6 +1179,49 @@ def latest_regression_run_id(engine: Any) -> str | None:
         return conn.execute(stmt).scalar()
 
 
+def load_recent_outcomes(
+    engine: Any, upstream: str, limit: int = 15
+) -> dict[str, list[dict]]:
+    """Return the most recent regression outcomes per downstream, newest first.
+
+    Each entry is ``{"outcome", "reported_at", "run_url"}``; at most *limit*
+    entries per downstream.  Used by the status page to render per-row run
+    history strips.
+    """
+    if not _SA_AVAILABLE:
+        raise ImportError("sqlalchemy is required; pip install sqlalchemy")
+
+    rr = _sa_run_result
+    r = _sa_run
+    rn = (
+        func.row_number()
+        .over(partition_by=rr.c.downstream, order_by=r.c.reported_at.desc())
+        .label("rn")
+    )
+    inner = (
+        sa_select(rr.c.downstream, rr.c.outcome, r.c.reported_at, r.c.run_url, rn)
+        .join(r, rr.c.run_id == r.c.run_id)
+        .where(r.c.workflow == "regression", r.c.upstream == upstream)
+        .subquery()
+    )
+    stmt = (
+        sa_select(inner)
+        .where(inner.c.rn <= limit)
+        .order_by(inner.c.downstream, inner.c.rn)
+    )
+    with connect_with_retry(engine) as conn:
+        rows = conn.execute(stmt).mappings().all()
+
+    result: dict[str, list[dict]] = {}
+    for row in rows:
+        result.setdefault(row["downstream"], []).append({
+            "outcome": row["outcome"],
+            "reported_at": row["reported_at"],
+            "run_url": row["run_url"],
+        })
+    return result
+
+
 def load_latest_run_per_downstream(
     engine: Any, workflow: str, upstream: str
 ) -> dict[str, LatestRunRecord]:
@@ -1327,7 +1370,12 @@ def load_run_for_site(engine: Any, run_id: str) -> tuple[dict, list[dict]]:
                 _sa_run_result.c.bump_commits,
                 _sa_run_result.c.search_base_not_ancestor,
                 _sa_run_result.c.culprit_log_artifact_url,
+                _sa_run_result.c.failure_stage,
+                _sa_run_result.c.search_mode,
+                _sa_run_result.c.error,
+                _sa_run_result.c.commit_window_truncated,
                 _sa_run.c.run_url,
+                _sa_run.c.reported_at.label("row_reported_at"),
                 _sa_validate_job.c.job_url,
                 _sa_validate_job.c.started_at.label("job_started_at"),
                 _sa_validate_job.c.finished_at.label("job_finished_at"),
