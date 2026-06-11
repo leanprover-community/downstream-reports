@@ -78,7 +78,8 @@
       "repo": "kbuzzard/ClassFieldTheory",
       "default_branch": "main",
       "dependency_name": "mathlib",
-      "enabled": true
+      "enabled": true,
+      "watch_manifest": true
     },
     {
       "name": "gibbs-measure",
@@ -86,7 +87,8 @@
       "default_branch": "main",
       "dependency_name": "mathlib",
       "enabled": true,
-      "warm_cache": true
+      "warm_cache": true,
+      "watch_manifest": true
     },
     {
       "name": "forbidden-matrix",
@@ -94,7 +96,8 @@
       "default_branch": "master",
       "dependency_name": "mathlib",
       "enabled": true,
-      "warm_cache": true
+      "warm_cache": true,
+      "watch_manifest": true
     },
     {
       "name": "BrauerGroup",
@@ -103,7 +106,8 @@
       "dependency_name": "mathlib",
       "enabled": true,
       "nuke_lakedir": true,
-      "revalidate_boundary": true
+      "revalidate_boundary": true,
+      "watch_manifest": true
     },
     {
       "name": "add-combi",
@@ -111,7 +115,8 @@
       "default_branch": "master",
       "dependency_name": "mathlib",
       "enabled": true,
-      "warm_cache": true
+      "warm_cache": true,
+      "watch_manifest": true
     },
     {
       "name": "cam-combi",
@@ -119,7 +124,8 @@
       "default_branch": "master",
       "dependency_name": "mathlib",
       "enabled": true,
-      "warm_cache": true
+      "warm_cache": true,
+      "watch_manifest": true
     },
     {
       "name": "chandra-furst-lipton",
@@ -135,7 +141,8 @@
       "default_branch": "master",
       "dependency_name": "mathlib",
       "enabled": true,
-      "warm_cache": true
+      "warm_cache": true,
+      "watch_manifest": true
     },
     {
       "name": "PersistentDecomp",
@@ -183,7 +190,8 @@
       "default_branch": "master",
       "dependency_name": "mathlib",
       "enabled": true,
-      "warm_cache": true
+      "warm_cache": true,
+      "watch_manifest": true
     },
     {
       "name": "Robo",
@@ -208,7 +216,8 @@
       "default_branch": "master",
       "dependency_name": "mathlib",
       "enabled": true,
-      "warm_cache": true
+      "warm_cache": true,
+      "watch_manifest": true
     },
     {
       "name": "LeanMachineLearning",
@@ -231,7 +240,8 @@
       "default_branch": "master",
       "dependency_name": "mathlib",
       "enabled": true,
-      "warm_cache": true
+      "warm_cache": true,
+      "watch_manifest": true
     }
   ]
 }
