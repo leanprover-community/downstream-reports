@@ -53,6 +53,7 @@ from scripts.git_ops import (
     RELEASE_TAG_GLOB,
     git_url_from_manifest,
     latest_reachable_tag,
+    manifest_changed_between,
     repo_clone_source,
     resolve_tag,
     run,
@@ -408,3 +409,147 @@ class TestGitUrlFromManifest:
 
     def test_missing_manifest_returns_none(self, tmp_path: Path) -> None:
         assert git_url_from_manifest(tmp_path, "mathlib") is None
+
+
+@dataclass(frozen=True)
+class _ManifestFixture:
+    """Shallow downstream clone plus the origin SHAs the tests compare against."""
+
+    clone: Path
+    head: str  # manifest identical to manifest_kept's
+    manifest_kept: str
+    manifest_bumped: str
+    pre_manifest: str  # commit from before lake-manifest.json existed
+
+
+@pytest.fixture(scope="module")
+def manifest_fixture() -> _ManifestFixture:
+    """Provide an origin repo with manifest history and a depth-1 clone of it.
+
+    Commit graph (oldest → newest)::
+
+        pre_manifest     no lake-manifest.json yet
+        manifest_bumped  manifest pins rev "1"*40
+        manifest_kept    manifest pins rev "2"*40, other file changes
+        head (HEAD)      manifest untouched, other file changes
+
+    Why this shape
+    --------------
+    ``manifest_changed_between`` runs in the select job against the depth-1
+    downstream clone, so the previous commit is never present locally and must
+    be fetched from origin by SHA — the fixture clone reproduces exactly that.
+    Fetching an arbitrary SHA needs ``uploadpack.allowAnySHA1InWant`` on the
+    origin; GitHub enables it in production, the fixture enables it for the
+    local file transport.
+    """
+    tmpdir = tempfile.TemporaryDirectory()
+    origin = Path(tmpdir.name) / "origin"
+    origin.mkdir()
+    run(["git", "init", "-b", "main", str(origin)])
+    _git(origin, "config", "user.email", "test@example.com")
+    _git(origin, "config", "user.name", "Test")
+    _git(origin, "config", "uploadpack.allowAnySHA1InWant", "true")
+
+    def commit(msg: str, manifest_rev: str | None, other: str) -> str:
+        if manifest_rev is not None:
+            (origin / "lake-manifest.json").write_text(
+                '{"packages": [{"name": "mathlib", "type": "git", "rev": "%s"}]}'
+                % (manifest_rev * 40)
+            )
+        (origin / "other.txt").write_text(other)
+        _git(origin, "add", "-A")
+        _git(origin, "commit", "-m", msg)
+        return _git(origin, "rev-parse", "HEAD")
+
+    pre_manifest = commit("pre-manifest", None, "v0")
+    manifest_bumped = commit("bump manifest", "1", "v1")
+    manifest_kept = commit("keep manifest", "2", "v2")
+    head = commit("source-only change", None, "v3")
+
+    clone = Path(tmpdir.name) / "clone"
+    run(
+        ["git", "clone", "--depth", "1", "--branch", "main", "--quiet",
+         str(origin), str(clone)]
+    )
+
+    fixture = _ManifestFixture(
+        clone=clone,
+        head=head,
+        manifest_kept=manifest_kept,
+        manifest_bumped=manifest_bumped,
+        pre_manifest=pre_manifest,
+    )
+    yield fixture
+    tmpdir.cleanup()
+
+
+class TestManifestChangedBetween:
+    """``manifest_changed_between`` — the dependency-bump guard for endpoint revalidation.
+
+    A wrong False here lets the probe confirm a stale (LKG, FKB) pair after a
+    dependency bump; a wrong True only costs a redundant bisect.  The tests
+    therefore pin both directions plus every cannot-compare → None path.
+    """
+
+    def test_source_only_change_reports_unchanged(
+        self, manifest_fixture: _ManifestFixture
+    ) -> None:
+        """Source-only downstream commits leave the manifest blob identical → False.
+
+        This is physlib's steady state — daily source commits with no bump —
+        and the case the revalidation shortcut exists for.
+        """
+        assert (
+            manifest_changed_between(
+                manifest_fixture.clone, manifest_fixture.manifest_kept, manifest_fixture.head
+            )
+            is False
+        )
+
+    def test_manifest_bump_reports_changed(
+        self, manifest_fixture: _ManifestFixture
+    ) -> None:
+        """A commit range that rewrote the manifest → True."""
+        assert (
+            manifest_changed_between(
+                manifest_fixture.clone, manifest_fixture.manifest_bumped, manifest_fixture.head
+            )
+            is True
+        )
+
+    def test_identical_commits_report_unchanged_without_fetching(
+        self, manifest_fixture: _ManifestFixture
+    ) -> None:
+        """previous == current short-circuits to False (re-run of the same commit)."""
+        assert (
+            manifest_changed_between(
+                manifest_fixture.clone, manifest_fixture.head, manifest_fixture.head
+            )
+            is False
+        )
+
+    def test_manifest_missing_at_previous_commit_returns_none(
+        self, manifest_fixture: _ManifestFixture
+    ) -> None:
+        """No manifest at the previous commit → None (cannot compare).
+
+        The caller treats None as changed, so a downstream that only just
+        gained a manifest gets a full bisect rather than a guessed skip.
+        """
+        assert (
+            manifest_changed_between(
+                manifest_fixture.clone, manifest_fixture.pre_manifest, manifest_fixture.head
+            )
+            is None
+        )
+
+    def test_unfetchable_previous_commit_returns_none(
+        self, manifest_fixture: _ManifestFixture
+    ) -> None:
+        """A previous commit origin no longer serves (force push, GC) → None."""
+        assert (
+            manifest_changed_between(
+                manifest_fixture.clone, "f" * 40, manifest_fixture.head
+            )
+            is None
+        )

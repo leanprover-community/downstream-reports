@@ -25,6 +25,7 @@ import argparse
 import json
 import subprocess
 import sys
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -120,6 +121,101 @@ def try_skip_known_bad_bisect(
 
 
 # ---------------------------------------------------------------------------
+# Skip heuristic: endpoint revalidation ("monotonicity skip")
+# ---------------------------------------------------------------------------
+
+
+def try_revalidate_known_endpoints(
+    *,
+    revalidate_enabled: bool,
+    selection: WindowSelection,
+    previous: DownstreamStatusRecord | None,
+    config: DownstreamConfig,
+    upstream_ref: str,
+    upstream_dir: Path,
+    head_probe_run: subprocess.CompletedProcess[str],
+    head_probe_state: dict[str, Any],
+    head_probe_summary_text: str | None,
+    verify_last_known_good: Callable[[str], bool],
+    probe_first_known_bad: Callable[[str], int],
+) -> ValidationResult | None:
+    """Re-validate the stored (LKG, FKB) pair instead of re-bisecting.
+
+    When the downstream source has changed, try_skip_known_bad_bisect cannot
+    fire — but as long as the downstream's lake-manifest.json is unchanged
+    (no dependency bump), the regression boundary is assumed not to move with
+    downstream source changes.  Rather than trusting that assumption blindly,
+    rebuild both stored endpoints with the current downstream: if the stored
+    last-known-good still passes and the stored first-known-bad still fails,
+    the boundary is confirmed at two builds instead of a full bisect.  Any
+    other combination falls back to the bisect path (returns None).
+
+    The first-known-bad rebuild doubles as the culprit re-probe: its failure
+    log lands in this job's artifacts via the culprit-probe output directory.
+    """
+    if not revalidate_enabled:
+        return None
+    if previous is None:
+        return None
+    if previous.first_known_bad_commit is None or previous.last_known_good_commit is None:
+        return None
+    if selection.manifest_changed_since_last_run is not False:
+        # True: a dependency bump invalidates the monotonicity assumption.
+        # None: no prior commit to compare against, or the comparison failed —
+        # treat unknown as changed.
+        return None
+    if not is_strict_ancestor(upstream_dir, previous.first_known_bad_commit, selection.target_commit):
+        return None
+
+    if not verify_last_known_good(previous.last_known_good_commit):
+        print(
+            f"[{config.name}] stored last-known-good "
+            f"{previous.last_known_good_commit[:12]} no longer passes; "
+            f"falling back to a full bisect"
+        )
+        return None
+
+    fkb_exit_code = probe_first_known_bad(previous.first_known_bad_commit)
+    if fkb_exit_code != 1:
+        print(
+            f"[{config.name}] stored first-known-bad "
+            f"{previous.first_known_bad_commit[:12]} no longer fails "
+            f"(exit code {fkb_exit_code}); falling back to a full bisect"
+        )
+        return None
+
+    print(
+        f"[{config.name}] stored endpoints re-validated with the current "
+        f"downstream (LKG passes, FKB fails); skipping bisect"
+    )
+    selection.decision_reason = (
+        "The HEAD probe failed and the downstream changed, but its manifest is "
+        "unchanged and both stored endpoints re-validated: the last-known-good "
+        "still passes and the first-known-bad still fails.  The boundary is "
+        "confirmed without a bisect."
+    )
+    selection.next_action = "Skip the bisect probe and report the re-validated failing result."
+    return build_result_from_tool(
+        config=config,
+        downstream_commit=selection.downstream_commit,
+        upstream_ref=upstream_ref,
+        target_commit=selection.target_commit,
+        search_mode="endpoints-revalidated",
+        tested_commits=[selection.target_commit],
+        tested_commit_details=selection.tested_commit_details,
+        truncated=False,
+        tool_run=head_probe_run,
+        state=head_probe_state,
+        tool_summary=head_probe_summary_text,
+        head_probe_outcome=selection.head_probe_outcome,
+        head_probe_failure_stage=selection.head_probe_failure_stage,
+        head_probe_summary=selection.head_probe_summary,
+        pinned_commit=selection.pinned_commit,
+        search_base_not_ancestor=selection.search_base_not_ancestor,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Culprit re-probe
 # ---------------------------------------------------------------------------
 
@@ -188,6 +284,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--skip-known-bad-bisect", action=argparse.BooleanOptionalAction, default=True,
         help="Skip bisect when the downstream is already failing with a known culprit "
              "that is an ancestor of the target and the downstream is unchanged.",
+    )
+    parser.add_argument(
+        "--revalidate-known-endpoints", action=argparse.BooleanOptionalAction, default=True,
+        help="When the downstream changed but its manifest did not, re-validate the "
+             "stored LKG/FKB pair (two builds) instead of re-bisecting.  Only applies "
+             "to downstreams that opt in via the inventory; this flag is the operator "
+             "escape hatch to force a full bisect.",
     )
     return parser
 
@@ -359,6 +462,64 @@ def main() -> int:
             write_result(args.output_dir / "result.json", result)
             return 0
 
+        lkg_verification_outcomes: dict[str, bool] = {}
+
+        def verify_last_known_good(candidate: str) -> bool:
+            """Run hopscotch against the stored LKG to confirm it still passes.
+
+            Memoized: endpoint revalidation and the bisect fallback both
+            verify the same candidate, and one full build is enough.
+            """
+            if candidate in lkg_verification_outcomes:
+                return lkg_verification_outcomes[candidate]
+            print(
+                f"[{config.name}] verifying stored last-known-good "
+                f"{candidate[:12]} before extending bisect window"
+            )
+            lkg_check_dir = args.workdir / "downstreams-lkg-check" / config.name
+            lkg_clone_source = str(downstream_dir) if downstream_dir.exists() else None
+            clone_downstream(config, lkg_check_dir, clone_source=lkg_clone_source)
+            lkg_run, _, _ = run_validation_attempt(
+                config=config,
+                from_ref=parent_commit(upstream_dir, candidate),
+                to_ref=candidate,
+                project_dir=lkg_check_dir,
+                output_dir=args.output_dir / "stored-last-known-good-check",
+                tested_commits=[candidate],
+                env=env,
+                tool_exe=args.tool_exe,
+                quiet=args.quiet,
+            )
+            lkg_verification_outcomes[candidate] = lkg_run.returncode == 0
+            return lkg_verification_outcomes[candidate]
+
+        def probe_first_known_bad(candidate: str) -> int:
+            """Rebuild the stored FKB with the current downstream; return the exit code.
+
+            Writes to the culprit-probe output directory so a still-failing
+            build doubles as the culprit log for this run's artifacts
+            (see .github/scripts/stage-culprit-log.sh).
+            """
+            print(
+                f"[{config.name}] re-validating stored first-known-bad "
+                f"{candidate[:12]} with the current downstream"
+            )
+            fkb_check_dir = args.workdir / "downstreams-fkb-check" / config.name
+            fkb_clone_source = str(downstream_dir) if downstream_dir.exists() else None
+            clone_downstream(config, fkb_check_dir, clone_source=fkb_clone_source)
+            fkb_run, _, _ = run_validation_attempt(
+                config=config,
+                from_ref=parent_commit(upstream_dir, candidate),
+                to_ref=candidate,
+                project_dir=fkb_check_dir,
+                output_dir=args.output_dir / "culprit-probe",
+                tested_commits=[candidate],
+                env=env,
+                tool_exe=args.tool_exe,
+                quiet=args.quiet,
+            )
+            return fkb_run.returncode
+
         # HEAD probe failed — try the known-bad bisect skip before committing
         # to a full bisect run.
         result = try_skip_known_bad_bisect(
@@ -388,34 +549,34 @@ def main() -> int:
             write_result(args.output_dir / "result.json", result)
             return 0
 
+        # The downstream changed, so the known-bad skip could not fire — try
+        # re-validating the stored endpoint pair before committing to a full
+        # bisect.  Falls through (None) unless both endpoints confirm.
+        result = try_revalidate_known_endpoints(
+            revalidate_enabled=args.revalidate_known_endpoints and selection.revalidate_known_endpoints,
+            selection=selection,
+            previous=previous,
+            config=config,
+            upstream_ref=upstream_ref,
+            upstream_dir=upstream_dir,
+            head_probe_run=head_probe_run,
+            head_probe_state=head_probe_state,
+            head_probe_summary_text=head_probe_summary_text,
+            verify_last_known_good=verify_last_known_good,
+            probe_first_known_bad=probe_first_known_bad,
+        )
+        if result is not None:
+            write_result(args.output_dir / "result.json", result)
+            return 0
+
         # --- Bisect probe ---
         # Try to widen the bisect window by verifying the stored LKG.  The
         # select step used the pinned commit as a conservative lower bound
         # because it cannot run hopscotch.  If the stored LKG is more recent
-        # and still passes, we get a tighter window.
+        # and still passes, we get a tighter window.  (When endpoint
+        # revalidation already verified the LKG above, the memoized outcome is
+        # reused — no second build.)
         stored_lkg = previous.last_known_good_commit if previous else None
-
-        def verify_last_known_good(candidate: str) -> bool:
-            """Run hopscotch against the stored LKG to confirm it still passes."""
-            print(
-                f"[{config.name}] verifying stored last-known-good "
-                f"{candidate[:12]} before extending bisect window"
-            )
-            lkg_check_dir = args.workdir / "downstreams-lkg-check" / config.name
-            lkg_clone_source = str(downstream_dir) if downstream_dir.exists() else None
-            clone_downstream(config, lkg_check_dir, clone_source=lkg_clone_source)
-            lkg_run, _, _ = run_validation_attempt(
-                config=config,
-                from_ref=parent_commit(upstream_dir, candidate),
-                to_ref=candidate,
-                project_dir=lkg_check_dir,
-                output_dir=args.output_dir / "stored-last-known-good-check",
-                tested_commits=[candidate],
-                env=env,
-                tool_exe=args.tool_exe,
-                quiet=args.quiet,
-            )
-            return lkg_run.returncode == 0
 
         search_base_commit = select_search_base_from_candidates(
             upstream_dir=upstream_dir,
