@@ -1199,7 +1199,10 @@ def load_recent_outcomes(
         .label("rn")
     )
     inner = (
-        sa_select(rr.c.downstream, rr.c.outcome, r.c.reported_at, r.c.run_url, rn)
+        sa_select(
+            rr.c.downstream, rr.c.outcome, rr.c.first_known_bad,
+            r.c.reported_at, r.c.run_url, rn,
+        )
         .join(r, rr.c.run_id == r.c.run_id)
         .where(r.c.workflow == "regression", r.c.upstream == upstream)
         .subquery()
@@ -1216,6 +1219,7 @@ def load_recent_outcomes(
     for row in rows:
         result.setdefault(row["downstream"], []).append({
             "outcome": row["outcome"],
+            "first_known_bad": row["first_known_bad"],
             "reported_at": row["reported_at"],
             "run_url": row["run_url"],
         })

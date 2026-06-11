@@ -517,6 +517,7 @@ def load_history_from_filesystem(state_root: Path, limit: int = HISTORY_LIMIT) -
                 if len(entries) < limit:
                     entries.append({
                         "outcome": outcome,
+                        "first_known_bad": row.get("first_known_bad"),
                         "reported_at": day.name,
                         "run_url": None,
                     })
@@ -531,6 +532,7 @@ _LIGHT_VARS = """\
   color-scheme: light;
   --green:  #22863a;
   --red:    #b31d28;
+  --orange: #d4670e;
   --yellow: #b08800;
   --grey:   #6a737d;
   --bg:     #f6f8fa;
@@ -557,6 +559,7 @@ _DARK_VARS = """\
   color-scheme: dark;
   --green:  #3fb950;
   --red:    #f85149;
+  --orange: #f0883e;
   --yellow: #d29922;
   --grey:   #8b949e;
   --bg:     #0d1117;
@@ -709,6 +712,7 @@ tr.expanded .expander { transform: rotate(90deg); }
 .hist-cell:hover, .hist-cell:focus-visible { outline: 1px solid var(--fg-muted); }
 .hist-passed { background: var(--green); opacity: .75; }
 .hist-failed { background: var(--red); opacity: .75; }
+.hist-failed-other { background: var(--orange); opacity: .75; }
 .hist-error  { background: var(--yellow); opacity: .75; }
 .copy-sha {
   background: none; border: none; padding: 0 2px; margin-left: 4px;
@@ -901,15 +905,16 @@ tr.detail-row > td {
 .chart-bar-error   { background: repeating-linear-gradient(90deg, var(--grey) 0 5px, transparent 5px 10px); opacity: .5; }
 .chart-marker {
   position: absolute; top: 50%; width: 9px; height: 9px;
-  transform: translate(-50%, -50%); border-radius: 50%;
-  border: 1.5px solid var(--surface); z-index: 2;
+  transform: translate(-50%, -50%); z-index: 2; display: block;
 }
-.chart-marker-pin { background: var(--grey); }
-.chart-marker-lkg { background: var(--green); }
-.chart-marker-fkb {
-  background: var(--red); width: 10px; height: 10px;
-  transform: translate(-50%, -50%) rotate(45deg); border-radius: 2px;
+.chart-marker-fkb { width: 10px; height: 10px; }
+.chart-shape {
+  display: block; width: 100%; height: 100%; box-sizing: border-box;
+  border-radius: 50%; border: 1.5px solid var(--surface);
 }
+.chart-shape-pin { background: var(--grey); }
+.chart-shape-lkg { background: var(--green); }
+.chart-shape-fkb { background: var(--red); border-radius: 2px; transform: rotate(45deg); }
 .chart-legend {
   display: flex; gap: 16px; flex-wrap: wrap; align-items: center;
   margin-top: 14px; font-size: 11px; color: var(--fg-muted);
@@ -922,7 +927,7 @@ tr.detail-row > td {
   display: inline-block; width: 9px; height: 9px; border-radius: 50%;
   border: 1.5px solid var(--surface);
 }
-.chart-marker-demo.chart-marker-fkb { border-radius: 2px; transform: rotate(45deg); }
+.chart-marker-demo.chart-shape-fkb { border-radius: 2px; transform: rotate(45deg); }
 .chart-callouts {
   margin-top: 12px; font-size: 12px; color: var(--fg-muted);
   display: flex; flex-direction: column; gap: 4px;
@@ -1457,9 +1462,12 @@ def render_chart(
         parts.append(f"{d} commit{'s' if d != 1 else ''} behind target" if d else "= target")
         tip = "&#10;".join(esc(p) for p in parts)
         url = f"{GITHUB}/{UPSTREAM_REPO}/commit/{sha}"
+        # The visual shape lives in an inner span so the FKB diamond's
+        # rotation can't tilt the tooltip pseudo-elements on the anchor.
         return (
             f'<a class="chart-marker chart-marker-{role_cls}" {_scale_attrs(d)} '
-            f'href="{esc(url)}" target="_blank" rel="noopener noreferrer" data-tooltip="{tip}"></a>'
+            f'href="{esc(url)}" target="_blank" rel="noopener noreferrer" data-tooltip="{tip}">'
+            f'<span class="chart-shape chart-shape-{role_cls}"></span></a>'
         )
 
     def bar(cls: str, d_far: int, d_near: int) -> str:
@@ -1524,9 +1532,9 @@ def render_chart(
         '<span><span class="legend-swatch" style="background:var(--red)"></span>incompatible (first known bad → target)</span>'
         '<span><span class="legend-swatch legend-dashed-red"></span>break not yet located</span>'
         '<span><span class="legend-swatch legend-dashed-grey"></span>validation error</span>'
-        '<span><span class="chart-marker-demo chart-marker-pin"></span>pinned</span>'
-        '<span><span class="chart-marker-demo chart-marker-lkg"></span>last known good</span>'
-        '<span><span class="chart-marker-demo chart-marker-fkb"></span>first known bad</span>'
+        '<span><span class="chart-marker-demo chart-shape-pin"></span>pinned</span>'
+        '<span><span class="chart-marker-demo chart-shape-lkg"></span>last known good</span>'
+        '<span><span class="chart-marker-demo chart-shape-fkb"></span>first known bad</span>'
         '</div>'
     )
 
@@ -1745,14 +1753,27 @@ def render_history_strip(history: list[dict]) -> str:
 
     *history* is newest-first, as loaded from storage.  A single entry carries
     no more information than the row itself, so the strip needs at least two.
+
+    Failed runs whose first-known-bad differs from the most recent failure's
+    render in orange: the project was incompatible then too, but because of a
+    different breaking commit than the current one.
     """
     if len(history) < 2:
         return ""
+    current_fkb = next(
+        (h.get("first_known_bad") for h in history
+         if h.get("outcome") == "failed" and h.get("first_known_bad")),
+        None,
+    )
     cells = []
     for h in reversed(history[:HISTORY_LIMIT]):
         outcome = h.get("outcome", "")
         cls = HIST_CLASS.get(outcome, "hist-error")
         label = COMPATIBILITY_LABEL.get(outcome, outcome)
+        fkb = h.get("first_known_bad")
+        if outcome == "failed" and current_fkb and fkb and fkb != current_fkb:
+            cls = "hist-failed-other"
+            label = f"{label} · different breaking commit ({short_sha(fkb)})"
         when = str(h.get("reported_at") or "")[:16].replace("T", " ")
         tip = esc(f"{label} · {when}" if when else label)
         url = h.get("run_url")

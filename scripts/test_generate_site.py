@@ -31,6 +31,7 @@ Out of scope:
 from __future__ import annotations
 
 import json
+import re
 import sys
 import tempfile
 import unittest
@@ -273,7 +274,6 @@ class AdvanceMapTests(unittest.TestCase):
                       first_known_bad=shared_fkb),
         ]
         html = self._chart(rows)
-        import re
         positions = re.findall(r'chart-marker-fkb" style="left:([\d.]+)%', html)
         assert len(positions) == 2
         assert positions[0] == positions[1]
@@ -282,7 +282,6 @@ class AdvanceMapTests(unittest.TestCase):
     def test_dual_scale_coordinates(self) -> None:
         """Scenario: every bar and marker carries log and linear coordinates."""
         html = self._chart([_make_row()])
-        import re
         bars = re.findall(r'class="chart-bar [^"]+" ([^>]+)>', html)
         assert bars
         for attrs in bars:
@@ -294,10 +293,19 @@ class AdvanceMapTests(unittest.TestCase):
         """Scenario: in linear coordinates, a bump of half the age yields a
         bar of half the track width."""
         html = self._chart([_make_row(age_commits=10, bump_commits=5)])
-        import re
         m = re.search(r'chart-bar chart-bar-good"[^>]*data-lin-width="([\d.]+)"', html)
         assert m is not None
         assert abs(float(m.group(1)) - 50.0) < 0.01
+
+    def test_marker_shape_is_nested_inside_the_tooltip_anchor(self) -> None:
+        """Scenario: the FKB diamond's rotation lives on an inner span, so the
+        tooltip pseudo-elements on the anchor render upright."""
+        html = self._chart([_make_row()])
+        anchor = re.search(
+            r'<a class="chart-marker chart-marker-fkb"[^>]*>(.*?)</a>', html,
+        )
+        assert anchor is not None
+        assert re.search(r'<span class="[^"]*chart-shape-fkb[^"]*"', anchor.group(1))
 
     def test_axis_has_target_tick_for_both_scales(self) -> None:
         """Scenario: both tick sets anchor at the target on the right edge."""
@@ -327,6 +335,38 @@ class HistoryStripTests(unittest.TestCase):
         ]
         html = render_history_strip(history)
         assert html.count("hist-cell") == HISTORY_LIMIT
+
+    def test_different_breaking_commit_renders_orange(self) -> None:
+        """Scenario: a past failure with a different first-known-bad than the
+        most recent failure renders orange, naming the other commit."""
+        history = [
+            {"outcome": "failed", "first_known_bad": "a" * 40, "reported_at": "2026-06-10", "run_url": None},
+            {"outcome": "failed", "first_known_bad": "z" * 40, "reported_at": "2026-06-09", "run_url": None},
+            {"outcome": "failed", "first_known_bad": "a" * 40, "reported_at": "2026-06-08", "run_url": None},
+        ]
+        html = render_history_strip(history)
+        assert html.count("hist-failed-other") == 1
+        assert f"different breaking commit ({'z' * 7})" in html
+        assert html.count('hist-cell hist-failed"') == 2
+
+    def test_same_breaking_commit_stays_red(self) -> None:
+        """Scenario: failures from the same incompatibility all stay red."""
+        history = [
+            {"outcome": "failed", "first_known_bad": "a" * 40, "reported_at": "2026-06-10", "run_url": None},
+            {"outcome": "failed", "first_known_bad": "a" * 40, "reported_at": "2026-06-09", "run_url": None},
+        ]
+        html = render_history_strip(history)
+        assert "hist-failed-other" not in html
+
+    def test_unbisected_failures_are_not_marked_different(self) -> None:
+        """Scenario: a failure with no recorded first-known-bad can't be
+        attributed to a different break, so it stays red."""
+        history = [
+            {"outcome": "failed", "first_known_bad": "a" * 40, "reported_at": "2026-06-10", "run_url": None},
+            {"outcome": "failed", "first_known_bad": None, "reported_at": "2026-06-09", "run_url": None},
+        ]
+        html = render_history_strip(history)
+        assert "hist-failed-other" not in html
 
     def test_cells_link_to_their_run_when_known(self) -> None:
         """Scenario: entries with a run_url render as links, others as spans."""
@@ -420,12 +460,17 @@ class LoadFromFilesystemTests(unittest.TestCase):
 
 
 class LoadHistoryFromFilesystemTests(unittest.TestCase):
-    def _write(self, root: Path, day: str, run_id: str, downstream: str, outcome: str) -> None:
+    def _write(
+        self, root: Path, day: str, run_id: str, downstream: str, outcome: str,
+        first_known_bad: str | None = None,
+    ) -> None:
         d = root / "results" / day / run_id
         d.mkdir(parents=True, exist_ok=True)
-        (d / f"{downstream}.json").write_text(
-            json.dumps({"downstream": downstream, "outcome": outcome})
-        )
+        (d / f"{downstream}.json").write_text(json.dumps({
+            "downstream": downstream,
+            "outcome": outcome,
+            "first_known_bad": first_known_bad,
+        }))
 
     def test_newest_first_and_ondemand_excluded(self) -> None:
         """Scenario: regression history is returned newest-first; the
@@ -433,7 +478,7 @@ class LoadHistoryFromFilesystemTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             self._write(root, "2026-06-08", "r1", "physlib", "passed")
-            self._write(root, "2026-06-09", "r2", "physlib", "failed")
+            self._write(root, "2026-06-09", "r2", "physlib", "failed", first_known_bad="b" * 40)
             od = root / "results" / "ondemand" / "2026-06-10" / "r3"
             od.mkdir(parents=True)
             (od / "physlib.json").write_text(
@@ -441,6 +486,7 @@ class LoadHistoryFromFilesystemTests(unittest.TestCase):
             )
             history = load_history_from_filesystem(root)
         assert [h["outcome"] for h in history["physlib"]] == ["failed", "passed"]
+        assert history["physlib"][0]["first_known_bad"] == "b" * 40
 
     def test_limit_per_downstream(self) -> None:
         """Scenario: at most *limit* entries are collected per downstream."""
@@ -482,6 +528,7 @@ class LoadRecentOutcomesTests(unittest.TestCase):
         downstream: str = "physlib",
         outcome: str = "passed",
         workflow: str = "regression",
+        first_known_bad: str | None = None,
     ) -> None:
         from scripts.storage import (
             DownstreamStatusRecord,
@@ -500,7 +547,7 @@ class LoadRecentOutcomesTests(unittest.TestCase):
             previous_last_known_good=None,
             previous_first_known_bad=None,
             last_known_good=None,
-            first_known_bad=None,
+            first_known_bad=first_known_bad,
             current_last_successful=None,
             current_first_failing=None,
             failure_stage=None,
@@ -529,12 +576,14 @@ class LoadRecentOutcomesTests(unittest.TestCase):
         engine = self._engine()
         base = datetime(2026, 6, 1, tzinfo=timezone.utc)
         self._seed_run(engine, "1", base.replace(day=1), outcome="passed")
-        self._seed_run(engine, "2", base.replace(day=2), outcome="failed")
+        self._seed_run(engine, "2", base.replace(day=2), outcome="failed",
+                       first_known_bad="b" * 40)
         self._seed_run(engine, "3", base.replace(day=3), outcome="error")
 
         history = load_recent_outcomes(engine, self._UPSTREAM)
         assert [h["outcome"] for h in history["physlib"]] == ["error", "failed", "passed"]
         assert history["physlib"][0]["run_url"] == "https://example.com/runs/3"
+        assert history["physlib"][1]["first_known_bad"] == "b" * 40
 
     def test_limit_is_applied_per_downstream(self) -> None:
         """Scenario: only the most recent *limit* runs are returned."""
@@ -598,9 +647,12 @@ class RenderPageTests(unittest.TestCase):
         assert "runs/latest.json" in html
 
     def test_header_tooltips_are_focusable(self) -> None:
-        """Scenario: column-header tooltips are keyboard-reachable."""
+        """Scenario: every column-header tooltip is keyboard-reachable."""
         html = self._page([_make_row()])
-        assert 'data-tooltip="Mathlib revision in the downstream&#x27;s lake manifest" tabindex="0"' in html
+        headers = re.findall(r'<th[^>]*>(<span data-tooltip="[^"]+"[^>]*>)', html)
+        assert headers, "expected tooltip-bearing column headers"
+        for span in headers:
+            assert 'tabindex="0"' in span
 
 
 if __name__ == "__main__":
