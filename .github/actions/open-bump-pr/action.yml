@@ -236,7 +236,7 @@ runs:
               printf '> [!WARNING]\n'
               printf '> This PR was opened by the default `github-actions[bot]` identity, so **your repository'"'"'s own CI does not run on it** — GitHub suppresses workflow triggers (`push` / `pull_request`) for events caused by the built-in `GITHUB_TOKEN`.\n'
               printf '>\n'
-              printf '> To run your CI on these automated PRs, open them under a GitHub App token instead: see the [authentication guide](https://github.com/leanprover-community/downstream-reports/blob/main/docs/actions.md#set-up-authentication).\n\n'
+              printf '> To run your CI on this PR once, push an empty commit (`git commit --allow-empty -m "run CI" && git push`) or close and reopen it — a human-triggered event is not suppressed. To get CI on every automated bump PR, open them under a GitHub App token instead: see the [authentication guide](https://github.com/leanprover-community/downstream-reports/blob/main/docs/actions.md#set-up-authentication).\n\n'
             fi
             printf '_This PR was last updated on %s by [this workflow run](%s). It is an automated bump using [downstream-reports/open-bump-pr](https://github.com/leanprover-community/downstream-reports)._\n' \
               "$TODAY" "$RUN_URL"

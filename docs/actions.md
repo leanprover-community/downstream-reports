@@ -77,6 +77,11 @@ as-is.
 > downstream-of-downstream tests, deploy previews, …) before merging, use a
 > GitHub App token ([Option B](#option-b--github-app-installation-token-recommended-for-ci-on-pr))
 > instead.
+>
+> To kick CI off on a single such PR without setting up an App, close and
+> reopen it or push a commit yourself (e.g. `git commit --allow-empty -m "run
+> CI"`) — a human-triggered event isn't suppressed. (On a `track-incompatibility`
+> fix PR this is automatic: the fix commits you push trigger CI anyway.)
 
 ### Option B — GitHub App installation token (recommended for CI-on-PR)
 
