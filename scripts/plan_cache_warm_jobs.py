@@ -193,7 +193,7 @@ def main() -> int:
         mode = "manual"
     else:
         inventory = load_inventory(Path(args.inventory), include_disabled=False)
-        backend = create_backend(args.backend, dsn=args.dsn, state_root=args.state_root)
+        backend = create_backend(args.backend, dsn=args.dsn)
         statuses = backend.load_all_statuses("regression", args.upstream)
         known_warm = backend.load_known_warm_shas(args.upstream)
         include, skipped = build_matrix_from_db(inventory, statuses, known_warm)

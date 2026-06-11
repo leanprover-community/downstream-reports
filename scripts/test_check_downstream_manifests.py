@@ -631,6 +631,8 @@ class TestMainOrchestration:
             "check_downstream_manifests.py",
             "--inventory", "(unused; load_inventory is patched)",
             "--upstream", "leanprover-community/mathlib4",
+            # create_backend is patched; the flag only satisfies the parser.
+            "--backend", "dry-run",
         ]
         if dry_run:
             argv.append("--dry-run-dispatch")

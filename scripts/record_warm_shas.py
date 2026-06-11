@@ -107,7 +107,7 @@ def main() -> int:
         print("No terminal SHAs to record.", file=sys.stderr)
         return 0
 
-    backend = create_backend(args.backend, dsn=args.dsn, state_root=args.state_root)
+    backend = create_backend(args.backend, dsn=args.dsn)
     backend.record_warm_shas(args.upstream, terminal_shas)
     print(
         f"Recorded {len(terminal_shas)} terminal SHA(s) for {args.upstream}: "

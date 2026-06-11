@@ -5,8 +5,7 @@ Tests for: scripts.generate_site
 Coverage scope:
     - Time helpers (``_as_datetime``, ``iso_epoch``, ``fmt_dt``,
       ``fmt_duration``, ``days_between``) — both ISO-string and datetime
-      inputs, since the SQL backend yields datetimes and the filesystem
-      backend yields strings.
+      inputs.
     - ``detail_narrative`` — the plain-English summary wording per outcome,
       including the adjacent-LKG/FKB phrasing and its truncated-window hedge.
     - ``render_window_strip`` — node merging, the adjacent junction, the
@@ -15,9 +14,8 @@ Coverage scope:
     - ``render_chart`` — row inclusion/exclusion, dual log/linear coordinates,
       vertical alignment of shared first-known-bad commits, and the
       shared-culprit callout.
-    - ``render_history_strip`` / ``load_history_from_filesystem`` /
-      ``storage.load_recent_outcomes`` — the run-history strip and both of its
-      data sources.
+    - ``render_history_strip`` / ``storage.load_recent_outcomes`` — the
+      run-history strip and its data source.
     - ``render_table_row`` — the single-CI-link policy (validation job with
       full-run fallback), copy-SHA buttons, and filter/status attributes.
     - ``render`` — page-level fixtures: staleness warning markup, metadata,
@@ -30,10 +28,8 @@ Out of scope:
 
 from __future__ import annotations
 
-import json
 import re
 import sys
-import tempfile
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
@@ -48,8 +44,6 @@ from scripts.generate_site import (
     fmt_dt,
     fmt_duration,
     iso_epoch,
-    load_from_filesystem,
-    load_history_from_filesystem,
     render,
     render_chart,
     render_history_strip,
@@ -422,88 +416,6 @@ class TableRowTests(unittest.TestCase):
         html = _render_row(_make_row())
         assert 'data-status="failed"' in html
         assert "physlib" in html.split('data-filter="')[1].split('"')[0]
-
-
-class LoadFromFilesystemTests(unittest.TestCase):
-    def _state(self, tmp: str) -> Path:
-        root = Path(tmp)
-        (root / "reports").mkdir(parents=True)
-        (root / "reports" / "latest.json").write_text(json.dumps({
-            "run_id": "42",
-            "upstream_ref": "master",
-            "run_url": "https://example.com/run/42",
-            "reported_at": "2026-06-10T08:30:00Z",
-            "results": [{"downstream": "physlib", "outcome": "passed"}],
-        }))
-        (root / "status").mkdir()
-        (root / "status" / "current.json").write_text(json.dumps({
-            "downstreams": {
-                "physlib": {
-                    "last_good_release": "v4.13.0",
-                    "last_good_release_commit": "r" * 40,
-                },
-            },
-        }))
-        return root
-
-    def test_rows_inherit_run_timestamp(self) -> None:
-        """Scenario: filesystem rows all come from one run, so each row's
-        row_reported_at is the run's reported_at."""
-        with tempfile.TemporaryDirectory() as tmp:
-            _, rows = load_from_filesystem(self._state(tmp))
-        assert rows[0]["row_reported_at"] == "2026-06-10T08:30:00Z"
-
-    def test_release_fields_merge_from_status(self) -> None:
-        """Scenario: last_good_release fields come from status/current.json."""
-        with tempfile.TemporaryDirectory() as tmp:
-            _, rows = load_from_filesystem(self._state(tmp))
-        assert rows[0]["last_good_release"] == "v4.13.0"
-        assert rows[0]["last_good_release_commit"] == "r" * 40
-
-
-class LoadHistoryFromFilesystemTests(unittest.TestCase):
-    def _write(
-        self, root: Path, day: str, run_id: str, downstream: str, outcome: str,
-        first_known_bad: str | None = None,
-    ) -> None:
-        d = root / "results" / day / run_id
-        d.mkdir(parents=True, exist_ok=True)
-        (d / f"{downstream}.json").write_text(json.dumps({
-            "downstream": downstream,
-            "outcome": outcome,
-            "first_known_bad": first_known_bad,
-        }))
-
-    def test_newest_first_and_ondemand_excluded(self) -> None:
-        """Scenario: regression history is returned newest-first; the
-        results/ondemand tree is not regression history."""
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            self._write(root, "2026-06-08", "r1", "physlib", "passed")
-            self._write(root, "2026-06-09", "r2", "physlib", "failed", first_known_bad="b" * 40)
-            od = root / "results" / "ondemand" / "2026-06-10" / "r3"
-            od.mkdir(parents=True)
-            (od / "physlib.json").write_text(
-                json.dumps({"downstream": "physlib", "outcome": "error"})
-            )
-            history = load_history_from_filesystem(root)
-        assert [h["outcome"] for h in history["physlib"]] == ["failed", "passed"]
-        assert history["physlib"][0]["first_known_bad"] == "b" * 40
-
-    def test_limit_per_downstream(self) -> None:
-        """Scenario: at most *limit* entries are collected per downstream."""
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            for d in range(1, 9):
-                self._write(root, f"2026-06-{d:02d}", f"r{d}", "physlib", "passed")
-            history = load_history_from_filesystem(root, limit=3)
-        assert len(history["physlib"]) == 3
-        assert history["physlib"][0]["reported_at"] == "2026-06-08"
-
-    def test_missing_tree_is_empty(self) -> None:
-        """Scenario: a state root with no results/ directory has no history."""
-        with tempfile.TemporaryDirectory() as tmp:
-            assert load_history_from_filesystem(Path(tmp)) == {}
 
 
 class LoadRecentOutcomesTests(unittest.TestCase):

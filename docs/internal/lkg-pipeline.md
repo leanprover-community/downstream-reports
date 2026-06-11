@@ -100,10 +100,10 @@ python3 scripts/export_runs_snapshot.py \
 
 Core logic lives in `build_runs_snapshot(latest_runs, inventory, upstream,
 source_run)` and is tested independently against an in-memory SQLite engine.
-Unlike the LKG snapshot, this script is effectively SQL-only: the filesystem
-and dry-run backends do not persist per-run URL / job metadata, so they yield
-null run fields for every downstream (same null-coalescing convention as the
-LKG snapshot).
+Unlike the LKG snapshot, this script is effectively SQL-only: the dry-run
+backend does not persist per-run URL / job metadata, so it yields null run
+fields for every downstream (same null-coalescing convention as the LKG
+snapshot).
 
 ### `publish-lkg.yml`
 

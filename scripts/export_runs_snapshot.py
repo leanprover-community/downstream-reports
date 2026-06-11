@@ -157,10 +157,10 @@ def _fetch_source_run(dsn: str | None) -> dict[str, str] | None:
 def _load_latest_runs(dsn: str | None, upstream: str) -> dict[str, LatestRunRecord]:
     """Fetch latest-run-per-downstream from SQL; return empty dict on any error.
 
-    The snapshot only carries data for the SQL backend (filesystem /dry-run
-    backends do not persist per-run URL / job metadata), so any other
-    configuration yields an empty result — downstreams then appear with
-    ``null`` run fields, matching the LKG snapshot convention.
+    The snapshot only carries data for the SQL backend (the dry-run backend
+    does not persist per-run URL / job metadata), so any other configuration
+    yields an empty result — downstreams then appear with ``null`` run
+    fields, matching the LKG snapshot convention.
     """
 
     dsn = dsn or os.environ.get("POSTGRES_DSN")
@@ -206,7 +206,7 @@ def main() -> int:
     # Backend is constructed for CLI symmetry with the LKG export, but the
     # runs snapshot itself is sourced from SQL directly (run metadata lives
     # in the relational schema).
-    create_backend(args.backend, dsn=args.dsn, state_root=args.state_root)
+    create_backend(args.backend, dsn=args.dsn)
 
     source_run: dict[str, str] | None = None
     latest_runs: dict[str, LatestRunRecord] = {}

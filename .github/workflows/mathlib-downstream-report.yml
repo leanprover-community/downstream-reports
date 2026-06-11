@@ -53,6 +53,17 @@ jobs:
       dry_run: ${{ steps.dry_run.outputs.value }}
     steps:
       - uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6.2.0
+        with:
+          python-version: '3.x'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r scripts/requirements.txt
+
       # Dry-run mode skips all database reads and writes, using the dry-run
       # backend which only logs what operations would have been performed.
       # It is always active on non-main branches (to avoid polluting the
@@ -103,9 +114,41 @@ jobs:
             echo "has_downstreams=true" >> "$GITHUB_OUTPUT"
           fi
 
+      # The select matrix's only database read is load_all_statuses — the same
+      # query with the same answer for every leg.  Stage it once here and hand
+      # it to the legs as an artifact: ~30 legs dialing the Neon pooler on the
+      # same cron tick is exactly the connection burst that provokes its
+      # cold-start timeouts, so the fan-out never touches the database.
+      - name: Stage status snapshot
+        if: steps.matrix.outputs.has_downstreams == 'true'
+        env:
+          # POSTGRES_DSN is intentionally omitted in dry-run mode so that
+          # credentials are never present in the environment when not needed.
+          POSTGRES_DSN: ${{ steps.dry_run.outputs.value == 'true' && '' || secrets.POSTGRES_DSN }}
+          BACKEND: ${{ steps.dry_run.outputs.value == 'true' && 'dry-run' || 'sql' }}
+        run: |
+          python3 scripts/export_status_snapshot.py \
+            --backend "$BACKEND" \
+            --workflow regression \
+            --upstream leanprover-community/mathlib4 \
+            --output status-snapshot/status.json
+
+      - name: Upload status snapshot
+        if: steps.matrix.outputs.has_downstreams == 'true'
+        uses: actions/upload-artifact@v7.0.0
+        with:
+          name: status-snapshot
+          path: status-snapshot
+          if-no-files-found: error
+          # Lets "re-run all jobs" replace a snapshot left behind when the
+          # previous attempt's report-job artifact cleanup did not run.
+          overwrite: true
+
   select:
-    # Runs on a hosted runner with access to secrets.  Clones repos, reads the
-    # database, and computes the bisect window.  Never invokes hopscotch.
+    # Runs on a hosted runner with access to secrets.  Clones repos, reads
+    # prior episode state from the status snapshot staged by the plan job
+    # (never the database), and computes the bisect window.  Never invokes
+    # hopscotch.
     if: needs.plan.outputs.has_downstreams == 'true'
     name: "select: ${{ matrix.name }}"
     needs:
@@ -127,22 +170,27 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r scripts/requirements.txt
 
+      - name: Download status snapshot
+        uses: actions/download-artifact@v8.0.1
+        with:
+          name: status-snapshot
+          path: ${{ runner.temp }}/status-snapshot
+
       - name: Select validation window
         env:
           DOWNSTREAM_NAME: ${{ matrix.name }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           UPSTREAM_REF: ${{ needs.plan.outputs.upstream_ref }}
           OUTPUT_DIR: ${{ runner.temp }}/artifacts/${{ matrix.name }}
-          # POSTGRES_DSN is intentionally omitted in dry-run mode so that
-          # credentials are never present in the environment when not needed.
-          POSTGRES_DSN: ${{ needs.plan.outputs.dry_run == 'true' && '' || secrets.POSTGRES_DSN }}
           PYTHONUNBUFFERED: "1"
+          # Prior episode state comes from the status snapshot staged by the
+          # plan job; select legs hold no database credentials.
+          STATUS_SNAPSHOT: ${{ runner.temp }}/status-snapshot/status.json
           WORKDIR: ${{ runner.temp }}/downstream-regression
-          BACKEND: ${{ needs.plan.outputs.dry_run == 'true' && 'dry-run' || 'sql' }}
         run: |
           python3 -u scripts/select_downstream_regression_window.py \
             --inventory ci/inventory/downstreams.json \
-            --backend "$BACKEND" \
+            --status-snapshot "$STATUS_SNAPSHOT" \
             --workflow regression \
             --upstream leanprover-community/mathlib4 \
             --downstream "$DOWNSTREAM_NAME" \
@@ -431,7 +479,7 @@ jobs:
         run: |
           gh api --paginate \
             "repos/$GH_REPO/actions/runs/$RUN_ID/artifacts" \
-            --jq '.artifacts[] | select(.name | test("^selection-")) | "\(.id) \(.name)"' \
+            --jq '.artifacts[] | select(.name | test("^selection-|^status-snapshot$")) | "\(.id) \(.name)"' \
           | while IFS=" " read -r id name; do
               gh api -X DELETE "repos/$GH_REPO/actions/artifacts/$id" \
                 && echo "deleted $name" \

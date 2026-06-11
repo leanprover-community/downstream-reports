@@ -173,40 +173,57 @@ cache_warmth       (upserted per warm run, keyed by upstream × sha)
 ```
 
 
-## Filesystem backend
+## Dry-run backend
 
-`FilesystemBackend(state_root: Path)` maps the protocol methods onto a local
-directory tree. It is used for local development and testing where no database
-is available — for example, `scripts/local_downstream_sandbox.py` uses it with
-`--backend filesystem --state-root <path>`.
+`DryRunBackend()` (`--backend dry-run`) is a no-op backend for debugging:
+reads return empty state and writes print a `[dry-run]`-prefixed summary of
+what would have been persisted. The workflows select it when the `dry_run`
+input is set so feature-branch test runs never touch the production database.
 
-### Directory layout
+For local development against real state, point the SQL backend at a SQLite
+file instead: `--backend sql --dsn sqlite:///state.db` (provision it once with
+`create_schema`, as above).
 
+## Status-snapshot file
+
+The select matrix fan-outs (~30 legs on one cron tick) never instantiate a
+backend at all: a simultaneous connection burst is exactly what provokes the
+Neon pooler's cold-start timeouts, and keeping credentials out of the fan-out
+shrinks the secret surface. Instead, the plan job runs
+`export_status_snapshot.py`, which performs the one `load_all_statuses` read
+and writes the result as a single JSON file
+(`storage.write_status_snapshot`); the workflow uploads it as the
+`status-snapshot` artifact and each select leg reads it back with
+`--status-snapshot <file>` (`storage.read_status_snapshot`).
+
+The payload embeds its provenance and the reader validates it — a missing
+file, an unexpected `schema_version`, or a snapshot staged for a different
+`(workflow, upstream)` fails the leg loudly rather than silently feeding the
+skip heuristics empty prior state:
+
+```json
+{
+  "schema_version": 3,
+  "workflow": "regression",
+  "upstream": "leanprover-community/mathlib4",
+  "reported_at": "2026-06-11T00:00:00Z",
+  "downstreams": {
+    "physlib": {
+      "last_known_good_commit": "…",
+      "first_known_bad_commit": null,
+      "pinned_commit": "…",
+      "downstream_commit": "…",
+      "last_good_release": "v4.13.0",
+      "last_good_release_commit": "…"
+    }
+  }
+}
 ```
-{state_root}/
-  status/
-    current.json          regression episode state
-  reports/
-    latest.json           latest regression run (structured)
-    latest.md             latest regression run (rendered markdown)
-  results/
-    {YYYY-MM-DD}/{run_id}/{downstream}.json   append-only run history
-```
 
-### Method behaviour
-
-**`load_all_statuses(workflow)`** reads `status/current.json` and constructs one
-`DownstreamStatusRecord` per entry in the `downstreams` object.
-
-**`save_run(...)`** writes three things:
-
-1. `status/current.json` — full snapshot of the updated episode state for all
-   downstreams.
-2. `reports/latest.json` and optionally `reports/latest.md` — the latest-run
-   report. Each call overwrites the previous one.
-3. `results/{day}/{run_id}/{downstream}.json` — one file per downstream,
-   append-only run history. These files are never overwritten.
+Omitting `--status-snapshot` runs a select script with no prior state (every
+downstream is treated as first-run), which is the convenient mode for local
+invocations.
 
 The helper `result_to_row(r: RunResultRecord) -> dict` serialises a
-`RunResultRecord` to the flat dict shape used in both JSON files and the
-markdown report. It is the only place the domain types touch the on-disk format.
+`RunResultRecord` to the flat dict shape used by the markdown report
+renderer.

@@ -1,22 +1,22 @@
 """Storage backend abstraction for downstream-regression state.
 
 The ``StorageBackend`` protocol is designed around domain concepts, not around
-how data happens to be physically stored.  This lets you swap out the
-underlying store (git-branch JSON files today, a relational database tomorrow)
-without touching any business logic.
+how data happens to be physically stored.  Two backends exist: ``SqlBackend``
+(production) and ``DryRunBackend`` (debugging — reads empty state, prints
+writes).  Matrix fan-outs never instantiate a backend at all: prior episode
+state reaches the select legs through the status-snapshot file (see the
+"Status-snapshot file" section below).
 
 Protocol overview
 -----------------
-``load_all_statuses(workflow)``
+``load_all_statuses(workflow, upstream)``
     Returns the current regression-episode state for every downstream tracked
-    by *workflow*.  A relational backend returns rows from
-    ``downstream_status``; the filesystem backend reads a JSON file.
+    by *workflow*: rows from ``downstream_status``.
 
 ``save_run(...)``
     Atomically persists the results of one workflow run, the updated episode
-    state for each downstream, and an optional pre-rendered markdown report.
-    A relational backend INSERTs into ``run`` and ``run_result``; the
-    filesystem backend writes JSON and markdown files.
+    state for each downstream, and an optional pre-rendered markdown report,
+    INSERTing into ``run`` and ``run_result`` in one transaction.
 
 ``load_tested_downstream_commits(workflow)``
     Return which (downstream, downstream_commit) pairs already have a
@@ -30,11 +30,9 @@ Protocol overview
 Adding a new backend
 --------------------
 1.  Implement a class whose public methods match ``StorageBackend``.
-2.  Instantiate it in ``aggregate_results.py`` (and the ``select_*``
-    scripts for ``load_all_statuses``) based on a CLI flag, e.g.
-    ``--backend postgres --dsn "$POSTGRES_DSN"``.
-3.  Update the YAML workflows to supply connection credentials instead of the
-    git-worktree setup steps — no Python business logic needs to change.
+2.  Add it to ``create_backend`` so ``--backend <name>`` selects it.
+3.  Update the YAML workflows to supply its connection parameters — no Python
+    business logic needs to change.
 """
 
 from __future__ import annotations
@@ -59,8 +57,7 @@ class DownstreamStatusRecord:
     """Current regression-episode state for one downstream.
 
     Maps to a row in ``downstream_status(downstream, workflow, ...)`` in a
-    relational schema, or to one entry inside ``status/{key}.json`` on the
-    filesystem.
+    relational schema, or to one entry inside the staged status-snapshot file.
     """
 
     last_known_good_commit: str | None = None
@@ -76,8 +73,7 @@ class ValidateJobRecord:
     """CI job metadata for one downstream's validate job in one run.
 
     Maps to a row in ``validate_job(run_id, downstream, ...)`` in a relational
-    schema.  The filesystem backend does not persist this separately — the job
-    URL is already embedded in the rendered markdown report.
+    schema.
     """
 
     downstream: str
@@ -119,8 +115,7 @@ class LatestRunRecord:
 class ManifestWatcherLedgerRow:
     """One row in the manifest-watcher dispatch ledger.
 
-    Maps to a row in ``manifest_watcher_ledger`` (SQL) or to one entry inside
-    ``manifest_watcher_ledger.json`` on the filesystem.  The watcher writes one
+    Maps to a row in ``manifest_watcher_ledger``.  The watcher writes one
     row per dispatched downstream so subsequent ticks don't re-dispatch the
     same ``(downstream, observed_pin)`` until ``dispatched_at`` ages out.
     """
@@ -136,8 +131,7 @@ class RunResultRecord:
     """Complete result for one downstream in one workflow run.
 
     Maps to a row in ``run_result(run_id, downstream, ...)`` in a relational
-    schema, or to one entry in ``results[*]`` of ``latest.json`` / a per-run
-    history file on the filesystem.
+    schema.
     """
 
     upstream: str
@@ -212,14 +206,12 @@ class StorageBackend(Protocol):
         """Persist run results and updated regression state atomically.
 
         *report_markdown* is the pre-rendered GitHub-summary report.
-        Filesystem backends cache it as a ``.md`` file; database backends may
-        store it in a text column or ignore it — the markdown can always be
-        regenerated from the structured data.
+        Backends may store it in a text column or ignore it — the markdown
+        can always be regenerated from the structured data.
 
         *validate_jobs* carries CI job metadata (timing, conclusion) for each
-        downstream's validate job.  The filesystem backend ignores this — the
-        job URL is already embedded in the markdown report.  The SQL backend
-        inserts one row per entry into ``validate_job``.
+        downstream's validate job.  The SQL backend inserts one row per entry
+        into ``validate_job``.
         """
         ...
 
@@ -252,7 +244,7 @@ class StorageBackend(Protocol):
         run rather than treat it as already-tested.
 
         Pinned by
-        ``test_storage.TestFilesystemBackendLoadPriorResults``.
+        ``test_storage.TestSqlBackendLoadPriorResults``.
         """
         ...
 
@@ -261,8 +253,8 @@ class StorageBackend(Protocol):
 
         Used by the cache-warming planner to skip SHAs whose Azure cache state
         was already verified by a previous warm run. Backends with no
-        persistence (filesystem, dry-run) return an empty set so planning
-        degrades gracefully off SQL.
+        persistence (dry-run) return an empty set so planning degrades
+        gracefully off SQL.
         """
         ...
 
@@ -289,295 +281,106 @@ class StorageBackend(Protocol):
 
 
 # ---------------------------------------------------------------------------
-# Filesystem implementation
+# Status-snapshot file
 # ---------------------------------------------------------------------------
+#
+# The select fan-outs never dial the database.  The plan job reads
+# ``downstream_status`` once (``export_status_snapshot.py``), writes the result
+# as a single JSON file via ``write_status_snapshot``, and uploads it as the
+# ``status-snapshot`` artifact; each select leg reads it back with
+# ``read_status_snapshot`` (``--status-snapshot <file>``).
 
-_WORKFLOW_STATUS_KEY: dict[str, str] = {
-    "regression": "current",
-    "ondemand": "ondemand-current",
-}
-_WORKFLOW_REPORT_KEY: dict[str, str] = {
-    "regression": "latest",
-    "ondemand": "ondemand-latest",
-}
-_WORKFLOW_HISTORY_PREFIX: dict[str, str] = {
-    "regression": "",
-    "ondemand": "ondemand",
-}
+_STATUS_SNAPSHOT_SCHEMA_VERSION = 3
 
 
 def result_to_row(r: RunResultRecord) -> dict[str, Any]:
     """Serialise a ``RunResultRecord`` to a flat dict.
 
-    Used by ``FilesystemBackend`` when writing JSON files and by
+    Used by ``SqlBackend.save_run`` consumers and by
     ``aggregate_results.render_report`` which expects this shape.
     """
     return asdict(r)
 
 
-class FilesystemBackend:
-    """State backend backed by a local directory tree.
+def status_snapshot_payload(
+    statuses: dict[str, DownstreamStatusRecord],
+    *,
+    workflow: str,
+    upstream: str,
+    reported_at: str,
+) -> dict[str, Any]:
+    """JSON-shaped episode-state snapshot, as stored in the snapshot file.
 
-    Layout under *state_root* (e.g. ``state-branch/ci``):
-
-    .. code-block:: text
-
-        status/
-            current.json           regression episode state
-            ondemand-current.json  ondemand episode state
-            (results also queried for dedup via load_tested_downstream_commits)
-        reports/
-            latest.json / latest.md
-            ondemand-latest.json / ondemand-latest.md
-        results/
-            {day}/{run_id}/{downstream}.json
-            ondemand/{day}/{run_id}/{downstream}.json
-
-    The JSON files preserve the existing on-disk schema so that the git state
-    branch remains readable without any migration.
+    Shared by ``write_status_snapshot`` and ``read_status_snapshot`` so a
+    snapshot staged by a workflow's plan job is exactly what the select legs
+    expect to read back.  ``workflow`` and ``upstream`` are embedded so the
+    reader can detect a snapshot staged for a different workflow being wired
+    to the wrong select leg.
     """
+    return {
+        "schema_version": _STATUS_SNAPSHOT_SCHEMA_VERSION,
+        "workflow": workflow,
+        "upstream": upstream,
+        "reported_at": reported_at,
+        "downstreams": {name: asdict(s) for name, s in sorted(statuses.items())},
+    }
 
-    def __init__(self, state_root: Path) -> None:
-        self._root = state_root
 
-    # ------------------------------------------------------------------
-    # StorageBackend implementation
-    # ------------------------------------------------------------------
-
-    def load_all_statuses(self, workflow: str, upstream: str) -> dict[str, DownstreamStatusRecord]:
-        path = self._root / "status" / f"{_WORKFLOW_STATUS_KEY[workflow]}.json"
-        if not path.exists():
-            return {}
-        payload = json.loads(path.read_text())
-        return {
-            name: DownstreamStatusRecord(
-                last_known_good_commit=data.get("last_known_good_commit"),
-                first_known_bad_commit=data.get("first_known_bad_commit"),
-                pinned_commit=data.get("pinned_commit"),
-                downstream_commit=data.get("downstream_commit"),
-                last_good_release=data.get("last_good_release"),
-                last_good_release_commit=data.get("last_good_release_commit"),
-            )
-            for name, data in payload.get("downstreams", {}).items()
-        }
-
-    def save_run(
-        self,
-        *,
-        run_id: str,
-        workflow: str,
-        upstream: str,
-        upstream_ref: str,
-        run_url: str,
-        created_at: str,
-        results: list[RunResultRecord],
-        updated_statuses: dict[str, DownstreamStatusRecord],
-        report_markdown: str | None = None,
-        validate_jobs: list[ValidateJobRecord] | None = None,
-    ) -> None:
-        # validate_jobs is not persisted by the filesystem backend — the job
-        # URL is already embedded in the rendered markdown report.
-        status_key = _WORKFLOW_STATUS_KEY[workflow]
-        report_key = _WORKFLOW_REPORT_KEY[workflow]
-        history_prefix = _WORKFLOW_HISTORY_PREFIX[workflow]
-
-        # Episode-state snapshot
-        status_path = self._root / "status" / f"{status_key}.json"
-        status_path.parent.mkdir(parents=True, exist_ok=True)
-        status_path.write_text(
-            json.dumps(
-                {
-                    "schema_version": 2,
-                    "reported_at": created_at,
-                    "downstreams": {
-                        name: {
-                            "last_known_good_commit": s.last_known_good_commit,
-                            "first_known_bad_commit": s.first_known_bad_commit,
-                            "pinned_commit": s.pinned_commit,
-                            "downstream_commit": s.downstream_commit,
-                            "last_good_release": s.last_good_release,
-                            "last_good_release_commit": s.last_good_release_commit,
-                        }
-                        for name, s in sorted(updated_statuses.items())
-                    },
-                },
-                indent=2,
-                sort_keys=True,
-            )
-            + "\n"
+def write_status_snapshot(
+    path: Path,
+    statuses: dict[str, DownstreamStatusRecord],
+    *,
+    workflow: str,
+    upstream: str,
+    reported_at: str,
+) -> Path:
+    """Write the episode-state snapshot for *workflow* to *path*."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            status_snapshot_payload(
+                statuses, workflow=workflow, upstream=upstream, reported_at=reported_at
+            ),
+            indent=2,
+            sort_keys=True,
         )
+        + "\n"
+    )
+    return path
 
-        # Latest-run JSON report
-        rows = [result_to_row(r) for r in results]
-        report_json_path = self._root / "reports" / f"{report_key}.json"
-        report_json_path.parent.mkdir(parents=True, exist_ok=True)
-        report_json_path.write_text(
-            json.dumps(
-                {
-                    "schema_version": 1,
-                    "reported_at": created_at,
-                    "upstream": upstream,
-                    "upstream_ref": upstream_ref,
-                    "run_id": run_id,
-                    "run_url": run_url,
-                    "results": rows,
-                },
-                indent=2,
-                sort_keys=True,
-            )
-            + "\n"
+
+def read_status_snapshot(
+    path: Path, *, workflow: str, upstream: str
+) -> dict[str, DownstreamStatusRecord]:
+    """Read prior episode state from a snapshot staged by the plan job.
+
+    Strict by design: a missing file, an unexpected schema version, or a
+    snapshot staged for a different ``(workflow, upstream)`` is a wiring error
+    in the calling workflow, not an empty-state situation — failing loudly
+    here beats silently feeding the skip heuristics empty prior state.
+    """
+    if not path.exists():
+        raise SystemExit(f"status snapshot not found: {path}")
+    payload = json.loads(path.read_text())
+    version = payload.get("schema_version")
+    if version != _STATUS_SNAPSHOT_SCHEMA_VERSION:
+        raise SystemExit(
+            f"status snapshot {path} has schema_version {version!r}; "
+            f"expected {_STATUS_SNAPSHOT_SCHEMA_VERSION}"
         )
-
-        # Append-only per-run history
-        base = self._root / "results"
-        if history_prefix:
-            base = base / history_prefix
-        dest = base / created_at[:10] / run_id
-        dest.mkdir(parents=True, exist_ok=True)
-        for r in results:
-            (dest / f"{r.downstream}.json").write_text(
-                json.dumps(result_to_row(r), indent=2, sort_keys=True) + "\n"
+    for field, expected in (("workflow", workflow), ("upstream", upstream)):
+        actual = payload.get(field)
+        if actual != expected:
+            raise SystemExit(
+                f"status snapshot {path} was staged for {field}={actual!r}; "
+                f"expected {expected!r}"
             )
-
-        # Markdown report (optional — database backends can ignore this)
-        if report_markdown is not None:
-            report_md_path = self._root / "reports" / f"{report_key}.md"
-            report_md_path.parent.mkdir(parents=True, exist_ok=True)
-            report_md_path.write_text(report_markdown)
-
-    def load_tested_downstream_commits(self, workflow: str) -> set[tuple[str, str]]:
-        history_prefix = _WORKFLOW_HISTORY_PREFIX[workflow]
-        base = self._root / "results"
-        if history_prefix:
-            base = base / history_prefix
-        if not base.exists():
-            return set()
-        result: set[tuple[str, str]] = set()
-        for path in base.rglob("*.json"):
-            try:
-                row = json.loads(path.read_text())
-            except Exception:
-                continue
-            ds = row.get("downstream")
-            commit = row.get("downstream_commit")
-            outcome = row.get("outcome")
-            if ds and commit and outcome in ("passed", "failed"):
-                result.add((ds, commit))
-        return result
-
-    def load_prior_results(
-        self, workflow: str, pairs: set[tuple[str, str]]
-    ) -> dict[tuple[str, str], dict[str, Any]]:
-        if not pairs:
-            return {}
-        history_prefix = _WORKFLOW_HISTORY_PREFIX[workflow]
-        base = self._root / "results"
-        if history_prefix:
-            base = base / history_prefix
-        if not base.exists():
-            return {}
-        # Collect the newest result per (downstream, commit) pair.
-        # File paths contain dates (results/{prefix}/{date}/{run_id}/{ds}.json)
-        # so lexicographic path ordering approximates recency.
-        best: dict[tuple[str, str], tuple[str, dict[str, Any]]] = {}
-        for path in base.rglob("*.json"):
-            try:
-                row = json.loads(path.read_text())
-            except Exception:
-                continue
-            ds = row.get("downstream")
-            commit = row.get("downstream_commit")
-            outcome = row.get("outcome")
-            if not (ds and commit and outcome in ("passed", "failed")):
-                continue
-            key = (ds, commit)
-            if key not in pairs:
-                continue
-            # Use directory path as a recency proxy (date/run_id ordering).
-            path_key = str(path)
-            existing = best.get(key)
-            if existing is None or path_key > existing[0]:
-                best[key] = (path_key, row)
-        return {
-            key: {
-                "outcome": row.get("outcome"),
-                "episode_state": row.get("episode_state"),
-                "first_known_bad": row.get("first_known_bad"),
-                "target_commit": row.get("target_commit"),
-                "failure_stage": row.get("failure_stage"),
-                "repo": row.get("repo"),
-                "run_url": None,   # filesystem backend doesn't store run_url per result
-                "job_url": None,   # filesystem backend doesn't store job metadata
-            }
-            for key, (_, row) in best.items()
-        }
-
-    # The cache-warming workflow only runs against SQL in production. Off-SQL
-    # backends report no known-warm SHAs (so the planner re-considers everything)
-    # and silently drop record_warm_shas calls.
-    def load_known_warm_shas(self, upstream: str) -> set[str]:
-        return set()
-
-    def record_warm_shas(self, upstream: str, shas: Iterable[str]) -> None:
-        return None
-
-    # ------------------------------------------------------------------
-    # Manifest-watcher ledger (one JSON file per upstream)
-    # ------------------------------------------------------------------
-
-    def _ledger_path(self, upstream: str) -> Path:
-        # `upstream` is "owner/repo" — keep it readable on disk.
-        safe = upstream.replace("/", "__")
-        return self._root / "watcher" / f"manifest-{safe}.json"
-
-    def load_manifest_watcher_ledger(
-        self, upstream: str
-    ) -> dict[str, ManifestWatcherLedgerRow]:
-        path = self._ledger_path(upstream)
-        if not path.exists():
-            return {}
-        try:
-            payload = json.loads(path.read_text())
-        except Exception:
-            return {}
-        return {
-            name: ManifestWatcherLedgerRow(
-                downstream=name,
-                observed_pin=data["observed_pin"],
-                dispatched_at=data["dispatched_at"],
-                run_url=data.get("run_url"),
-            )
-            for name, data in payload.get("downstreams", {}).items()
-            if isinstance(data, dict) and data.get("observed_pin") and data.get("dispatched_at")
-        }
-
-    def upsert_manifest_watcher_ledger(
-        self, upstream: str, rows: list[ManifestWatcherLedgerRow]
-    ) -> None:
-        if not rows:
-            return
-        existing = self.load_manifest_watcher_ledger(upstream)
-        for row in rows:
-            existing[row.downstream] = row
-        path = self._ledger_path(upstream)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(
-            json.dumps(
-                {
-                    "downstreams": {
-                        name: {
-                            "observed_pin": r.observed_pin,
-                            "dispatched_at": r.dispatched_at,
-                            "run_url": r.run_url,
-                        }
-                        for name, r in sorted(existing.items())
-                    },
-                },
-                indent=2,
-                sort_keys=True,
-            )
-            + "\n"
-        )
+    # Per-downstream keys are exactly the DownstreamStatusRecord fields
+    # (the writer serialises via asdict); unknown keys raise TypeError.
+    return {
+        name: DownstreamStatusRecord(**data)
+        for name, data in payload["downstreams"].items()
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -1528,15 +1331,11 @@ class DryRunBackend:
 
 
 def add_backend_args(parser: Any) -> None:
-    """Add ``--backend``, ``--state-root``, and ``--dsn`` to an argument parser."""
+    """Add ``--backend`` and ``--dsn`` to an argument parser."""
 
     parser.add_argument(
-        "--backend", choices=["filesystem", "sql", "dry-run"], default="filesystem",
+        "--backend", choices=["sql", "dry-run"], required=True,
         help="Storage backend to use.",
-    )
-    parser.add_argument(
-        "--state-root", type=Path, default=None,
-        help="State root directory; required when --backend=filesystem.",
     )
     parser.add_argument(
         "--dsn", default=None,
@@ -1548,7 +1347,6 @@ def create_backend(
     backend: str,
     *,
     dsn: str | None = None,
-    state_root: Path | None = None,
 ) -> StorageBackend:
     """Create a storage backend from CLI-style parameters.
 
@@ -1562,6 +1360,4 @@ def create_backend(
         if not dsn:
             raise SystemExit("--dsn or POSTGRES_DSN environment variable is required when --backend=sql")
         return SqlBackend(create_sql_engine(dsn))
-    if not state_root:
-        raise SystemExit("--state-root is required when --backend=filesystem")
-    return FilesystemBackend(state_root)
+    raise SystemExit(f"unknown backend {backend!r}")

@@ -779,7 +779,7 @@ def main() -> int:
     args = build_parser().parse_args()
     recorded_at = utc_now()
 
-    backend = create_backend(args.backend, dsn=args.dsn, state_root=args.state_root)
+    backend = create_backend(args.backend, dsn=args.dsn)
 
     culprit_artifact_urls: dict[str, str] = {}
     if args.culprit_log_artifact_urls and args.culprit_log_artifact_urls.exists():

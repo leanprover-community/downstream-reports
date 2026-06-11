@@ -33,7 +33,7 @@ on request. It uses `select_ondemand_plan.py` and
 | `git_ops.py` | Git operations: cloning, ref resolution, ancestry checks, commit windows, lakefile/manifest pin resolution. |
 | `cache.py` | Lake artifact caching: `cache_env()`, `warm_downstream_cache()`, toolchain helpers. |
 | `validation.py` | Hopscotch tool invocation, result building (`build_result_from_tool`, `build_error_result`), artifact/summary rendering, JSON persistence. |
-| `storage.py` | Storage abstraction (`StorageBackend` protocol) with `FilesystemBackend` and `SqlBackend` implementations. Also provides `create_backend()` factory and `add_backend_args()` for CLI scripts. |
+| `storage.py` | Storage abstraction (`StorageBackend` protocol) with `SqlBackend` and `DryRunBackend` implementations, plus the status-snapshot file helpers (`write_status_snapshot` / `read_status_snapshot`). Also provides `create_backend()` factory and `add_backend_args()` for CLI scripts. |
 
 ### CLI scripts (called by GitHub Actions)
 
@@ -44,7 +44,7 @@ on request. It uses `select_ondemand_plan.py` and
 | `aggregate_results.py` | report | Loads all `result.json` artifacts, applies the episode state machine, persists to storage, renders a markdown report. |
 | `select_ondemand_plan.py` | plan (ondemand) | Queries GitHub API for new bumping-branch commits, outputs a job matrix. |
 | `select_ondemand_window.py` | validate (ondemand) | Like `select_downstream_regression_window.py` but for bumping branches. |
-| `generate_site.py` | generate-pages | Generates a static HTML status page from SQL or filesystem state. |
+| `generate_site.py` | generate-pages | Generates a static HTML status page from the regression database. |
 | `storage.py` | `create_schema(engine)` | Creates/migrates the SQL schema. See [storage backends doc](../docs/storage-backends.md) for provisioning instructions. |
 
 ### Tests
@@ -53,7 +53,7 @@ on request. It uses `select_ondemand_plan.py` and
 |------|--------|
 | `test_run_downstream_regression.py` | Cache setup, tool invocation, commit-plan artifacts, window-selection round-trip. |
 | `test_aggregate_results.py` | Episode state machine (`apply_result`), log truncation, culprit filtering. |
-| `test_storage.py` | `result_to_row`, `create_backend` factory, `FilesystemBackend` round-trips. |
+| `test_storage.py` | `result_to_row`, `create_backend` factory, `SqlBackend` round-trips (in-memory SQLite), connection-retry helpers. |
 
 Run all tests: `python3 -m unittest discover scripts/ -p 'test_*.py'`
 
@@ -63,4 +63,4 @@ Run all tests: `python3 -m unittest discover scripts/ -p 'test_*.py'`
 - **Episode**: A regression episode tracks a failure from first detection to recovery. States: `passing`, `new_failure`, `failing`, `recovered`, `error`.
 - **Head probe**: Test the upstream target commit alone. If it fails, a bisect window is opened.
 - **Bisect window**: The range from the last-known-good commit to the failing target, searched by hopscotch.
-- **Storage backend**: Either local JSON files (`FilesystemBackend`) or PostgreSQL (`SqlBackend`).
+- **Storage backend**: PostgreSQL (`SqlBackend`) in production, or a no-op printer (`DryRunBackend`) for dry runs. Select legs read prior state from the status-snapshot file instead of a backend.

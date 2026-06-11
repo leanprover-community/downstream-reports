@@ -100,7 +100,7 @@ def main() -> int:
     if args.branch and not args.downstream:
         raise SystemExit("--branch requires --downstream")
 
-    backend = create_backend(args.backend, dsn=args.dsn, state_root=args.state_root)
+    backend = create_backend(args.backend, dsn=args.dsn)
 
     seen = backend.load_tested_downstream_commits("ondemand")
 

@@ -18,14 +18,15 @@ the public surface of the matching production module:
                                        select/probe regression scripts
                                        (the file pre-dates the select/probe
                                        split and still uses the old name)
-    test_storage.py                  → storage.py (FilesystemBackend only)
+    test_storage.py                  → storage.py (SqlBackend via in-memory
+                                       SQLite, plus factory/retry helpers)
 
 Out of scope for the unit suite
 -------------------------------
-* SQL backend integration paths beyond what
-  ``test_export_runs_snapshot.LoadLatestRunPerDownstreamTests`` covers
-  via in-memory SQLite.  The production ``SqlBackend`` against PostgreSQL
-  is exercised in CI by the regression workflow itself, not here.
+* SQL backend integration paths beyond the in-memory SQLite coverage in
+  ``test_storage.py`` and ``test_export_runs_snapshot``.  The production
+  ``SqlBackend`` against PostgreSQL is exercised in CI by the regression
+  workflow itself, not here.
 * Real network calls.  ``fetch_*`` helpers in ``aggregate_results`` /
   ``notifications`` are tested with the HTTP layer mocked.
 * Real ``hopscotch`` invocations.  ``invoke_tool`` and the regression

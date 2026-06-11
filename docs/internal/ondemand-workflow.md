@@ -50,6 +50,11 @@ Runs on `ubuntu-latest`. Determines which downstreams to include in the matrix.
    - `matrix.json` — included in the job matrix passed to `select`.
    - `skipped.json` — uploaded as the `skipped-downstreams` artifact; consumed by
      the `report` job so skipped entries appear in the summary and alert payload.
+7. **Status snapshot:** runs `export_status_snapshot.py` to read the
+   `downstream_status` table once and uploads it as the `status-snapshot`
+   artifact (a single JSON file). The select legs read
+   prior episode state from this artifact, so the fan-out never opens a
+   database connection of its own.
 
 The `plan` job passes `dry_run` as a job output so every subsequent job can select
 the right backend without re-evaluating the condition.
@@ -60,9 +65,10 @@ Runs on `ubuntu-latest` (hosted runner with access to secrets). One job per
 downstream in the matrix, up to four in parallel.
 
 Runs `select_ondemand_window.py`, which clones mathlib and the downstream, reads
-the database for prior episode state, and computes a candidate bisect window.
-**Never invokes hopscotch.** Writes `selection.json` and uploads it as a
-`selection-<name>` artifact.
+prior episode state from the `status-snapshot` artifact staged by `plan`
+(`--status-snapshot <file>`; select legs hold no database credentials), and computes
+a candidate bisect window. **Never invokes hopscotch.** Writes `selection.json`
+and uploads it as a `selection-<name>` artifact.
 
 The script also records `downstream_commit` — the HEAD SHA of the downstream
 repository itself — so the skip heuristics described in CLAUDE.md can guard
@@ -220,7 +226,9 @@ Entries without `bumping_branch` are silently excluded unless a specific
 
 When `dry_run=true`:
 
-- `BACKEND` is set to `dry-run` in every job.
+- `BACKEND` is set to `dry-run` in every database-facing job, and the staged
+  status snapshot contains zero downstreams (so select legs see empty prior
+  state).
 - `POSTGRES_DSN` is cleared from the environment (never present when not needed).
 - All storage reads return empty state; writes are logged but not persisted.
 - Zulip alerts are replaced by log output (`DryRunSender`).
