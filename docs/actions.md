@@ -341,8 +341,13 @@ working-tree changes.
 
 Commits all working-tree changes onto a dedicated branch (force-pushed on every
 run to keep the PR to a single commit), then creates or updates an open PR. The
-PR body is an optional `message` followed by an automated footer that links back
-to the triggering run and records today's date.
+auto-generated PR body is the optional `message` (the `bump-description` from
+`bump-to-latest`), a `---` rule, a short explanation that this is a verified
+last-known-good bump that should be mergeable as-is, and a footer linking back to
+the triggering run. When the PR is opened under the built-in `GITHUB_TOKEN` (no
+App token), the body also carries a warning that the downstream's own CI does not
+run on the PR, pointing at [Set up authentication](#set-up-authentication). Pass
+`body` to override the whole thing.
 
 If there are no working-tree changes (`git diff` is clean) the action exits with
 `action=noop` and no PR is touched.
