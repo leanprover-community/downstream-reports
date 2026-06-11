@@ -338,7 +338,8 @@ class HistoryStripTests(unittest.TestCase):
 
     def test_different_breaking_commit_renders_orange(self) -> None:
         """Scenario: a past failure with a different first-known-bad than the
-        most recent failure renders orange, naming the other commit."""
+        most recent failure renders orange, naming both that break and the
+        current one so the difference is verifiable from the tooltip alone."""
         history = [
             {"outcome": "failed", "first_known_bad": "a" * 40, "reported_at": "2026-06-10", "run_url": None},
             {"outcome": "failed", "first_known_bad": "z" * 40, "reported_at": "2026-06-09", "run_url": None},
@@ -346,7 +347,8 @@ class HistoryStripTests(unittest.TestCase):
         ]
         html = render_history_strip(history)
         assert html.count("hist-failed-other") == 1
-        assert f"different breaking commit ({'z' * 7})" in html
+        assert f"earlier incompatibility — first known bad {'z' * 7}" in html
+        assert f"the current break is {'a' * 7}" in html
         assert html.count('hist-cell hist-failed"') == 2
 
     def test_same_breaking_commit_stays_red(self) -> None:

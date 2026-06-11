@@ -726,36 +726,30 @@ tr.expanded .expander { transform: rotate(90deg); }
   color: var(--yellow); border-radius: 6px; padding: 10px 16px;
   margin-bottom: 16px; font-size: 13px; font-weight: 500;
 }
-[data-tooltip] { position: relative; }
-[data-tooltip]::before {
-  content: '';
-  position: absolute;
-  bottom: calc(100% + 2px);
-  left: 50%; transform: translateX(-50%);
-  border: 5px solid transparent;
-  border-top-color: var(--tooltip-bg);
-  pointer-events: none;
-  opacity: 0; transition: opacity 0.07s ease;
-  z-index: 11;
-}
-[data-tooltip]::after {
-  content: attr(data-tooltip);
-  position: absolute;
-  bottom: calc(100% + 12px);
-  left: 50%; transform: translateX(-50%);
+/* Single fixed-position tooltip layer, positioned by JS next to the hovered
+   [data-tooltip] element.  position:fixed escapes overflow clipping (e.g. the
+   table's horizontal scroll container) and ancestor stacking contexts. */
+#tooltip {
+  position: fixed; z-index: 1000;
   background: var(--tooltip-bg); color: var(--tooltip-fg);
   padding: 5px 10px; border-radius: 5px;
   font-size: 12px; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
   font-weight: normal; text-transform: none; letter-spacing: normal;
-  white-space: pre; pointer-events: none;
+  white-space: pre-wrap; max-width: min(420px, calc(100vw - 16px));
+  pointer-events: none;
   box-shadow: 0 3px 10px rgba(0,0,0,0.25);
-  opacity: 0; transition: opacity 0.12s ease;
-  z-index: 10;
 }
-[data-tooltip]:hover::before,
-[data-tooltip]:focus-visible::before,
-[data-tooltip]:hover::after,
-[data-tooltip]:focus-visible::after { opacity: 1; }
+#tooltip::after {
+  content: ''; position: absolute;
+  top: 100%; left: var(--arrow-x, 50%); transform: translateX(-50%);
+  border: 5px solid transparent;
+  border-top-color: var(--tooltip-bg);
+}
+#tooltip.below::after {
+  top: auto; bottom: 100%;
+  border-top-color: transparent;
+  border-bottom-color: var(--tooltip-bg);
+}
 .sha {
   font-family: "SFMono-Regular", Consolas, monospace; font-size: 12px;
   color: var(--link); text-decoration: none;
@@ -948,6 +942,54 @@ footer .sep { margin: 0 6px; }
 # All interaction is plain inline JS so the page stays a single static file.
 JS = r"""
 (() => {
+  // ---- tooltip layer ------------------------------------------------------
+  // One fixed-position element shared by every [data-tooltip] anchor: shown
+  // on hover/focus, centred above the anchor, clamped to the viewport, and
+  // flipped below when there is no room above.
+  const tip = document.createElement('div');
+  tip.id = 'tooltip';
+  tip.setAttribute('role', 'tooltip');
+  tip.hidden = true;
+  document.body.appendChild(tip);
+  let tipAnchor = null;
+
+  const showTip = anchor => {
+    const text = anchor.getAttribute('data-tooltip');
+    if (!text) return;
+    tipAnchor = anchor;
+    tip.textContent = text;
+    tip.hidden = false;
+    const r = anchor.getBoundingClientRect();
+    const margin = 8;
+    let x = r.left + r.width / 2 - tip.offsetWidth / 2;
+    x = Math.max(margin, Math.min(x, window.innerWidth - tip.offsetWidth - margin));
+    let y = r.top - tip.offsetHeight - 9;
+    const below = y < margin;
+    if (below) y = r.bottom + 9;
+    tip.style.left = `${x}px`;
+    tip.style.top = `${y}px`;
+    tip.classList.toggle('below', below);
+    // Keep the arrow over the anchor even when the bubble is clamped.
+    const arrowX = Math.max(10, Math.min(r.left + r.width / 2 - x, tip.offsetWidth - 10));
+    tip.style.setProperty('--arrow-x', `${arrowX}px`);
+  };
+  const hideTip = () => { tipAnchor = null; tip.hidden = true; };
+
+  document.addEventListener('mouseover', e => {
+    const anchor = e.target.closest('[data-tooltip]');
+    if (anchor) showTip(anchor);
+    else if (tipAnchor) hideTip();
+  });
+  document.addEventListener('mouseout', e => {
+    if (!e.relatedTarget) hideTip();
+  });
+  document.addEventListener('focusin', e => {
+    const anchor = e.target.closest('[data-tooltip]');
+    if (anchor) showTip(anchor);
+  });
+  document.addEventListener('focusout', () => hideTip());
+  window.addEventListener('scroll', () => hideTip(), true);
+
   // ---- combined text + status filtering -------------------------------
   const input = document.getElementById('filter');
   const rowCount = document.getElementById('row-count');
@@ -1083,9 +1125,11 @@ JS = r"""
       navigator.clipboard.writeText(btn.dataset.sha).then(() => {
         btn.classList.add('copied');
         btn.setAttribute('data-tooltip', 'Copied!');
+        if (tipAnchor === btn) showTip(btn);
         setTimeout(() => {
           btn.classList.remove('copied');
           btn.setAttribute('data-tooltip', 'Copy full SHA');
+          if (tipAnchor === btn) showTip(btn);
         }, 1200);
       }).catch(() => { /* clipboard unavailable (e.g. non-secure context) */ });
     });
@@ -1770,12 +1814,14 @@ def render_history_strip(history: list[dict]) -> str:
         outcome = h.get("outcome", "")
         cls = HIST_CLASS.get(outcome, "hist-error")
         label = COMPATIBILITY_LABEL.get(outcome, outcome)
+        when = str(h.get("reported_at") or "")[:16].replace("T", " ")
+        tip_lines = [f"{label} · {when}" if when else label]
         fkb = h.get("first_known_bad")
         if outcome == "failed" and current_fkb and fkb and fkb != current_fkb:
             cls = "hist-failed-other"
-            label = f"{label} · different breaking commit ({short_sha(fkb)})"
-        when = str(h.get("reported_at") or "")[:16].replace("T", " ")
-        tip = esc(f"{label} · {when}" if when else label)
+            tip_lines.append(f"earlier incompatibility — first known bad {short_sha(fkb)}")
+            tip_lines.append(f"(the current break is {short_sha(current_fkb)})")
+        tip = "&#10;".join(esc(line) for line in tip_lines)
         url = h.get("run_url")
         if url:
             cells.append(
