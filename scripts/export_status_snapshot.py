@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
-"""Stage downstream episode state as a filesystem-backend snapshot artifact.
+"""Stage downstream episode state as the status-snapshot artifact.
 
 Runs once in the plan job of the regression and on-demand workflows.  Every
-select leg's only database read is ``load_all_statuses`` — the same query
-with the same answer for all ~30 legs — and a burst of simultaneous
-connections on one cron tick is exactly what provokes the Neon pooler's
-cold-start timeouts.  This script performs that read once and writes the
-result in the ``FilesystemBackend`` on-disk layout; the workflow uploads the
-directory as the ``status-snapshot`` artifact and each select leg reads it
-back with ``--backend filesystem --state-root <download dir>``, keeping
-database credentials and connections out of the fan-out entirely.
+select leg's only database-derived input is the prior episode state — the same
+``load_all_statuses`` query with the same answer for all ~30 legs — and a
+burst of simultaneous connections on one cron tick is exactly what provokes
+the Neon pooler's cold-start timeouts.  This script performs that read once
+and writes the result as a single JSON file; the workflow uploads it as the
+``status-snapshot`` artifact and each select leg reads it back with
+``--status-snapshot <file>``, keeping database credentials and connections
+out of the fan-out entirely.
 
 In dry-run mode the workflows invoke this with ``--backend dry-run``, which
 yields a snapshot with zero downstreams — the select legs then see the same
@@ -35,8 +35,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--workflow", default="regression")
     parser.add_argument("--upstream", default="leanprover-community/mathlib4")
     parser.add_argument(
-        "--output-root", type=Path, required=True,
-        help="Directory to populate as a filesystem-backend state root.",
+        "--output", type=Path, required=True,
+        help="File to write the status snapshot to.",
     )
     add_backend_args(parser)
     return parser
@@ -46,10 +46,11 @@ def main() -> int:
     """Load all statuses from the source backend and write the snapshot."""
 
     args = build_parser().parse_args()
-    backend = create_backend(args.backend, dsn=args.dsn, state_root=args.state_root)
+    backend = create_backend(args.backend, dsn=args.dsn)
     statuses = backend.load_all_statuses(args.workflow, args.upstream)
     path = write_status_snapshot(
-        args.output_root, args.workflow, statuses, reported_at=utc_now(),
+        args.output, statuses,
+        workflow=args.workflow, upstream=args.upstream, reported_at=utc_now(),
     )
     print(f"[status-snapshot] wrote {len(statuses)} status record(s) to {path}")
     return 0

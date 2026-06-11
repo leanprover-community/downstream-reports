@@ -131,7 +131,7 @@ jobs:
             --backend "$BACKEND" \
             --workflow regression \
             --upstream leanprover-community/mathlib4 \
-            --output-root status-snapshot
+            --output status-snapshot/status.json
 
       - name: Upload status snapshot
         if: steps.matrix.outputs.has_downstreams == 'true'
@@ -185,13 +185,12 @@ jobs:
           PYTHONUNBUFFERED: "1"
           # Prior episode state comes from the status snapshot staged by the
           # plan job; select legs hold no database credentials.
-          STATE_ROOT: ${{ runner.temp }}/status-snapshot
+          STATUS_SNAPSHOT: ${{ runner.temp }}/status-snapshot/status.json
           WORKDIR: ${{ runner.temp }}/downstream-regression
         run: |
           python3 -u scripts/select_downstream_regression_window.py \
             --inventory ci/inventory/downstreams.json \
-            --backend filesystem \
-            --state-root "$STATE_ROOT" \
+            --status-snapshot "$STATUS_SNAPSHOT" \
             --workflow regression \
             --upstream leanprover-community/mathlib4 \
             --downstream "$DOWNSTREAM_NAME" \

@@ -4,23 +4,25 @@ Tests for: scripts.storage
 
 Coverage scope:
     - ``result_to_row`` — RunResultRecord → row dict serialiser used by
-      every backend's ``save_run`` implementation.
-    - ``create_backend`` — factory that selects FilesystemBackend /
-      SqlBackend / DryRunBackend based on the ``--backend`` flag.
-    - ``FilesystemBackend.{save_run, load_all_statuses,
-      load_tested_downstream_commits, load_prior_results}`` — the local
-      / dry-run path that local development and CI debugging use.
+      ``save_run`` consumers.
+    - ``create_backend`` — factory that selects SqlBackend / DryRunBackend
+      based on the ``--backend`` flag.
+    - ``SqlBackend.{save_run, load_all_statuses,
+      load_tested_downstream_commits, load_prior_results}`` — the
+      production read/write path, exercised against in-memory SQLite.
+    - ``connect_with_retry`` / ``create_sql_engine`` — transient-blip
+      resilience primitives.
 
 Out of scope:
-    - ``SqlBackend`` (PostgreSQL): exercised in CI by the regression
-      workflow itself; integration coverage of the SQL load path is in
-      ``test_export_runs_snapshot.LoadLatestRunPerDownstreamTests`` (in-
-      memory SQLite).  ``load_known_warm_shas``, ``record_warm_shas``,
-      ``load_manifest_watcher_ledger``, and
-      ``upsert_manifest_watcher_ledger`` rely on the SqlBackend
-      implementation and are not exercised by the unit suite.
+    - PostgreSQL-specific behaviour: the production dialect is exercised
+      in CI by the regression workflow itself.  ``load_known_warm_shas``,
+      ``record_warm_shas``, ``load_manifest_watcher_ledger``, and
+      ``upsert_manifest_watcher_ledger`` are not exercised by the unit
+      suite.
     - ``DryRunBackend``: by design it has no state to assert against; it
       only prints.
+    - The status-snapshot file helpers: covered by
+      ``test_export_status_snapshot.py``.
 
 Why this matters
 ----------------
@@ -36,24 +38,25 @@ contract.
 from __future__ import annotations
 
 import dataclasses
-import json
 import os
 import sys
-import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from scripts.storage import (
     DownstreamStatusRecord,
-    FilesystemBackend,
+    DryRunBackend,
     RunResultRecord,
+    SqlBackend,
     connect_with_retry,
     create_backend,
+    create_schema,
     create_sql_engine,
     result_to_row,
 )
 import pytest
+from sqlalchemy import create_engine
 from sqlalchemy.exc import OperationalError
 
 
@@ -81,8 +84,7 @@ def _make_run_result(
     distinguish records across tests.  The ``last_known_good`` field
     mirrors the outcome (``"target_abc"`` on pass, ``None`` on fail/
     error) so the resulting record is internally consistent and can
-    actually be persisted by the filesystem backend without violating
-    its own invariants.
+    actually be persisted without violating its own invariants.
 
     Why a factory rather than module-level fixtures
     -----------------------------------------------
@@ -134,9 +136,8 @@ class TestResultToRow:
         asserts each field name appears in the row.
 
         Why this matters: a field silently dropped here disappears from
-        every backend's row writes, which means the SQL upsert wouldn't
-        write it and the filesystem JSON wouldn't include it — both
-        consumers go silently stale.
+        the report rendering and any other row-dict consumer — they go
+        silently stale.
         """
         # Arrange
         record = RunResultRecord(
@@ -186,34 +187,27 @@ class TestResultToRow:
 class TestCreateBackendFactory:
     """Tests for ``create_backend`` selection logic."""
 
-    def test_create_backend_filesystem_with_state_root_returns_filesystem_backend(
-        self,
-    ) -> None:
+    def test_create_backend_dry_run_returns_dry_run_backend(self) -> None:
         """
-        ``--backend filesystem --state-root <path>`` is the local-dev
-        and CI-debug code path.  This is the happy path for the
-        FilesystemBackend; if the factory dispatch ever silently fell
-        back to a different backend (e.g. DryRun) tests against a
-        FilesystemBackend would behave unpredictably.
-        """
-        # Arrange / Act
-        with tempfile.TemporaryDirectory() as tmp:
-            backend = create_backend("filesystem", state_root=Path(tmp))
-
-            # Assert
-            assert isinstance(backend, FilesystemBackend), "`--backend filesystem` must return a FilesystemBackend instance"
-
-    def test_create_backend_filesystem_without_state_root_raises_system_exit(self) -> None:
-        """
-        Without ``--state-root`` the filesystem backend has nowhere to
-        write.  The factory raises ``SystemExit`` (rather than
-        ``ValueError``) so argparse-style CLI scripts get a clean exit
-        message instead of a stack trace when an operator forgets the
-        flag.
+        ``--backend dry-run`` is the debugging code path.  If the factory
+        dispatch ever silently fell back to a different backend, a
+        "harmless" dry-run invocation could write to the production
+        database.
         """
         # Arrange / Act / Assert
-        with pytest.raises(SystemExit):
-            create_backend("filesystem")
+        assert isinstance(create_backend("dry-run"), DryRunBackend), "`--backend dry-run` must return a DryRunBackend instance"
+
+    def test_create_backend_sql_with_dsn_returns_sql_backend(self) -> None:
+        """
+        ``--backend sql --dsn <dsn>`` is the production code path.  An
+        explicit DSN must take precedence over the environment and yield
+        a SqlBackend.
+        """
+        # Arrange / Act
+        backend = create_backend("sql", dsn="sqlite:///:memory:")
+
+        # Assert
+        assert isinstance(backend, SqlBackend), "`--backend sql` must return a SqlBackend instance"
 
     def test_create_backend_sql_without_postgres_dsn_raises_system_exit(self) -> None:
         """
@@ -410,237 +404,137 @@ class TestCreateSqlEngine:
 
 
 # ----------------------------------------------------------------------
-# FilesystemBackend — the persisted JSON layout is the local-dev
-# contract.  Tests cover the round-trip of every field that
-# DownstreamStatusRecord persists.
+# SqlBackend — the production read/write path, exercised against an
+# in-memory SQLite database (same pattern as
+# test_export_runs_snapshot.TestLoadLatestRunPerDownstream).  Tests cover
+# the round-trip of every field that DownstreamStatusRecord persists and
+# the query semantics the on-demand plan step depends on.
 # ----------------------------------------------------------------------
 
 
-class TestFilesystemBackendStatusRoundTrip:
-    """Tests for FilesystemBackend's ``save_run`` / ``load_all_statuses`` round trip."""
+def _sqlite_backend() -> SqlBackend:
+    """Return a SqlBackend over a fresh in-memory SQLite database."""
+    engine = create_engine("sqlite:///:memory:")
+    create_schema(engine)
+    return SqlBackend(engine)
 
-    def test_load_all_statuses_with_no_status_file_returns_empty_dict(self) -> None:
+
+@pytest.mark.integration
+class TestSqlBackendStatusRoundTrip:
+    """Tests for SqlBackend's ``save_run`` / ``load_all_statuses`` round trip."""
+
+    def test_load_all_statuses_on_fresh_database_returns_empty_dict(self) -> None:
         """
-        First-ever run on a fresh state-root: there is no
-        ``status/current.json`` yet.  Returning ``{}`` (rather than
-        raising) lets the report job treat first-run as the same code
-        path as steady-state — every downstream is "no prior state".
+        First-ever run against a freshly provisioned database: there are
+        no ``downstream_status`` rows yet.  Returning ``{}`` (rather
+        than raising) lets the report job treat first-run as the same
+        code path as steady-state — every downstream is "no prior
+        state".
         """
         # Arrange / Act / Assert
-        with tempfile.TemporaryDirectory() as tmp:
-            backend = FilesystemBackend(Path(tmp))
-            assert backend.load_all_statuses("regression", _UPSTREAM) == {}, "Missing status file must read as an empty mapping"
+        backend = _sqlite_backend()
+        assert backend.load_all_statuses("regression", _UPSTREAM) == {}, "Empty downstream_status must read as an empty mapping"
 
-    def test_save_run_then_load_round_trips_lkg_and_pinned_commit(self) -> None:
+    def test_save_run_then_load_round_trips_every_status_field(self) -> None:
         """
-        The two oldest fields on ``DownstreamStatusRecord`` —
-        ``last_known_good_commit`` and ``pinned_commit`` — are the core
-        of the regression contract.  Round-tripping both pins the
-        end-to-end JSON path and guards against schema evolution
-        accidentally dropping either field.
+        ``DownstreamStatusRecord`` is the persisted contract every
+        consumer reads.  Round-tripping all six fields pins the
+        end-to-end upsert/select path and guards against schema
+        evolution accidentally dropping any of them — including
+        ``downstream_commit`` (which gates both skip heuristics) and the
+        ``last_good_release*`` pair (surfaced by the public site and the
+        LKG snapshot).
         """
         # Arrange
-        with tempfile.TemporaryDirectory() as tmp:
-            backend = FilesystemBackend(Path(tmp))
-            record = RunResultRecord(
-                upstream=_UPSTREAM,
-                downstream="TestDownstream",
-                repo="owner/repo",
-                downstream_commit="ds_head",
-                outcome="passed",
-                episode_state="passing",
-                target_commit="target_abc",
-                previous_last_known_good=None,
-                previous_first_known_bad=None,
-                last_known_good="target_abc",
-                first_known_bad=None,
-                current_last_successful="target_abc",
-                current_first_failing=None,
-                failure_stage=None,
-                search_mode="head-only",
-                commit_window_truncated=False,
-                error=None,
-                head_probe_outcome="passed",
-                head_probe_failure_stage=None,
-                culprit_log_text=None,
+        backend = _sqlite_backend()
+        statuses = {
+            "TestDownstream": DownstreamStatusRecord(
+                last_known_good_commit="target_abc",
+                first_known_bad_commit="bad_def",
                 pinned_commit="pin_abc",
-            )
-            statuses = {
-                "TestDownstream": DownstreamStatusRecord(
-                    last_known_good_commit="target_abc",
-                    pinned_commit="pin_abc",
-                ),
-            }
+                downstream_commit="ds_commit_abc",
+                last_good_release="v4.13.0",
+                last_good_release_commit="sha_v4_13_0",
+            ),
+        }
 
-            # Act
-            backend.save_run(
-                run_id="run_123",
-                workflow="regression",
-                upstream=_UPSTREAM,
-                upstream_ref="master",
-                run_url="https://example.com/run/123",
-                created_at="2026-04-01T00:00:00Z",
-                results=[record],
-                updated_statuses=statuses,
-            )
-            loaded = backend.load_all_statuses("regression", _UPSTREAM)
+        # Act
+        backend.save_run(
+            run_id="run_123",
+            workflow="regression",
+            upstream=_UPSTREAM,
+            upstream_ref="master",
+            run_url="https://example.com/run/123",
+            created_at="2026-04-01T00:00:00Z",
+            results=[_make_run_result("TestDownstream", "ds_commit_abc", "passed")],
+            updated_statuses=statuses,
+        )
+        loaded = backend.load_all_statuses("regression", _UPSTREAM)
 
-            # Assert
-            assert "TestDownstream" in loaded
-            assert loaded["TestDownstream"].last_known_good_commit == "target_abc"
-            assert loaded["TestDownstream"].pinned_commit == "pin_abc"
+        # Assert
+        assert loaded == statuses, "every DownstreamStatusRecord field must round-trip through downstream_status"
 
-    def test_save_run_round_trips_downstream_commit(self) -> None:
+    def test_save_run_upsert_replaces_prior_status_row(self) -> None:
         """
-        ``downstream_commit`` was added to ``DownstreamStatusRecord``
-        specifically to gate the skip heuristics
-        (``try_skip_already_good`` / ``try_skip_known_bad_bisect``).  A
-        round-trip drop here would silently disable both heuristics —
-        every run would re-bisect even when the downstream hadn't moved.
+        ``downstream_status`` holds *current* episode state — one row per
+        (downstream, workflow, upstream).  A second run for the same
+        downstream must replace the first run's values, not duplicate or
+        keep them.
         """
         # Arrange
-        with tempfile.TemporaryDirectory() as tmp:
-            backend = FilesystemBackend(Path(tmp))
-            statuses = {
-                "TestDownstream": DownstreamStatusRecord(
-                    last_known_good_commit="target_abc",
-                    downstream_commit="ds_commit_abc",
-                ),
-            }
+        backend = _sqlite_backend()
+        common = dict(
+            workflow="regression",
+            upstream=_UPSTREAM,
+            upstream_ref="master",
+            results=[],
+        )
+        backend.save_run(
+            run_id="run_1",
+            run_url="https://example.com/run/1",
+            created_at="2026-04-01T00:00:00Z",
+            updated_statuses={"TestDownstream": DownstreamStatusRecord(last_known_good_commit="old_lkg")},
+            **common,
+        )
 
-            # Act
-            backend.save_run(
-                run_id="run_456",
-                workflow="regression",
-                upstream=_UPSTREAM,
-                upstream_ref="master",
-                run_url="https://example.com/run/456",
-                created_at="2026-04-02T00:00:00Z",
-                results=[],
-                updated_statuses=statuses,
-            )
-            loaded = backend.load_all_statuses("regression", _UPSTREAM)
+        # Act
+        backend.save_run(
+            run_id="run_2",
+            run_url="https://example.com/run/2",
+            created_at="2026-04-02T00:00:00Z",
+            updated_statuses={"TestDownstream": DownstreamStatusRecord(last_known_good_commit="new_lkg")},
+            **common,
+        )
+        loaded = backend.load_all_statuses("regression", _UPSTREAM)
 
-            # Assert
-            assert loaded["TestDownstream"].downstream_commit == "ds_commit_abc", "downstream_commit round-trip is required for skip heuristics to work"
+        # Assert
+        assert loaded["TestDownstream"].last_known_good_commit == "new_lkg", "the upsert must replace the previous row's values"
 
-    def test_save_run_round_trips_last_good_release_fields(self) -> None:
+    def test_load_all_statuses_is_scoped_by_workflow(self) -> None:
         """
-        ``last_good_release`` and ``last_good_release_commit`` are
-        derived post-aggregation by ``latest_reachable_tag`` /
-        ``resolve_tag``.  They are surfaced by the public site and the
-        snapshot — a round-trip drop would leave the public dashboard
-        showing "—" instead of the actual release name.
-        """
-        # Arrange
-        with tempfile.TemporaryDirectory() as tmp:
-            backend = FilesystemBackend(Path(tmp))
-            statuses = {
-                "TestDownstream": DownstreamStatusRecord(
-                    last_known_good_commit="lkg_abc",
-                    last_good_release="v4.13.0",
-                    last_good_release_commit="sha_v4_13_0",
-                ),
-            }
-
-            # Act
-            backend.save_run(
-                run_id="run_release",
-                workflow="regression",
-                upstream=_UPSTREAM,
-                upstream_ref="master",
-                run_url="https://example.com/run/release",
-                created_at="2026-04-10T00:00:00Z",
-                results=[],
-                updated_statuses=statuses,
-            )
-            loaded = backend.load_all_statuses("regression", _UPSTREAM)
-
-            # Assert
-            assert loaded["TestDownstream"].last_good_release == "v4.13.0"
-            assert loaded["TestDownstream"].last_good_release_commit == "sha_v4_13_0"
-
-
-class TestFilesystemBackendBackwardsCompatibility:
-    """Tests for reading status files that pre-date newer fields."""
-
-    def test_load_all_statuses_with_pre_release_schema_loads_release_fields_as_none(
-        self,
-    ) -> None:
-        """
-        A status file written before ``last_good_release`` was added has
-        no ``last_good_release`` / ``last_good_release_commit`` keys.
-        Reading must default both to ``None`` so a long-running CI host
-        can be upgraded in place without re-deriving the whole status
-        store.
-        """
-        # Arrange — write a hand-crafted status file in the older shape.
-        with tempfile.TemporaryDirectory() as tmp:
-            status_dir = Path(tmp) / "status"
-            status_dir.mkdir()
-            (status_dir / "current.json").write_text(
-                json.dumps(
-                    {
-                        "schema_version": 2,
-                        "reported_at": "2026-04-01T00:00:00Z",
-                        "downstreams": {
-                            "OldDownstream": {
-                                "last_known_good_commit": "abc",
-                                "first_known_bad_commit": None,
-                                "pinned_commit": None,
-                                "downstream_commit": None,
-                            },
-                        },
-                    }
-                )
-            )
-            backend = FilesystemBackend(Path(tmp))
-
-            # Act
-            loaded = backend.load_all_statuses("regression", _UPSTREAM)
-
-            # Assert
-            assert loaded["OldDownstream"].last_good_release is None, "Pre-release schema files must load with None for new fields"
-            assert loaded["OldDownstream"].last_good_release_commit is None, "Pre-release schema files must load with None for new fields"
-
-    def test_load_all_statuses_with_pre_downstream_commit_schema_loads_field_as_none(
-        self,
-    ) -> None:
-        """
-        Even older status files (pre-``downstream_commit``) must still
-        load.  This is a regression test: the field was added after the
-        v2 schema shipped, and the load path must be tolerant of its
-        absence rather than raising ``KeyError``.
+        Regression and ondemand episode state live in the same table,
+        keyed by ``workflow``.  A regression-run status row must not
+        leak into the ondemand read — they track different branches.
         """
         # Arrange
-        with tempfile.TemporaryDirectory() as tmp:
-            status_dir = Path(tmp) / "status"
-            status_dir.mkdir()
-            (status_dir / "current.json").write_text(
-                json.dumps(
-                    {
-                        "schema_version": 2,
-                        "reported_at": "2026-04-01T00:00:00Z",
-                        "downstreams": {
-                            "OldDownstream": {
-                                "last_known_good_commit": "abc",
-                                "first_known_bad_commit": None,
-                                "pinned_commit": None,
-                            },
-                        },
-                    }
-                )
-            )
-            backend = FilesystemBackend(Path(tmp))
+        backend = _sqlite_backend()
+        backend.save_run(
+            run_id="run_reg",
+            workflow="regression",
+            upstream=_UPSTREAM,
+            upstream_ref="master",
+            run_url="https://example.com/run/reg",
+            created_at="2026-04-01T00:00:00Z",
+            results=[],
+            updated_statuses={"TestDownstream": DownstreamStatusRecord(last_known_good_commit="lkg")},
+        )
 
-            # Act
-            loaded = backend.load_all_statuses("regression", _UPSTREAM)
-
-            # Assert
-            assert loaded["OldDownstream"].downstream_commit is None, "Pre-downstream_commit schema files must load with None"
+        # Act / Assert
+        assert backend.load_all_statuses("ondemand", _UPSTREAM) == {}, "Regression-workflow status must not appear in the ondemand read"
 
 
-class TestFilesystemBackendLoadTestedDownstreamCommits:
+@pytest.mark.integration
+class TestSqlBackendLoadTestedDownstreamCommits:
     """Tests for ``load_tested_downstream_commits`` (ondemand dedup helper)."""
 
     def test_load_tested_downstream_commits_with_no_runs_returns_empty_set(self) -> None:
@@ -650,9 +544,8 @@ class TestFilesystemBackendLoadTestedDownstreamCommits:
         treat first-run uniformly with steady-state.
         """
         # Arrange / Act / Assert
-        with tempfile.TemporaryDirectory() as tmp:
-            backend = FilesystemBackend(Path(tmp))
-            assert backend.load_tested_downstream_commits("ondemand") == set(), "No saved runs ⇒ empty tested-pairs set"
+        backend = _sqlite_backend()
+        assert backend.load_tested_downstream_commits("ondemand") == set(), "No saved runs ⇒ empty tested-pairs set"
 
     def test_load_tested_downstream_commits_returns_passed_and_failed_but_not_error(
         self,
@@ -671,31 +564,30 @@ class TestFilesystemBackendLoadTestedDownstreamCommits:
         # result"; this test is the executable form of that contract.
         """
         # Arrange
-        with tempfile.TemporaryDirectory() as tmp:
-            backend = FilesystemBackend(Path(tmp))
-            results = [
-                _make_run_result("ProjectA", "commit_aaa", "passed"),
-                _make_run_result("ProjectB", "commit_bbb", "failed"),
-                _make_run_result("ProjectC", "commit_ccc", "error"),
-            ]
-            backend.save_run(
-                run_id="run_1",
-                workflow="ondemand",
-                upstream=_UPSTREAM,
-                upstream_ref="ondemand",
-                run_url="https://example.com/run/1",
-                created_at="2026-04-01T00:00:00Z",
-                results=results,
-                updated_statuses={},
-            )
+        backend = _sqlite_backend()
+        results = [
+            _make_run_result("ProjectA", "commit_aaa", "passed"),
+            _make_run_result("ProjectB", "commit_bbb", "failed"),
+            _make_run_result("ProjectC", "commit_ccc", "error"),
+        ]
+        backend.save_run(
+            run_id="run_1",
+            workflow="ondemand",
+            upstream=_UPSTREAM,
+            upstream_ref="ondemand",
+            run_url="https://example.com/run/1",
+            created_at="2026-04-01T00:00:00Z",
+            results=results,
+            updated_statuses={},
+        )
 
-            # Act
-            seen = backend.load_tested_downstream_commits("ondemand")
+        # Act
+        seen = backend.load_tested_downstream_commits("ondemand")
 
-            # Assert
-            assert ("ProjectA", "commit_aaa") in seen, "passed must be deduped"
-            assert ("ProjectB", "commit_bbb") in seen, "failed must be deduped"
-            assert ("ProjectC", "commit_ccc") not in seen, "error outcomes must NOT be deduped — retry on next run"
+        # Assert
+        assert ("ProjectA", "commit_aaa") in seen, "passed must be deduped"
+        assert ("ProjectB", "commit_bbb") in seen, "failed must be deduped"
+        assert ("ProjectC", "commit_ccc") not in seen, "error outcomes must NOT be deduped — retry on next run"
 
     def test_load_tested_downstream_commits_is_scoped_by_workflow(self) -> None:
         """
@@ -706,39 +598,38 @@ class TestFilesystemBackendLoadTestedDownstreamCommits:
         therefore validate different things.
         """
         # Arrange
-        with tempfile.TemporaryDirectory() as tmp:
-            backend = FilesystemBackend(Path(tmp))
-            backend.save_run(
-                run_id="run_reg",
-                workflow="regression",
-                upstream=_UPSTREAM,
-                upstream_ref="master",
-                run_url="https://example.com/run/reg",
-                created_at="2026-04-01T00:00:00Z",
-                results=[_make_run_result("ProjectA", "commit_aaa", "passed")],
-                updated_statuses={},
-            )
+        backend = _sqlite_backend()
+        backend.save_run(
+            run_id="run_reg",
+            workflow="regression",
+            upstream=_UPSTREAM,
+            upstream_ref="master",
+            run_url="https://example.com/run/reg",
+            created_at="2026-04-01T00:00:00Z",
+            results=[_make_run_result("ProjectA", "commit_aaa", "passed")],
+            updated_statuses={},
+        )
 
-            # Act
-            ondemand_pairs = backend.load_tested_downstream_commits("ondemand")
+        # Act
+        ondemand_pairs = backend.load_tested_downstream_commits("ondemand")
 
-            # Assert
-            assert ondemand_pairs == set(), "Regression-workflow run must not appear in ondemand dedup set"
+        # Assert
+        assert ondemand_pairs == set(), "Regression-workflow run must not appear in ondemand dedup set"
 
 
-class TestFilesystemBackendLoadPriorResults:
+@pytest.mark.integration
+class TestSqlBackendLoadPriorResults:
     """Tests for ``load_prior_results`` — richer view of historical runs."""
 
     def test_load_prior_results_with_empty_pairs_returns_empty_dict(self) -> None:
         """
         Passing an empty pairs set is a normal case (e.g. when every
         candidate downstream is fresh).  Empty in, empty out — and no
-        DB / filesystem read needs to happen.
+        database read needs to happen.
         """
         # Arrange / Act / Assert
-        with tempfile.TemporaryDirectory() as tmp:
-            backend = FilesystemBackend(Path(tmp))
-            assert backend.load_prior_results("ondemand", set()) == {}, "Empty pairs ⇒ empty dict (no I/O required)"
+        backend = _sqlite_backend()
+        assert backend.load_prior_results("ondemand", set()) == {}, "Empty pairs ⇒ empty dict (no I/O required)"
 
     def test_load_prior_results_returns_record_dicts_for_matching_pairs(self) -> None:
         """
@@ -748,32 +639,32 @@ class TestFilesystemBackendLoadPriorResults:
         "skipped — already tested" Zulip alert.
         """
         # Arrange
-        with tempfile.TemporaryDirectory() as tmp:
-            backend = FilesystemBackend(Path(tmp))
-            results = [
-                _make_run_result("ProjectA", "commit_aaa", "passed"),
-                _make_run_result("ProjectB", "commit_bbb", "failed"),
-            ]
-            backend.save_run(
-                run_id="run_1",
-                workflow="ondemand",
-                upstream=_UPSTREAM,
-                upstream_ref="ondemand",
-                run_url="https://example.com/run/1",
-                created_at="2026-04-01T00:00:00Z",
-                results=results,
-                updated_statuses={},
-            )
-            pairs = {("ProjectA", "commit_aaa"), ("ProjectB", "commit_bbb")}
+        backend = _sqlite_backend()
+        results = [
+            _make_run_result("ProjectA", "commit_aaa", "passed"),
+            _make_run_result("ProjectB", "commit_bbb", "failed"),
+        ]
+        backend.save_run(
+            run_id="run_1",
+            workflow="ondemand",
+            upstream=_UPSTREAM,
+            upstream_ref="ondemand",
+            run_url="https://example.com/run/1",
+            created_at="2026-04-01T00:00:00Z",
+            results=results,
+            updated_statuses={},
+        )
+        pairs = {("ProjectA", "commit_aaa"), ("ProjectB", "commit_bbb")}
 
-            # Act
-            prior = backend.load_prior_results("ondemand", pairs)
+        # Act
+        prior = backend.load_prior_results("ondemand", pairs)
 
-            # Assert
-            assert ("ProjectA", "commit_aaa") in prior
-            assert ("ProjectB", "commit_bbb") in prior
-            assert prior[("ProjectA", "commit_aaa")]["outcome"] == "passed"
-            assert prior[("ProjectB", "commit_bbb")]["outcome"] == "failed"
+        # Assert
+        assert ("ProjectA", "commit_aaa") in prior
+        assert ("ProjectB", "commit_bbb") in prior
+        assert prior[("ProjectA", "commit_aaa")]["outcome"] == "passed"
+        assert prior[("ProjectB", "commit_bbb")]["outcome"] == "failed"
+        assert prior[("ProjectA", "commit_aaa")]["run_url"] == "https://example.com/run/1"
 
     def test_load_prior_results_excludes_error_outcomes(self) -> None:
         """
@@ -783,25 +674,24 @@ class TestFilesystemBackendLoadPriorResults:
         a (downstream, commit) pair we haven't actually validated.
         """
         # Arrange
-        with tempfile.TemporaryDirectory() as tmp:
-            backend = FilesystemBackend(Path(tmp))
-            backend.save_run(
-                run_id="run_1",
-                workflow="ondemand",
-                upstream=_UPSTREAM,
-                upstream_ref="ondemand",
-                run_url="https://example.com/run/1",
-                created_at="2026-04-01T00:00:00Z",
-                results=[_make_run_result("ProjectC", "commit_ccc", "error")],
-                updated_statuses={},
-            )
-            pairs = {("ProjectC", "commit_ccc")}
+        backend = _sqlite_backend()
+        backend.save_run(
+            run_id="run_1",
+            workflow="ondemand",
+            upstream=_UPSTREAM,
+            upstream_ref="ondemand",
+            run_url="https://example.com/run/1",
+            created_at="2026-04-01T00:00:00Z",
+            results=[_make_run_result("ProjectC", "commit_ccc", "error")],
+            updated_statuses={},
+        )
+        pairs = {("ProjectC", "commit_ccc")}
 
-            # Act
-            prior = backend.load_prior_results("ondemand", pairs)
+        # Act
+        prior = backend.load_prior_results("ondemand", pairs)
 
-            # Assert
-            assert prior == {}, "Error outcomes must not appear in load_prior_results output"
+        # Assert
+        assert prior == {}, "Error outcomes must not appear in load_prior_results output"
 
     def test_load_prior_results_returns_only_pairs_that_were_requested(self) -> None:
         """
@@ -811,29 +701,28 @@ class TestFilesystemBackendLoadPriorResults:
         leak data they didn't ask for.
         """
         # Arrange
-        with tempfile.TemporaryDirectory() as tmp:
-            backend = FilesystemBackend(Path(tmp))
-            backend.save_run(
-                run_id="run_1",
-                workflow="ondemand",
-                upstream=_UPSTREAM,
-                upstream_ref="ondemand",
-                run_url="https://example.com/run/1",
-                created_at="2026-04-01T00:00:00Z",
-                results=[
-                    _make_run_result("ProjectA", "commit_aaa", "passed"),
-                    _make_run_result("ProjectB", "commit_bbb", "failed"),
-                ],
-                updated_statuses={},
-            )
-            pairs = {("ProjectA", "commit_aaa")}
+        backend = _sqlite_backend()
+        backend.save_run(
+            run_id="run_1",
+            workflow="ondemand",
+            upstream=_UPSTREAM,
+            upstream_ref="ondemand",
+            run_url="https://example.com/run/1",
+            created_at="2026-04-01T00:00:00Z",
+            results=[
+                _make_run_result("ProjectA", "commit_aaa", "passed"),
+                _make_run_result("ProjectB", "commit_bbb", "failed"),
+            ],
+            updated_statuses={},
+        )
+        pairs = {("ProjectA", "commit_aaa")}
 
-            # Act
-            prior = backend.load_prior_results("ondemand", pairs)
+        # Act
+        prior = backend.load_prior_results("ondemand", pairs)
 
-            # Assert
-            assert ("ProjectA", "commit_aaa") in prior
-            assert ("ProjectB", "commit_bbb") not in prior, "Unrequested pair must not appear in result"
+        # Assert
+        assert ("ProjectA", "commit_aaa") in prior
+        assert ("ProjectB", "commit_bbb") not in prior, "Unrequested pair must not appear in result"
 
     def test_load_prior_results_returns_newest_when_a_pair_has_multiple_runs(self) -> None:
         """
@@ -843,37 +732,36 @@ class TestFilesystemBackendLoadPriorResults:
 
         The production docstring on ``load_prior_results`` documents
         this newest-wins tie-break; this test is the executable form of
-        that contract so any change to the SQL ordering in
-        ``SqlBackend`` (or the in-memory iteration in
-        ``FilesystemBackend``) fails here first.
+        that contract so any change to the SQL ordering fails here
+        first.
         """
         # Arrange
-        with tempfile.TemporaryDirectory() as tmp:
-            backend = FilesystemBackend(Path(tmp))
-            backend.save_run(
-                run_id="run_old",
-                workflow="ondemand",
-                upstream=_UPSTREAM,
-                upstream_ref="ondemand",
-                run_url="https://example.com/run/old",
-                created_at="2026-04-01T00:00:00Z",
-                results=[_make_run_result("ProjectA", "commit_aaa", "failed")],
-                updated_statuses={},
-            )
-            backend.save_run(
-                run_id="run_new",
-                workflow="ondemand",
-                upstream=_UPSTREAM,
-                upstream_ref="ondemand",
-                run_url="https://example.com/run/new",
-                created_at="2026-04-02T00:00:00Z",
-                results=[_make_run_result("ProjectA", "commit_aaa", "passed")],
-                updated_statuses={},
-            )
-            pairs = {("ProjectA", "commit_aaa")}
+        backend = _sqlite_backend()
+        backend.save_run(
+            run_id="run_old",
+            workflow="ondemand",
+            upstream=_UPSTREAM,
+            upstream_ref="ondemand",
+            run_url="https://example.com/run/old",
+            created_at="2026-04-01T00:00:00Z",
+            results=[_make_run_result("ProjectA", "commit_aaa", "failed")],
+            updated_statuses={},
+        )
+        backend.save_run(
+            run_id="run_new",
+            workflow="ondemand",
+            upstream=_UPSTREAM,
+            upstream_ref="ondemand",
+            run_url="https://example.com/run/new",
+            created_at="2026-04-02T00:00:00Z",
+            results=[_make_run_result("ProjectA", "commit_aaa", "passed")],
+            updated_statuses={},
+        )
+        pairs = {("ProjectA", "commit_aaa")}
 
-            # Act
-            prior = backend.load_prior_results("ondemand", pairs)
+        # Act
+        prior = backend.load_prior_results("ondemand", pairs)
 
-            # Assert
-            assert prior[("ProjectA", "commit_aaa")]["outcome"] == "passed", "Newer run's outcome wins over older run's outcome"
+        # Assert
+        assert prior[("ProjectA", "commit_aaa")]["outcome"] == "passed", "Newer run's outcome wins over older run's outcome"
+

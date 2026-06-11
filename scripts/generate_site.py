@@ -1,20 +1,13 @@
 #!/usr/bin/env python3
 """Generate a static HTML status page for the GitHub Pages site.
 
-Usage (SQL backend — production):
+Usage:
     python3 scripts/generate_site.py \\
-        --backend sql \\
         --run-id "$RUN_ID" \\
         --output site/index.html
 
     The connection string is read from the POSTGRES_DSN environment variable.
     If --run-id is omitted the latest regression run is used.
-
-Usage (filesystem backend — local development):
-    python3 scripts/generate_site.py \\
-        --backend filesystem \\
-        --state-root <path> \\
-        --output site/index.html
 """
 
 from __future__ import annotations
@@ -370,56 +363,6 @@ def badge(value: str | None, cls_map: dict, label_map: dict | None = None, toolt
     tooltip = (tooltip_map or {}).get(value)
     tooltip_attr = f' data-tooltip="{esc(tooltip)}"' if tooltip else ""
     return f'<span class="badge {esc(cls)}"{tooltip_attr}>{esc(label)}</span>'
-
-
-# ---------------------------------------------------------------------------
-# Data loading
-# ---------------------------------------------------------------------------
-
-
-def load_from_filesystem(state_root: Path) -> tuple[dict, list[dict]]:
-    """Return (run_meta, rows) from the filesystem backend's latest.json.
-
-    Reads from the filesystem backend's latest.json.
-    to the shorter SQL column names so the render function works with both.
-    """
-    latest_path = state_root / "reports" / "latest.json"
-    if not latest_path.exists():
-        raise FileNotFoundError(f"No latest.json found at {latest_path}")
-
-    data = json.loads(latest_path.read_text())
-
-    run_meta = {
-        "run_id":       data.get("run_id", "unknown"),
-        "upstream_ref": data.get("upstream_ref", "unknown"),
-        "run_url":      data.get("run_url", ""),
-        "reported_at":  data.get("reported_at"),
-        "started_at":   None,
-    }
-
-    # Load release-tag fields from status/current.json (downstream_status table analogue).
-    release_by_name: dict[str, dict] = {}
-    status_path = state_root / "status" / "current.json"
-    if status_path.exists():
-        try:
-            sdata = json.loads(status_path.read_text())
-            for name, s in sdata.get("downstreams", {}).items():
-                release_by_name[name] = {
-                    "last_good_release": s.get("last_good_release"),
-                    "last_good_release_commit": s.get("last_good_release_commit"),
-                }
-        except Exception:
-            pass
-
-    rows = []
-    for r in data.get("results", []):
-        row = dict(r)
-        ds = row.get("downstream", "")
-        row.setdefault("last_good_release", release_by_name.get(ds, {}).get("last_good_release"))
-        row.setdefault("last_good_release_commit", release_by_name.get(ds, {}).get("last_good_release_commit"))
-        rows.append(row)
-
-    return run_meta, rows
 
 
 # ---------------------------------------------------------------------------
@@ -1050,11 +993,9 @@ def main() -> None:
     ap = argparse.ArgumentParser(
         description="Generate a static HTML status page from the regression database.",
     )
-    ap.add_argument("--backend", choices=["sql", "filesystem"], default="sql")
-    ap.add_argument("--state-root", help="Filesystem backend: state root directory")
     ap.add_argument(
         "--run-id",
-        help="SQL backend: workflow run ID to render (default: latest regression run)",
+        help="Workflow run ID to render (default: latest regression run)",
     )
     ap.add_argument("--output", required=True, help="Output HTML file path")
     ap.add_argument(
@@ -1077,27 +1018,21 @@ def main() -> None:
 
     generated_at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
 
-    if args.backend == "sql":
-        dsn = os.environ.get("POSTGRES_DSN")
-        if not dsn:
-            ap.error("POSTGRES_DSN environment variable is required for --backend sql")
+    dsn = os.environ.get("POSTGRES_DSN")
+    if not dsn:
+        ap.error("POSTGRES_DSN environment variable is required")
 
-        from scripts.storage import create_sql_engine, latest_regression_run_id, load_run_for_site
+    from scripts.storage import create_sql_engine, latest_regression_run_id, load_run_for_site
 
-        engine = create_sql_engine(dsn)
+    engine = create_sql_engine(dsn)
 
-        run_id = args.run_id
+    run_id = args.run_id
+    if not run_id:
+        run_id = latest_regression_run_id(engine)
         if not run_id:
-            run_id = latest_regression_run_id(engine)
-            if not run_id:
-                ap.error("No regression runs found in the database.")
+            ap.error("No regression runs found in the database.")
 
-        run_meta, rows = load_run_for_site(engine, run_id)
-
-    else:  # filesystem
-        if not args.state_root:
-            ap.error("--state-root is required for --backend filesystem")
-        run_meta, rows = load_from_filesystem(Path(args.state_root))
+    run_meta, rows = load_run_for_site(engine, run_id)
 
     run_id = run_meta.get("run_id", "unknown")
     run_url = run_meta.get("run_url", "") or ""

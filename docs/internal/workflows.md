@@ -10,15 +10,15 @@ commit introduced the breakage?*
 
 1. **`plan`** — reads `ci/inventory/downstreams.json` to build a job matrix.
    Also runs `export_status_snapshot.py` to read the `downstream_status` table
-   once and uploads it as the `status-snapshot` artifact (in the
-   `FilesystemBackend` on-disk layout). This is the run's only pre-report
+   once and uploads it as the `status-snapshot` artifact (a single JSON
+   file). This is the run's only pre-report
    database read: the select fan-out reads prior state from the artifact, so
    ~30 legs never dial the database pooler simultaneously.
 
 2. **`select`** (per downstream, `ubuntu-latest`) — runs
    `select_downstream_regression_window.py`. Clones mathlib and the downstream,
    reads prior episode state from the `status-snapshot` artifact
-   (`--backend filesystem`), computes a candidate bisect window, and writes
+   (`--status-snapshot <file>`), computes a candidate bisect window, and writes
    `selection.json`. **Never invokes hopscotch.**
 
    The select step may short-circuit via `try_skip_already_good`: if the

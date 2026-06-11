@@ -52,7 +52,7 @@ Runs on `ubuntu-latest`. Determines which downstreams to include in the matrix.
      the `report` job so skipped entries appear in the summary and alert payload.
 7. **Status snapshot:** runs `export_status_snapshot.py` to read the
    `downstream_status` table once and uploads it as the `status-snapshot`
-   artifact (in the `FilesystemBackend` on-disk layout). The select legs read
+   artifact (a single JSON file). The select legs read
    prior episode state from this artifact, so the fan-out never opens a
    database connection of its own.
 
@@ -66,7 +66,7 @@ downstream in the matrix, up to four in parallel.
 
 Runs `select_ondemand_window.py`, which clones mathlib and the downstream, reads
 prior episode state from the `status-snapshot` artifact staged by `plan`
-(`--backend filesystem`; select legs hold no database credentials), and computes
+(`--status-snapshot <file>`; select legs hold no database credentials), and computes
 a candidate bisect window. **Never invokes hopscotch.** Writes `selection.json`
 and uploads it as a `selection-<name>` artifact.
 

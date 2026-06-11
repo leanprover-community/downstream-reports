@@ -59,7 +59,6 @@ jobs:
           POSTGRES_DSN: ${{ secrets.POSTGRES_DSN }}
         run: |
           python3 scripts/generate_site.py \
-            --backend sql \
             --upstream-dir /tmp/mathlib4.git \
             --output /tmp/site/index.html
 

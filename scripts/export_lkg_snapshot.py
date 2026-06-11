@@ -139,7 +139,7 @@ def main() -> int:
     args = build_parser().parse_args()
 
     inventory = load_inventory(Path(args.inventory), include_disabled=True)
-    backend = create_backend(args.backend, dsn=args.dsn, state_root=args.state_root)
+    backend = create_backend(args.backend, dsn=args.dsn)
 
     # Provenance metadata — only available for the SQL backend.
     source_run: dict[str, str] | None = None

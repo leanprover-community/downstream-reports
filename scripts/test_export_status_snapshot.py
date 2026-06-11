@@ -3,11 +3,12 @@
 Tests for: scripts.export_status_snapshot (and the storage snapshot helpers)
 
 Coverage scope:
-    - ``storage.write_status_snapshot`` / ``storage.status_snapshot_payload``
-      — the staged snapshot must be byte-compatible with what
-      ``FilesystemBackend.load_all_statuses`` reads, for both workflow keys.
-    - ``main`` (CLI) — argv → snapshot directory.  Integration-style:
-      stages from a filesystem source backend and from the dry-run backend.
+    - ``storage.write_status_snapshot`` / ``storage.read_status_snapshot``
+      / ``storage.status_snapshot_payload`` — the staged snapshot must
+      round-trip exactly, and the reader must reject snapshots staged for
+      a different (workflow, upstream) or schema version.
+    - ``main`` (CLI) — argv → snapshot file.  Integration-style: stages
+      from a SQLite source backend and from the dry-run backend.
 
 Out of scope:
     - SQL reads (``SqlBackend.load_all_statuses`` is covered by
@@ -18,11 +19,11 @@ Why this matters
 ----------------
 The plan job stages this snapshot once and every select leg reads prior
 episode state from it instead of dialing the database — the snapshot IS the
-select fan-out's view of ``downstream_status``.  A shape drift between the
-writer and ``FilesystemBackend.load_all_statuses`` would silently feed the
-skip heuristics empty prior state, disabling ``try_skip_already_good`` and
-``try_skip_known_bad_bisect`` across the board.  The round-trip tests here
-pin that contract.
+select fan-out's view of ``downstream_status``.  A shape drift between
+``write_status_snapshot`` and ``read_status_snapshot`` would silently feed
+the skip heuristics empty prior state, disabling ``try_skip_already_good``
+and ``try_skip_known_bad_bisect`` across the board.  The round-trip tests
+here pin that contract.
 """
 
 from __future__ import annotations
@@ -39,7 +40,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from scripts.export_status_snapshot import main as export_main
 from scripts.storage import (
     DownstreamStatusRecord,
-    FilesystemBackend,
+    SqlBackend,
+    create_schema,
+    create_sql_engine,
+    read_status_snapshot,
     status_snapshot_payload,
     write_status_snapshot,
 )
@@ -62,41 +66,70 @@ _STATUSES: dict[str, DownstreamStatusRecord] = {
 }
 
 
-class WriteStatusSnapshotTests(TestCase):
+def _write(path: Path, workflow: str = "regression") -> Path:
+    return write_status_snapshot(
+        path, _STATUSES,
+        workflow=workflow, upstream=_UPSTREAM, reported_at="2026-06-10T00:00:00Z",
+    )
+
+
+class StatusSnapshotRoundTripTests(TestCase):
     def test_round_trip_regression(self) -> None:
         """Scenario: a snapshot staged for the regression workflow is read back
-        verbatim by FilesystemBackend.load_all_statuses."""
+        verbatim by read_status_snapshot."""
         with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            write_status_snapshot(root, "regression", _STATUSES, reported_at="2026-06-10T00:00:00Z")
-            loaded = FilesystemBackend(root).load_all_statuses("regression", _UPSTREAM)
+            path = _write(Path(tmp) / "status.json")
+            loaded = read_status_snapshot(path, workflow="regression", upstream=_UPSTREAM)
         self.assertEqual(loaded, _STATUSES)
 
     def test_round_trip_ondemand(self) -> None:
-        """Scenario: the ondemand workflow key writes ondemand-current.json and
-        round-trips through the same backend read."""
+        """Scenario: a snapshot staged for the ondemand workflow round-trips
+        through the same reader."""
         with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            path = write_status_snapshot(root, "ondemand", _STATUSES, reported_at="2026-06-10T00:00:00Z")
-            self.assertEqual(path, root / "status" / "ondemand-current.json")
-            loaded = FilesystemBackend(root).load_all_statuses("ondemand", _UPSTREAM)
+            path = _write(Path(tmp) / "status.json", workflow="ondemand")
+            loaded = read_status_snapshot(path, workflow="ondemand", upstream=_UPSTREAM)
         self.assertEqual(loaded, _STATUSES)
 
     def test_empty_statuses_round_trip(self) -> None:
         """Scenario: zero downstreams (dry-run source) still writes a valid
         snapshot file that loads back as an empty dict."""
         with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            path = write_status_snapshot(root, "regression", {}, reported_at="2026-06-10T00:00:00Z")
+            path = write_status_snapshot(
+                Path(tmp) / "status.json", {},
+                workflow="regression", upstream=_UPSTREAM,
+                reported_at="2026-06-10T00:00:00Z",
+            )
             self.assertTrue(path.exists())
-            loaded = FilesystemBackend(root).load_all_statuses("regression", _UPSTREAM)
+            loaded = read_status_snapshot(path, workflow="regression", upstream=_UPSTREAM)
         self.assertEqual(loaded, {})
 
+    def test_missing_per_downstream_fields_load_as_none(self) -> None:
+        """Scenario: a snapshot entry without the optional fields (e.g. release
+        metadata) loads with None for each absent field rather than raising."""
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "status.json"
+            payload = status_snapshot_payload(
+                {}, workflow="regression", upstream=_UPSTREAM,
+                reported_at="2026-06-10T00:00:00Z",
+            )
+            payload["downstreams"] = {"sparse": {"last_known_good_commit": "abc"}}
+            path.write_text(json.dumps(payload))
+            loaded = read_status_snapshot(path, workflow="regression", upstream=_UPSTREAM)
+        self.assertEqual(loaded["sparse"].last_known_good_commit, "abc")
+        self.assertIsNone(loaded["sparse"].downstream_commit)
+        self.assertIsNone(loaded["sparse"].last_good_release)
+
     def test_payload_shape_is_pinned(self) -> None:
-        """Scenario: the snapshot payload keeps schema_version 2 and the exact
-        per-downstream field names FilesystemBackend reads."""
-        payload = status_snapshot_payload(_STATUSES, "2026-06-10T00:00:00Z")
-        self.assertEqual(payload["schema_version"], 2)
+        """Scenario: the snapshot payload keeps schema_version 3, embeds its
+        (workflow, upstream) provenance, and uses the exact per-downstream
+        field names read_status_snapshot reads."""
+        payload = status_snapshot_payload(
+            _STATUSES, workflow="regression", upstream=_UPSTREAM,
+            reported_at="2026-06-10T00:00:00Z",
+        )
+        self.assertEqual(payload["schema_version"], 3)
+        self.assertEqual(payload["workflow"], "regression")
+        self.assertEqual(payload["upstream"], _UPSTREAM)
         self.assertEqual(payload["reported_at"], "2026-06-10T00:00:00Z")
         self.assertEqual(
             set(payload["downstreams"]["physlib"]),
@@ -111,25 +144,76 @@ class WriteStatusSnapshotTests(TestCase):
         )
 
 
-class ExportStatusSnapshotCliTests(TestCase):
-    def test_cli_stages_from_filesystem_source(self) -> None:
-        """Scenario: the CLI copies prior state from a source state root into a
-        fresh output root that works as a --state-root for the select step."""
+class ReadStatusSnapshotValidationTests(TestCase):
+    """The reader fails loudly on wiring errors instead of returning empty state."""
+
+    def test_missing_file_raises_system_exit(self) -> None:
+        """Scenario: pointing --status-snapshot at a nonexistent file is a
+        workflow wiring error, not a first-run situation."""
         with tempfile.TemporaryDirectory() as tmp:
-            source = Path(tmp) / "source"
-            output = Path(tmp) / "snapshot"
-            write_status_snapshot(source, "regression", _STATUSES, reported_at="2026-06-09T00:00:00Z")
+            with self.assertRaises(SystemExit):
+                read_status_snapshot(
+                    Path(tmp) / "missing.json", workflow="regression", upstream=_UPSTREAM,
+                )
+
+    def test_workflow_mismatch_raises_system_exit(self) -> None:
+        """Scenario: a snapshot staged for the ondemand workflow must be
+        rejected by a regression select leg."""
+        with tempfile.TemporaryDirectory() as tmp:
+            path = _write(Path(tmp) / "status.json", workflow="ondemand")
+            with self.assertRaises(SystemExit):
+                read_status_snapshot(path, workflow="regression", upstream=_UPSTREAM)
+
+    def test_upstream_mismatch_raises_system_exit(self) -> None:
+        """Scenario: a snapshot staged for a different upstream must be
+        rejected."""
+        with tempfile.TemporaryDirectory() as tmp:
+            path = _write(Path(tmp) / "status.json")
+            with self.assertRaises(SystemExit):
+                read_status_snapshot(path, workflow="regression", upstream="other/upstream")
+
+    def test_unexpected_schema_version_raises_system_exit(self) -> None:
+        """Scenario: a snapshot with a different schema_version means writer and
+        reader are out of sync; reading it anyway could drop fields silently."""
+        with tempfile.TemporaryDirectory() as tmp:
+            path = _write(Path(tmp) / "status.json")
+            payload = json.loads(path.read_text())
+            payload["schema_version"] = 2
+            path.write_text(json.dumps(payload))
+            with self.assertRaises(SystemExit):
+                read_status_snapshot(path, workflow="regression", upstream=_UPSTREAM)
+
+
+class ExportStatusSnapshotCliTests(TestCase):
+    def test_cli_stages_from_sql_source(self) -> None:
+        """Scenario: the CLI reads prior state from a SQL source and writes a
+        snapshot file that read_status_snapshot accepts for the select step."""
+        with tempfile.TemporaryDirectory() as tmp:
+            dsn = f"sqlite:///{tmp}/state.db"
+            engine = create_sql_engine(dsn)
+            create_schema(engine)
+            SqlBackend(engine).save_run(
+                run_id="run_1",
+                workflow="regression",
+                upstream=_UPSTREAM,
+                upstream_ref="master",
+                run_url="https://example.com/run/1",
+                created_at="2026-06-09T00:00:00Z",
+                results=[],
+                updated_statuses=_STATUSES,
+            )
+            output = Path(tmp) / "snapshot" / "status.json"
             argv = [
                 "export_status_snapshot.py",
-                "--backend", "filesystem",
-                "--state-root", str(source),
+                "--backend", "sql",
+                "--dsn", dsn,
                 "--workflow", "regression",
                 "--upstream", _UPSTREAM,
-                "--output-root", str(output),
+                "--output", str(output),
             ]
             with patch.object(sys, "argv", argv):
                 self.assertEqual(export_main(), 0)
-            loaded = FilesystemBackend(output).load_all_statuses("regression", _UPSTREAM)
+            loaded = read_status_snapshot(output, workflow="regression", upstream=_UPSTREAM)
         self.assertEqual(loaded, _STATUSES)
 
     def test_cli_dry_run_writes_empty_snapshot(self) -> None:
@@ -137,17 +221,17 @@ class ExportStatusSnapshotCliTests(TestCase):
         downstreams so select legs see the same empty prior state a dry-run
         database read would have produced."""
         with tempfile.TemporaryDirectory() as tmp:
-            output = Path(tmp) / "snapshot"
+            output = Path(tmp) / "snapshot" / "status.json"
             argv = [
                 "export_status_snapshot.py",
                 "--backend", "dry-run",
                 "--workflow", "regression",
-                "--output-root", str(output),
+                "--output", str(output),
             ]
             with patch.object(sys, "argv", argv):
                 self.assertEqual(export_main(), 0)
-            payload = json.loads((output / "status" / "current.json").read_text())
-            loaded = FilesystemBackend(output).load_all_statuses("regression", _UPSTREAM)
+            payload = json.loads(output.read_text())
+            loaded = read_status_snapshot(output, workflow="regression", upstream=_UPSTREAM)
         self.assertEqual(payload["downstreams"], {})
         self.assertEqual(loaded, {})
 

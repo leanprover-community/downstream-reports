@@ -479,7 +479,7 @@ def main() -> int:
     if not gh_repo:
         raise SystemExit("GH_REPO environment variable is required (e.g. 'leanprover-community/downstream-reports')")
 
-    backend: StorageBackend = create_backend(args.backend, dsn=args.dsn, state_root=args.state_root)
+    backend: StorageBackend = create_backend(args.backend, dsn=args.dsn)
     inventory = load_inventory(args.inventory)
     statuses = backend.load_all_statuses("regression", args.upstream)
     ledger = backend.load_manifest_watcher_ledger(args.upstream)

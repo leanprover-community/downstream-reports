@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Select the bisect window for a downstream on-demand probe.
 
-This script handles only git/database work and never invokes hopscotch.
+This script handles only git work and never invokes hopscotch.  Prior
+episode state comes from the status-snapshot file staged by the plan job
+(``--status-snapshot``), never from a database connection.
 All hopscotch invocations (HEAD probe and bisect) live in the probe step
 (probe_downstream_regression_window.py), which runs in a secret-free job.
 
@@ -32,7 +34,7 @@ from scripts.git_ops import (
     select_search_base_from_candidates,
 )
 from scripts.models import WindowSelection, load_inventory
-from scripts.storage import add_backend_args, create_backend
+from scripts.storage import DownstreamStatusRecord, read_status_snapshot
 from scripts.validation import (
     append_commit_plan_artifact,
     build_error_result,
@@ -63,7 +65,14 @@ def build_parser() -> argparse.ArgumentParser:
             "bumping_branch. Used by on-demand dispatch."
         ),
     )
-    add_backend_args(parser)
+    parser.add_argument(
+        "--status-snapshot", type=Path, default=None,
+        help=(
+            "Status-snapshot file staged by the plan job; prior episode state "
+            "is read from it instead of any database.  Omit to run with no "
+            "prior state (every downstream is treated as first-run)."
+        ),
+    )
     return parser
 
 
@@ -108,9 +117,13 @@ def main() -> int:
         print(summary, end="")
         return 0
 
-    backend = create_backend(args.backend, dsn=args.dsn, state_root=args.state_root)
-
-    status = backend.load_all_statuses(args.workflow, "leanprover-community/mathlib4")
+    status: dict[str, DownstreamStatusRecord] = {}
+    if args.status_snapshot is not None:
+        status = read_status_snapshot(
+            args.status_snapshot,
+            workflow=args.workflow,
+            upstream="leanprover-community/mathlib4",
+        )
     previous = status.get(config.name)
     stored_last_known_good = previous.last_known_good_commit if previous else None
 
