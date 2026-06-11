@@ -203,6 +203,12 @@ runs:
         BODY: ${{ inputs.body }}
         LABELS: ${{ inputs.labels }}
         MESSAGE: ${{ inputs.message }}
+        # Used to decide whether to surface the "CI does not run" warning:
+        # the warning applies only when the PR is opened under the built-in
+        # GITHUB_TOKEN. A custom App / PAT token differs from github.token,
+        # so the comparison below suppresses the warning in that case.
+        TOKEN: ${{ inputs.token }}
+        DEFAULT_TOKEN: ${{ github.token }}
       run: |
         set -euo pipefail
 
@@ -213,13 +219,29 @@ runs:
         else
           RUN_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
           TODAY=$(date -u +"%Y-%m-%d")
-          FOOTER="_This PR was last updated on ${TODAY} by [this workflow run](${RUN_URL}). It is an automated bump using [downstream-reports/open-bump-pr](https://github.com/leanprover-community/downstream-reports)_"
 
-          if [ -n "$MESSAGE" ]; then
-            PR_BODY=$(printf '%s\n\n%s' "$MESSAGE" "$FOOTER")
-          else
-            PR_BODY="$FOOTER"
-          fi
+          # Compose the auto-generated body, mirroring track-incompatibility's
+          # fix-PR shape: the bump description above a rule, then an explanation
+          # of what this PR is, the CI-on-default-token caveat (only when opened
+          # under the built-in GITHUB_TOKEN), and the footer.
+          BODY_FILE=$(mktemp)
+          {
+            if [ -n "$MESSAGE" ]; then
+              printf '%s\n\n' "$MESSAGE"
+            fi
+            printf -- '---\n\n'
+            printf 'This is an automated dependency bump to the latest commit this project is known to build against (its **last-known-good** commit). `lake build` was run against the new commit before this PR was opened and succeeded, so it should be mergeable as-is.\n\n'
+            printf 'Only `lake build` is checked, though — if your own CI does more (linting, failing on warnings, downstream tests, …), run it on this PR before merging.\n\n'
+            if [ "$TOKEN" = "$DEFAULT_TOKEN" ]; then
+              printf '> [!WARNING]\n'
+              printf '> This PR was opened by the default `github-actions[bot]` identity, so **your repository'"'"'s own CI does not run on it** — GitHub suppresses workflow triggers (`push` / `pull_request`) for events caused by the built-in `GITHUB_TOKEN`.\n'
+              printf '>\n'
+              printf '> To run your CI on this PR once, push an empty commit (`git commit --allow-empty -m "run CI" && git push`) — a human-triggered event is not suppressed. To get CI on every automated bump PR, open them under a GitHub App token instead: see the [authentication guide](https://github.com/leanprover-community/downstream-reports/blob/main/docs/actions.md#set-up-authentication).\n\n'
+            fi
+            printf '_This PR was last updated on %s by [this workflow run](%s). It is an automated bump using [downstream-reports/open-bump-pr](https://github.com/leanprover-community/downstream-reports)._\n' \
+              "$TODAY" "$RUN_URL"
+          } > "$BODY_FILE"
+          PR_BODY=$(cat "$BODY_FILE")
         fi
 
         # Build optional gh flag arrays.

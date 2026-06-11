@@ -77,6 +77,13 @@ as-is.
 > downstream-of-downstream tests, deploy previews, …) before merging, use a
 > GitHub App token ([Option B](#option-b--github-app-installation-token-recommended-for-ci-on-pr))
 > instead.
+>
+> To kick CI off on a single such PR without setting up an App, push a commit
+> yourself (e.g. `git commit --allow-empty -m "run CI"`) — a human-triggered
+> event isn't suppressed, and an empty commit is tree-identical, so
+> `open-bump-pr`'s `tree_unchanged` short-circuit leaves it in place on the
+> next run. (On a `track-incompatibility` fix PR this is moot: the fix commits
+> you push trigger CI anyway.)
 
 ### Option B — GitHub App installation token (recommended for CI-on-PR)
 
@@ -341,8 +348,13 @@ working-tree changes.
 
 Commits all working-tree changes onto a dedicated branch (force-pushed on every
 run to keep the PR to a single commit), then creates or updates an open PR. The
-PR body is an optional `message` followed by an automated footer that links back
-to the triggering run and records today's date.
+auto-generated PR body is the optional `message` (the `bump-description` from
+`bump-to-latest`), a `---` rule, a short explanation that this is a verified
+last-known-good bump that should be mergeable as-is, and a footer linking back to
+the triggering run. When the PR is opened under the built-in `GITHUB_TOKEN` (no
+App token), the body also carries a warning that the downstream's own CI does not
+run on the PR, pointing at [Set up authentication](#set-up-authentication). Pass
+`body` to override the whole thing.
 
 If there are no working-tree changes (`git diff` is clean) the action exits with
 `action=noop` and no PR is touched.

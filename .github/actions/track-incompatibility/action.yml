@@ -848,6 +848,12 @@ runs:
         DEP_NAME: ${{ inputs.dependency-name }}
         FKB_COMMIT: ${{ steps.fkb.outputs.commit }}
         CULPRIT_LOG_ARTIFACT_URL: ${{ steps.run.outputs.culprit_log_artifact_url }}
+        # Used to decide whether to surface the "CI does not run" warning:
+        # the warning applies only when the PR is opened under the built-in
+        # GITHUB_TOKEN. A custom App / PAT token differs from github.token,
+        # so the comparison below suppresses the warning in that case.
+        TOKEN: ${{ inputs.token }}
+        DEFAULT_TOKEN: ${{ github.token }}
       run: |
         set -euo pipefail
 
@@ -869,6 +875,12 @@ runs:
           printf -- '---\n\n'
           printf 'This PR bumps `%s` to an identified incompatible (first-known-bad) commit (`%s`) so you can reproduce and fix the incompatibility locally by checking out this branch.\n\n' \
             "$DEP_NAME" "$FKB_SHORT"
+          if [ "$TOKEN" = "$DEFAULT_TOKEN" ]; then
+            printf '> [!WARNING]\n'
+            printf '> This PR was opened by the default `github-actions[bot]` identity, so **your repository'"'"'s own CI does not run on the PR as opened** — GitHub suppresses workflow triggers (`push` / `pull_request`) for events caused by the built-in `GITHUB_TOKEN`. Fix commits you push to this branch yourself *will* trigger CI normally.\n'
+            printf '>\n'
+            printf '> To have CI run on every automated PR from the outset, open them under a GitHub App token instead: see the [authentication guide](https://github.com/leanprover-community/downstream-reports/blob/main/docs/actions.md#set-up-authentication).\n\n'
+          fi
           printf '_Opened automatically by [downstream-reports/track-incompatibility](https://github.com/leanprover-community/downstream-reports) via [this workflow run](%s)._\n' \
             "$WORKFLOW_RUN_URL"
         } > "$BODY_FILE"
