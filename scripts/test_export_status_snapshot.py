@@ -103,22 +103,6 @@ class StatusSnapshotRoundTripTests(TestCase):
             loaded = read_status_snapshot(path, workflow="regression", upstream=_UPSTREAM)
         self.assertEqual(loaded, {})
 
-    def test_missing_per_downstream_fields_load_as_none(self) -> None:
-        """Scenario: a snapshot entry without the optional fields (e.g. release
-        metadata) loads with None for each absent field rather than raising."""
-        with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / "status.json"
-            payload = status_snapshot_payload(
-                {}, workflow="regression", upstream=_UPSTREAM,
-                reported_at="2026-06-10T00:00:00Z",
-            )
-            payload["downstreams"] = {"sparse": {"last_known_good_commit": "abc"}}
-            path.write_text(json.dumps(payload))
-            loaded = read_status_snapshot(path, workflow="regression", upstream=_UPSTREAM)
-        self.assertEqual(loaded["sparse"].last_known_good_commit, "abc")
-        self.assertIsNone(loaded["sparse"].downstream_commit)
-        self.assertIsNone(loaded["sparse"].last_good_release)
-
     def test_payload_shape_is_pinned(self) -> None:
         """Scenario: the snapshot payload keeps schema_version 3, embeds its
         (workflow, upstream) provenance, and uses the exact per-downstream
@@ -178,7 +162,7 @@ class ReadStatusSnapshotValidationTests(TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             path = _write(Path(tmp) / "status.json")
             payload = json.loads(path.read_text())
-            payload["schema_version"] = 2
+            payload["schema_version"] = 99
             path.write_text(json.dumps(payload))
             with self.assertRaises(SystemExit):
                 read_status_snapshot(path, workflow="regression", upstream=_UPSTREAM)

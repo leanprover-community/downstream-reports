@@ -322,17 +322,7 @@ def status_snapshot_payload(
         "workflow": workflow,
         "upstream": upstream,
         "reported_at": reported_at,
-        "downstreams": {
-            name: {
-                "last_known_good_commit": s.last_known_good_commit,
-                "first_known_bad_commit": s.first_known_bad_commit,
-                "pinned_commit": s.pinned_commit,
-                "downstream_commit": s.downstream_commit,
-                "last_good_release": s.last_good_release,
-                "last_good_release_commit": s.last_good_release_commit,
-            }
-            for name, s in sorted(statuses.items())
-        },
+        "downstreams": {name: asdict(s) for name, s in sorted(statuses.items())},
     }
 
 
@@ -385,16 +375,11 @@ def read_status_snapshot(
                 f"status snapshot {path} was staged for {field}={actual!r}; "
                 f"expected {expected!r}"
             )
+    # Per-downstream keys are exactly the DownstreamStatusRecord fields
+    # (the writer serialises via asdict); unknown keys raise TypeError.
     return {
-        name: DownstreamStatusRecord(
-            last_known_good_commit=data.get("last_known_good_commit"),
-            first_known_bad_commit=data.get("first_known_bad_commit"),
-            pinned_commit=data.get("pinned_commit"),
-            downstream_commit=data.get("downstream_commit"),
-            last_good_release=data.get("last_good_release"),
-            last_good_release_commit=data.get("last_good_release_commit"),
-        )
-        for name, data in payload.get("downstreams", {}).items()
+        name: DownstreamStatusRecord(**data)
+        for name, data in payload["downstreams"].items()
     }
 
 
