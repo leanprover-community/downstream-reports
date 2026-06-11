@@ -68,7 +68,7 @@
       "repo": "google-deepmind/formal-conjectures",
       "default_branch": "main",
       "dependency_name": "mathlib",
-      "enabled": true,
+      "enabled": false,
       "nuke_lakedir": true
     },
     {
