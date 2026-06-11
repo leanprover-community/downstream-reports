@@ -30,7 +30,8 @@
       "default_branch": "master",
       "dependency_name": "mathlib",
       "enabled": true,
-      "warm_cache": true
+      "warm_cache": true,
+      "watch_manifest": true
     },
     {
       "name": "cslib",
@@ -215,7 +216,8 @@
       "repo": "LeanMachineLearning/LML",
       "default_branch": "main",
       "dependency_name": "mathlib",
-      "enabled": true
+      "enabled": true,
+      "watch_manifest": true
     },
     {
       "name": "TauCeti",
