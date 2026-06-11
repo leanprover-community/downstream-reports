@@ -227,7 +227,8 @@ class TestTryRevalidateBoundary:
         *,
         revalidate_enabled: bool = True,
         previous: DownstreamStatusRecord | None = None,
-        manifest_changed: bool | None = False,
+        dependency_files_changed: bool | None = False,
+        boundary_overdue: bool = False,
         ancestor: bool = True,
         lkg_passes: bool = True,
         fkb_exit_code: int = 1,
@@ -242,7 +243,8 @@ class TestTryRevalidateBoundary:
             head_probe_outcome="failed",
             head_probe_failure_stage="build",
             head_probe_summary="failed",
-            manifest_changed_since_last_run=manifest_changed,
+            dependency_files_changed_since_last_run=dependency_files_changed,
+            boundary_bisect_overdue=boundary_overdue,
             tested_commit_details=[CommitDetail(sha="t" * 40, title="test")],
         )
         verified: list[str] = []
@@ -310,7 +312,26 @@ class TestTryRevalidateBoundary:
         assert result is None
         assert verified == [] and probed == []
 
-    def test_returns_none_when_manifest_changed(self) -> None:
+    def test_returns_none_when_boundary_bisect_overdue(self) -> None:
+        """The staleness valve forces a real bisect on a bounded cadence.
+
+        Revalidation could otherwise keep confirming a pair that is true at
+        both endpoints yet no longer the commit blocking HEAD (original
+        breakage fixed upstream, new downstream code broken against a later
+        commit).  When the select step marks the boundary overdue, the
+        heuristic must stand aside without spending builds so the full
+        bisect re-derives the pair first-hand.
+        """
+        # Act
+        result, _, verified, probed = self._call(
+            previous=self._previous, boundary_overdue=True
+        )
+
+        # Assert
+        assert result is None
+        assert verified == [] and probed == [], "the valve must reject before spending any builds"
+
+    def test_returns_none_when_dependency_files_changed(self) -> None:
         """A manifest change (dependency bump) invalidates the monotonicity assumption.
 
         A bump can move the regression boundary anywhere, so even a
@@ -319,7 +340,7 @@ class TestTryRevalidateBoundary:
         """
         # Act
         result, _, verified, probed = self._call(
-            previous=self._previous, manifest_changed=True
+            previous=self._previous, dependency_files_changed=True
         )
 
         # Assert
@@ -334,7 +355,7 @@ class TestTryRevalidateBoundary:
         """
         # Act
         result, _, verified, probed = self._call(
-            previous=self._previous, manifest_changed=None
+            previous=self._previous, dependency_files_changed=None
         )
 
         # Assert

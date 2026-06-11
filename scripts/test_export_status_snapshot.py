@@ -40,6 +40,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from scripts.export_status_snapshot import main as export_main
 from scripts.storage import (
     DownstreamStatusRecord,
+    RunResultRecord,
     SqlBackend,
     create_schema,
     create_sql_engine,
@@ -124,6 +125,7 @@ class StatusSnapshotRoundTripTests(TestCase):
                 "downstream_commit",
                 "last_good_release",
                 "last_good_release_commit",
+                "last_fresh_bisect_at",
             },
         )
 
@@ -199,6 +201,61 @@ class ExportStatusSnapshotCliTests(TestCase):
                 self.assertEqual(export_main(), 0)
             loaded = read_status_snapshot(output, workflow="regression", upstream=_UPSTREAM)
         self.assertEqual(loaded, _STATUSES)
+
+    def test_cli_attaches_last_fresh_bisect_time(self) -> None:
+        """Scenario: a downstream with a recorded fresh bisect gets its
+        most recent bisect time attached in the snapshot, so the select leg
+        can apply the boundary-revalidation staleness valve without a
+        database read."""
+        bisect_result = RunResultRecord(
+            upstream=_UPSTREAM,
+            downstream="physlib",
+            repo="leanprover-community/physlib",
+            downstream_commit="d" * 40,
+            outcome="failed",
+            episode_state="failing",
+            target_commit="t" * 40,
+            previous_last_known_good=None,
+            previous_first_known_bad=None,
+            last_known_good="g" * 40,
+            first_known_bad="b" * 40,
+            current_last_successful="g" * 40,
+            current_first_failing="b" * 40,
+            failure_stage="lake build",
+            search_mode="bisect",
+            commit_window_truncated=False,
+            error=None,
+            head_probe_outcome="failed",
+            head_probe_failure_stage="lake build",
+            culprit_log_text=None,
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            dsn = f"sqlite:///{tmp}/state.db"
+            engine = create_sql_engine(dsn)
+            create_schema(engine)
+            SqlBackend(engine).save_run(
+                run_id="run_1",
+                workflow="regression",
+                upstream=_UPSTREAM,
+                upstream_ref="master",
+                run_url="https://example.com/run/1",
+                created_at="2026-06-09T00:00:00Z",
+                results=[bisect_result],
+                updated_statuses=_STATUSES,
+            )
+            output = Path(tmp) / "snapshot" / "status.json"
+            argv = [
+                "export_status_snapshot.py",
+                "--backend", "sql",
+                "--dsn", dsn,
+                "--workflow", "regression",
+                "--upstream", _UPSTREAM,
+                "--output", str(output),
+            ]
+            with patch.object(sys, "argv", argv):
+                self.assertEqual(export_main(), 0)
+            loaded = read_status_snapshot(output, workflow="regression", upstream=_UPSTREAM)
+        self.assertTrue(loaded["physlib"].last_fresh_bisect_at.startswith("2026-06-09"))
 
     def test_cli_dry_run_writes_empty_snapshot(self) -> None:
         """Scenario: in dry-run mode the CLI writes a snapshot with zero

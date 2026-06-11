@@ -123,12 +123,20 @@ class WindowSelection:
     # Per-downstream boundary-revalidation flag from the inventory, forwarded
     # like skip_known_bad_bisect.  See DownstreamConfig.revalidate_boundary.
     revalidate_boundary: bool = False
-    # Whether the downstream's lake-manifest.json differs between the
+    # Whether any of the downstream's dependency files (lake-manifest.json,
+    # lean-toolchain — see git_ops.DEPENDENCY_FILES) differ between the
     # previously-validated downstream commit and the current one.  Computed by
     # the select step (which has the downstream clone); None when there is no
     # prior commit to compare against or the comparison could not be made.
     # The probe step only applies boundary revalidation when this is False.
-    manifest_changed_since_last_run: bool | None = None
+    dependency_files_changed_since_last_run: bool | None = None
+    # True when the stored boundary is due a scheduled fresh bisect: the most
+    # recent search_mode='bisect' run is older than the select step's
+    # --max-boundary-age-days, or no fresh bisect is recorded at all.  The
+    # probe step skips boundary revalidation when set, so a real bisect
+    # re-derives the pair on a bounded cadence — the staleness valve that
+    # caps how long a confirmable-but-misleading boundary can persist.
+    boundary_bisect_overdue: bool = False
     # Per-downstream nuke-lakedir flag from the inventory, forwarded so the
     # probe step can set HOPSCOTCH_DEBUG_NUKE_LAKEDIR=1 without re-reading the
     # inventory file.  See DownstreamConfig.nuke_lakedir.

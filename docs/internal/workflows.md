@@ -56,8 +56,9 @@ commit introduced the breakage?*
         failure logs.
      2. Tries `try_revalidate_boundary` (per-downstream opt-in via
         `"revalidate_boundary": true` in the inventory) — when the
-        downstream *did* change but its `lake-manifest.json` did not (the
-        select step compares the manifest blob against the
+        downstream *did* change but its dependency files did not (the
+        select step compares the `lake-manifest.json` and `lean-toolchain`
+        blobs — `git_ops.DEPENDENCY_FILES` — against the
         previously-validated downstream commit), rebuilds both stored
         endpoints with the current downstream source: if the stored LKG
         still passes and the stored FKB still fails, the boundary is
@@ -65,10 +66,21 @@ commit introduced the breakage?*
         `search_mode="boundary-revalidated"` (endpoints preserved verbatim
         by aggregation, exactly like `head-only-known-bad`). The FKB rebuild
         writes to the `culprit-probe` directory, so it doubles as the
-        culprit log for this run. Any manifest change or comparison failure,
-        a failing LKG rebuild, or a non-failing FKB rebuild falls through to
-        the full bisect. The `force_rebisect` dispatch input disables this
-        heuristic together with the known-bad skip.
+        culprit log for this run. Any dependency-file change or comparison
+        failure, a failing LKG rebuild, or a non-failing FKB rebuild falls
+        through to the full bisect. The `force_rebisect` dispatch input
+        disables this heuristic together with the known-bad skip.
+
+        **Staleness valve:** revalidation also stands aside when the
+        downstream's most recent fresh bisect (a `search_mode="bisect"`
+        run with a failed outcome) is older than `--max-boundary-age-days`
+        (select step, default 7) — the plan job attaches each downstream's
+        last fresh-bisect time to the status snapshot, and the select leg
+        marks the boundary overdue. This caps how long revalidation can
+        keep confirming a pair that is true at both endpoints yet no
+        longer the commit actually blocking HEAD (e.g. the original
+        breakage was fixed upstream while new downstream code broke
+        against a later commit).
      3. Otherwise attempts **LKG verification**: if a stored last-known-good
         is newer than the pinned commit, runs hopscotch against it. If it
         passes, re-derives the bisect window with the wider lower bound. If

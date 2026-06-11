@@ -293,15 +293,23 @@ def git_url_from_manifest(project_dir: Path, dependency_name: str) -> str | None
     return None
 
 
-def manifest_blob_id(repo_dir: Path, commit: str, manifest_name: str = "lake-manifest.json") -> str | None:
-    """Return the git blob id of the manifest at `commit`, or None if unavailable.
+# Files whose content pins the downstream's dependency context: the lock file
+# (exact dependency revisions) and the Lean toolchain (the compiler itself).
+# A change to either voids the monotonicity assumption behind boundary
+# revalidation — the regression boundary can move when the dependency set or
+# toolchain moves, even with downstream source untouched.
+DEPENDENCY_FILES = ("lake-manifest.json", "lean-toolchain")
+
+
+def file_blob_id(repo_dir: Path, commit: str, path: str) -> str | None:
+    """Return the git blob id of `path` at `commit`, or None if unavailable.
 
     Resolving `<commit>:<path>` needs the commit and its root tree locally but
     never reads the blob content, so it works in shallow and partial clones as
     long as the commit itself has been fetched.
     """
     try:
-        return git(repo_dir, "rev-parse", f"{commit}:{manifest_name}")
+        return git(repo_dir, "rev-parse", f"{commit}:{path}")
     except subprocess.CalledProcessError:
         return None
 
@@ -321,33 +329,35 @@ def fetch_commit(repo_dir: Path, commit: str) -> bool:
         return False
 
 
-def manifest_changed_between(
+def dependency_files_changed_between(
     repo_dir: Path,
     previous_commit: str,
     current_commit: str,
-    manifest_name: str = "lake-manifest.json",
+    files: tuple[str, ...] = DEPENDENCY_FILES,
 ) -> bool | None:
-    """Compare the manifest blob between two downstream commits.
+    """Compare the dependency-file blobs between two downstream commits.
 
-    Returns False when the manifest is byte-identical at both commits, True
-    when it differs, and None when the comparison cannot be made (the previous
-    commit is unfetchable, or the manifest is missing at either commit).
-    Callers treating None as "changed" stay conservative.
+    Returns False when every file in `files` is byte-identical at both
+    commits, True when any differs, and None when the comparison cannot be
+    made (the previous commit is unfetchable, or any file is missing at
+    either commit).  Callers treating None as "changed" stay conservative.
 
     `repo_dir` is the downstream clone, which is shallow (depth 1) and so does
     not contain `previous_commit` — it is fetched on demand.
     """
     if previous_commit == current_commit:
         return False
-    previous_blob = manifest_blob_id(repo_dir, previous_commit, manifest_name)
-    if previous_blob is None:
+    if file_blob_id(repo_dir, previous_commit, files[0]) is None:
         if not fetch_commit(repo_dir, previous_commit):
             return None
-        previous_blob = manifest_blob_id(repo_dir, previous_commit, manifest_name)
-    current_blob = manifest_blob_id(repo_dir, current_commit, manifest_name)
-    if previous_blob is None or current_blob is None:
-        return None
-    return previous_blob != current_blob
+    changed = False
+    for path in files:
+        previous_blob = file_blob_id(repo_dir, previous_commit, path)
+        current_blob = file_blob_id(repo_dir, current_commit, path)
+        if previous_blob is None or current_blob is None:
+            return None
+        changed = changed or previous_blob != current_blob
+    return changed
 
 
 def resolve_search_base_commit(

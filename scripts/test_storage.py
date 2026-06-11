@@ -534,6 +534,80 @@ class TestSqlBackendStatusRoundTrip:
 
 
 @pytest.mark.integration
+class TestSqlBackendLoadLastFreshBisectTimes:
+    """Tests for ``load_last_fresh_bisect_times`` (boundary-revalidation staleness valve).
+
+    The valve forces a real bisect once the most recent fresh bisect is
+    older than the configured age, so this loader's filter matters in both
+    directions: counting a non-bisect run as fresh would let revalidation
+    confirm a stale pair past the valve's deadline, while missing a real
+    bisect run would force redundant weekly bisects.
+    """
+
+    def _save(self, backend: SqlBackend, run_id: str, created_at: str, results: list) -> None:
+        backend.save_run(
+            run_id=run_id,
+            workflow="regression",
+            upstream=_UPSTREAM,
+            upstream_ref="master",
+            run_url=f"https://example.com/run/{run_id}",
+            created_at=created_at,
+            results=results,
+            updated_statuses={},
+        )
+
+    def test_returns_most_recent_bisect_time_per_downstream(self) -> None:
+        """Two bisect runs for one downstream → the newer reported_at wins.
+
+        The valve compares "now − last fresh bisect" against the max age;
+        returning an older row would force a bisect that already happened.
+        """
+        # Arrange
+        backend = _sqlite_backend()
+        older = dataclasses.replace(_make_run_result("A", "d1", "failed"), search_mode="bisect")
+        newer = dataclasses.replace(_make_run_result("A", "d2", "failed"), search_mode="bisect")
+        self._save(backend, "run_1", "2026-06-01T00:00:00Z", [older])
+        self._save(backend, "run_2", "2026-06-05T00:00:00Z", [newer])
+
+        # Act
+        times = backend.load_last_fresh_bisect_times("regression", _UPSTREAM)
+
+        # Assert
+        assert set(times) == {"A"}
+        assert times["A"].startswith("2026-06-05"), "the most recent bisect run must win"
+
+    def test_head_only_and_erroring_bisect_runs_are_excluded(self) -> None:
+        """Only search_mode='bisect' with outcome='failed' counts as fresh.
+
+        A head-only failure inherits the stored pair rather than deriving
+        it, and an erroring bisect never reached a verdict — neither
+        re-establishes the boundary first-hand, so neither resets the valve.
+        """
+        # Arrange
+        backend = _sqlite_backend()
+        head_only = _make_run_result("A", "d1", "failed")  # search_mode="head-only"
+        erroring_bisect = dataclasses.replace(
+            _make_run_result("B", "d1", "error"), search_mode="bisect"
+        )
+        self._save(backend, "run_1", "2026-06-01T00:00:00Z", [head_only, erroring_bisect])
+
+        # Act / Assert
+        assert backend.load_last_fresh_bisect_times("regression", _UPSTREAM) == {}
+
+    def test_scoped_by_workflow(self) -> None:
+        """A regression-workflow bisect must not reset the ondemand valve."""
+        # Arrange
+        backend = _sqlite_backend()
+        bisect_run = dataclasses.replace(
+            _make_run_result("A", "d1", "failed"), search_mode="bisect"
+        )
+        self._save(backend, "run_1", "2026-06-01T00:00:00Z", [bisect_run])
+
+        # Act / Assert
+        assert backend.load_last_fresh_bisect_times("ondemand", _UPSTREAM) == {}
+
+
+@pytest.mark.integration
 class TestSqlBackendLoadTestedDownstreamCommits:
     """Tests for ``load_tested_downstream_commits`` (ondemand dedup helper)."""
 

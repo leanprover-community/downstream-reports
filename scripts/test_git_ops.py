@@ -53,7 +53,7 @@ from scripts.git_ops import (
     RELEASE_TAG_GLOB,
     git_url_from_manifest,
     latest_reachable_tag,
-    manifest_changed_between,
+    dependency_files_changed_between,
     repo_clone_source,
     resolve_tag,
     run,
@@ -416,7 +416,8 @@ class _ManifestFixture:
     """Shallow downstream clone plus the origin SHAs the tests compare against."""
 
     clone: Path
-    head: str  # manifest identical to manifest_kept's
+    head: str  # dependency files identical to toolchain_bumped's
+    toolchain_bumped: str
     manifest_kept: str
     manifest_bumped: str
     pre_manifest: str  # commit from before lake-manifest.json existed
@@ -424,23 +425,26 @@ class _ManifestFixture:
 
 @pytest.fixture(scope="module")
 def manifest_fixture() -> _ManifestFixture:
-    """Provide an origin repo with manifest history and a depth-1 clone of it.
+    """Provide an origin repo with dependency-file history and a depth-1 clone of it.
 
     Commit graph (oldest → newest)::
 
-        pre_manifest     no lake-manifest.json yet
+        pre_manifest     lean-toolchain v4.30.0; no lake-manifest.json yet
         manifest_bumped  manifest pins rev "1"*40
         manifest_kept    manifest pins rev "2"*40, other file changes
-        head (HEAD)      manifest untouched, other file changes
+        toolchain_bumped lean-toolchain v4.31.0, manifest untouched
+        head (HEAD)      dependency files untouched, other file changes
 
     Why this shape
     --------------
-    ``manifest_changed_between`` runs in the select job against the depth-1
+    ``dependency_files_changed_between`` runs in the select job against the depth-1
     downstream clone, so the previous commit is never present locally and must
     be fetched from origin by SHA — the fixture clone reproduces exactly that.
     Fetching an arbitrary SHA needs ``uploadpack.allowAnySHA1InWant`` on the
     origin; GitHub enables it in production, the fixture enables it for the
-    local file transport.
+    local file transport.  ``toolchain_bumped`` exists so a toolchain-only
+    change is exercised independently of a manifest change — both files guard
+    the same monotonicity assumption.
     """
     tmpdir = tempfile.TemporaryDirectory()
     origin = Path(tmpdir.name) / "origin"
@@ -450,21 +454,26 @@ def manifest_fixture() -> _ManifestFixture:
     _git(origin, "config", "user.name", "Test")
     _git(origin, "config", "uploadpack.allowAnySHA1InWant", "true")
 
-    def commit(msg: str, manifest_rev: str | None, other: str) -> str:
+    def commit(
+        msg: str, manifest_rev: str | None, other: str, toolchain: str | None = None
+    ) -> str:
         if manifest_rev is not None:
             (origin / "lake-manifest.json").write_text(
                 '{"packages": [{"name": "mathlib", "type": "git", "rev": "%s"}]}'
                 % (manifest_rev * 40)
             )
+        if toolchain is not None:
+            (origin / "lean-toolchain").write_text(f"leanprover/lean4:{toolchain}\n")
         (origin / "other.txt").write_text(other)
         _git(origin, "add", "-A")
         _git(origin, "commit", "-m", msg)
         return _git(origin, "rev-parse", "HEAD")
 
-    pre_manifest = commit("pre-manifest", None, "v0")
+    pre_manifest = commit("pre-manifest", None, "v0", toolchain="v4.30.0")
     manifest_bumped = commit("bump manifest", "1", "v1")
     manifest_kept = commit("keep manifest", "2", "v2")
-    head = commit("source-only change", None, "v3")
+    toolchain_bumped = commit("bump toolchain", None, "v3", toolchain="v4.31.0")
+    head = commit("source-only change", None, "v4")
 
     clone = Path(tmpdir.name) / "clone"
     run(
@@ -475,6 +484,7 @@ def manifest_fixture() -> _ManifestFixture:
     fixture = _ManifestFixture(
         clone=clone,
         head=head,
+        toolchain_bumped=toolchain_bumped,
         manifest_kept=manifest_kept,
         manifest_bumped=manifest_bumped,
         pre_manifest=pre_manifest,
@@ -483,25 +493,27 @@ def manifest_fixture() -> _ManifestFixture:
     tmpdir.cleanup()
 
 
-class TestManifestChangedBetween:
-    """``manifest_changed_between`` — the dependency-bump guard for boundary revalidation.
+class TestDependencyFilesChangedBetween:
+    """``dependency_files_changed_between`` — the bump guard for boundary revalidation.
 
-    A wrong False here lets the probe confirm a stale (LKG, FKB) pair after a
-    dependency bump; a wrong True only costs a redundant bisect.  The tests
-    therefore pin both directions plus every cannot-compare → None path.
+    Covers both tracked files (lake-manifest.json, lean-toolchain).  A wrong
+    False here lets the probe confirm a stale (LKG, FKB) pair after a
+    dependency or toolchain bump; a wrong True only costs a redundant bisect.
+    The tests therefore pin both directions plus every cannot-compare → None
+    path.
     """
 
     def test_source_only_change_reports_unchanged(
         self, manifest_fixture: _ManifestFixture
     ) -> None:
-        """Source-only downstream commits leave the manifest blob identical → False.
+        """Source-only downstream commits leave both dependency blobs identical → False.
 
         This is physlib's steady state — daily source commits with no bump —
         and the case the revalidation shortcut exists for.
         """
         assert (
-            manifest_changed_between(
-                manifest_fixture.clone, manifest_fixture.manifest_kept, manifest_fixture.head
+            dependency_files_changed_between(
+                manifest_fixture.clone, manifest_fixture.toolchain_bumped, manifest_fixture.head
             )
             is False
         )
@@ -511,8 +523,24 @@ class TestManifestChangedBetween:
     ) -> None:
         """A commit range that rewrote the manifest → True."""
         assert (
-            manifest_changed_between(
-                manifest_fixture.clone, manifest_fixture.manifest_bumped, manifest_fixture.head
+            dependency_files_changed_between(
+                manifest_fixture.clone, manifest_fixture.manifest_bumped, manifest_fixture.manifest_kept
+            )
+            is True
+        )
+
+    def test_toolchain_bump_alone_reports_changed(
+        self, manifest_fixture: _ManifestFixture
+    ) -> None:
+        """A lean-toolchain change with the manifest untouched → True.
+
+        A toolchain bump changes the compiler every probe builds with, which
+        can move the regression boundary just like a dependency bump — and it
+        never touches lake-manifest.json, so only the toolchain blob catches it.
+        """
+        assert (
+            dependency_files_changed_between(
+                manifest_fixture.clone, manifest_fixture.manifest_kept, manifest_fixture.head
             )
             is True
         )
@@ -522,7 +550,7 @@ class TestManifestChangedBetween:
     ) -> None:
         """previous == current short-circuits to False (re-run of the same commit)."""
         assert (
-            manifest_changed_between(
+            dependency_files_changed_between(
                 manifest_fixture.clone, manifest_fixture.head, manifest_fixture.head
             )
             is False
@@ -537,7 +565,7 @@ class TestManifestChangedBetween:
         gained a manifest gets a full bisect rather than a guessed skip.
         """
         assert (
-            manifest_changed_between(
+            dependency_files_changed_between(
                 manifest_fixture.clone, manifest_fixture.pre_manifest, manifest_fixture.head
             )
             is None
@@ -548,7 +576,7 @@ class TestManifestChangedBetween:
     ) -> None:
         """A previous commit origin no longer serves (force push, GC) → None."""
         assert (
-            manifest_changed_between(
+            dependency_files_changed_between(
                 manifest_fixture.clone, "f" * 40, manifest_fixture.head
             )
             is None
