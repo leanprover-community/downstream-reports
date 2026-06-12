@@ -629,6 +629,27 @@ tr.expanded .expander { transform: rotate(90deg); }
   color: var(--yellow); border-radius: 6px; padding: 10px 16px;
   margin-bottom: 16px; font-size: 13px; font-weight: 500;
 }
+/* Live pipeline-status layer: banner + per-row badges, filled in by the
+   client-side GitHub Actions API check while a run is in flight or its
+   results await publication. */
+.live-banner {
+  display: flex; align-items: center; gap: 8px;
+  background: var(--surface); border: 1px solid var(--border);
+  border-left: 3px solid var(--link); border-radius: 6px;
+  padding: 10px 16px; margin-bottom: 16px; font-size: 13px;
+}
+.live-banner a { color: var(--link); text-decoration: none; white-space: nowrap; }
+.live-banner a:hover { text-decoration: underline; }
+.live-dot {
+  flex: none; display: inline-block;
+  width: 8px; height: 8px; border-radius: 50%; background: var(--link);
+  animation: live-pulse 1.6s ease-in-out infinite;
+}
+@keyframes live-pulse { 50% { opacity: .35; } }
+.badge.badge-live { background: var(--surface-alt); color: var(--link); margin-left: 6px; text-decoration: none; }
+a.badge.badge-live:hover { background: var(--surface-hover); }
+.badge-live .live-dot { width: 6px; height: 6px; margin-right: 5px; }
+.badge-live.live-queued, .badge-live.live-pending { color: var(--fg-muted); }
 /* Single fixed-position tooltip layer, positioned by JS next to the hovered
    [data-tooltip] element.  position:fixed escapes overflow clipping (e.g. the
    table's horizontal scroll container) and ancestor stacking contexts. */
@@ -837,7 +858,7 @@ footer a { color: var(--grey); text-decoration: none; }
 footer a:hover { text-decoration: underline; }
 footer .sep { margin: 0 6px; }
 @media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after { transition: none !important; }
+  *, *::before, *::after { transition: none !important; animation: none !important; }
 }
 """
 
@@ -1078,6 +1099,182 @@ JS = r"""
       renderThemeBtn();
     });
     renderThemeBtn();
+  }
+
+  // ---- live pipeline status ------------------------------------------------
+  // Asks the GitHub Actions API (unauthenticated, CORS-enabled) whether a
+  // regression run is in flight or finished-but-unpublished, then fills the
+  // banner and decorates the matching rows.  The page's own data only
+  // refreshes when the whole batch publishes (report run → cache warming →
+  // page rebuild), so a probe leg that already completed inside an in-flight
+  // run still shows "awaiting publication" rather than its result.
+  // Any API failure (offline, rate-limited) just hides the whole layer.
+  const live = document.getElementById('live-banner');
+  if (live) {
+    const api = `https://api.github.com/repos/${live.dataset.repo}`;
+    const renderedRun = parseInt(live.dataset.renderedRunId, 10);  // NaN ⇒ unknown
+    const liveText = document.getElementById('live-banner-text');
+    const liveLink = document.getElementById('live-banner-link');
+    // Worst-case 4 requests per poll; 4 minutes keeps a visitor who leaves
+    // the tab open in the foreground under the unauthenticated 60 req/h
+    // GitHub API limit.
+    const POLL_MS = 240000;
+    const REPORT_WF = 'mathlib-downstream-report.yml';
+    const WARM_WF = 'warm-mathlib-cache.yml';
+    const PAGES_WF = 'generate-pages.yml';
+
+    const get = async path => {
+      const resp = await fetch(`${api}${path}`, { headers: { Accept: 'application/vnd.github+json' } });
+      if (!resp.ok) throw new Error(`GitHub API ${resp.status}`);
+      return resp.json();
+    };
+    const wfRuns = async wf =>
+      (await get(`/actions/workflows/${wf}/runs?branch=main&per_page=10`)).workflow_runs || [];
+
+    // The in-flight run resolves the project's current revision and the
+    // latest Mathlib at run start, so it generally validates newer commits
+    // than the ones this row shows — the tooltips spell that out.
+    const LIVE_STATES = {
+      queued:  { label: 'validation queued',
+                 tip: 'A validation run is in flight; this project is waiting for its probe slot.' },
+      running: { label: 'validating now',
+                 tip: 'A probe job is running for this project — click to watch it live. It checks the project’s current revision against the latest Mathlib, which may be newer than the commits shown in this row.' },
+      pending: { label: 'awaiting publication',
+                 tip: 'This project has a fresh validation result, superseding the data shown in this row. Results publish together once the whole batch completes (cache warming, then page rebuild).' },
+    };
+
+    const clearLiveBadges = () => document.querySelectorAll('.live-slot').forEach(el => el.remove());
+
+    const setLiveBadge = (name, state, url) => {
+      const row = document.querySelector(`tr.data-row[data-downstream="${CSS.escape(name)}"]`);
+      const holder = row && row.querySelector('.episode-label');
+      if (!holder) return;
+      const { label, tip } = LIVE_STATES[state];
+      const slot = document.createElement(url ? 'a' : 'span');
+      slot.className = `live-slot badge badge-live live-${state}`;
+      if (url) {
+        slot.href = url;
+        slot.target = '_blank';
+        slot.rel = 'noopener noreferrer';
+      }
+      slot.setAttribute('data-tooltip', tip);
+      if (state === 'running') {
+        slot.appendChild(Object.assign(document.createElement('span'), { className: 'live-dot' }));
+      }
+      slot.appendChild(document.createTextNode(label));
+      holder.appendChild(slot);
+    };
+
+    // {name: {state, url}} from one run's `select: X` / `probe: X` job names —
+    // the same naming the report job parses for its job-URL table.
+    const probeStates = async runId => {
+      const states = new Map();
+      for (const job of (await get(`/actions/runs/${runId}/jobs?per_page=100`)).jobs || []) {
+        const probe = job.name.match(/^probe: (.+)$/);
+        if (probe) {
+          const state = job.status === 'completed' ? 'pending'
+            : job.status === 'in_progress' ? 'running' : 'queued';
+          states.set(probe[1], { state, url: job.html_url });
+          continue;
+        }
+        const select = job.name.match(/^select: (.+)$/);
+        if (select && !states.has(select[1])) {
+          states.set(select[1], { state: 'queued', url: job.html_url });
+        }
+      }
+      return states;
+    };
+
+    const agoText = iso => {
+      const t = Date.parse(iso || '');
+      return isFinite(t) ? rel(Math.max(0, Math.floor((Date.now() - t) / 1000))) : '';
+    };
+
+    let liveTimer = null;
+    const scheduleLive = () => {
+      clearTimeout(liveTimer);
+      liveTimer = setTimeout(() => {
+        // Background tabs skip the API round-trip and re-check later.
+        if (document.visibilityState === 'hidden') scheduleLive();
+        else refreshLive();
+      }, POLL_MS);
+    };
+
+    const refreshLive = async () => {
+      try {
+        const runs = await wfRuns(REPORT_WF);
+        const active = runs.filter(r => r.status !== 'completed');
+        const newestDone = runs.find(r => r.status === 'completed' && r.conclusion !== 'cancelled');
+        // The rendered run id is the report run that produced this page's
+        // data, so anything newer is finished but not yet published here.
+        const pendingPublish = !!newestDone && !isNaN(renderedRun) && newestDone.id > renderedRun;
+
+        clearLiveBadges();
+        let text = '', href = '', linkLabel = '';
+
+        if (active.length) {
+          // The runs list is newest-first and the concurrency group queues
+          // runs, so the executing run is the *oldest* active one.
+          const executing = active.filter(r => r.status === 'in_progress');
+          let finished = 0, total = 0;
+          for (const run of executing.slice(-2)) {
+            for (const [name, info] of await probeStates(run.id)) {
+              setLiveBadge(name, info.state, info.url);
+              total++;
+              if (info.state === 'pending') finished++;
+            }
+          }
+          const run = executing[executing.length - 1] || active[active.length - 1];
+          const ago = agoText(run.run_started_at || run.created_at);
+          text = `A validation run is in progress${ago ? ` (started ${ago})` : ''}`
+            + (total ? ` — ${finished} of ${total} probes finished` : '')
+            + (active.length > 1 ? `, ${active.length - 1} more run${active.length > 2 ? 's' : ''} queued behind it` : '')
+            + '. Results appear here once the whole batch publishes.';
+          href = run.html_url;
+          linkLabel = 'View run ↗';
+        } else if (pendingPublish) {
+          // Publication chain: report → warm-mathlib-cache → generate-pages.
+          // (A dry run on main also lands here — its banner clears at the
+          // next real publication.)
+          let stage = 'they will be published after the next cache-warming pass';
+          try {
+            if ((await wfRuns(WARM_WF)).some(r => r.status !== 'completed')) {
+              stage = 'mathlib build caches are being warmed before publication';
+            } else {
+              const pages = await wfRuns(PAGES_WF);
+              if (pages.some(r => r.status !== 'completed')) {
+                stage = 'this page is being rebuilt';
+              } else {
+                const deployed = pages.find(r => r.status === 'completed' && r.conclusion === 'success');
+                if (deployed && Date.parse(deployed.created_at) > Date.parse(newestDone.updated_at)) {
+                  stage = 'reload this page to see them';
+                }
+              }
+            }
+          } catch (e) { /* keep the generic stage text */ }
+          const ago = agoText(newestDone.updated_at);
+          text = `A validation run finished${ago ? ` ${ago}` : ''} with newer results than shown here — ${stage}.`;
+          href = newestDone.html_url;
+          linkLabel = 'View run ↗';
+          try {
+            for (const [name, info] of await probeStates(newestDone.id)) {
+              setLiveBadge(name, 'pending', info.url);
+            }
+          } catch (e) { /* row badges are best-effort */ }
+        }
+
+        liveText.textContent = text ? `${text} ` : '';
+        liveLink.href = href;
+        liveLink.textContent = linkLabel;
+        live.hidden = !text;
+        if (active.length || pendingPublish) scheduleLive();
+      } catch (e) {
+        live.hidden = true;
+        clearLiveBadges();
+      }
+    };
+
+    refreshLive();
   }
 
   // ---- ?q= / ?status= deep links -----------------------------------------
@@ -1918,7 +2115,8 @@ def render_table_row(
         tg(fkb),
     ]))
     data_row = (
-        f'<tr class="data-row" data-filter="{esc(filter_tokens)}" '
+        f'<tr class="data-row" data-downstream="{esc(downstream)}" '
+        f'data-filter="{esc(filter_tokens)}" '
         f'data-status="{esc(r.get("outcome", ""))}">{cells}</tr>'
     )
     detail_row = render_detail_row(
@@ -2094,6 +2292,18 @@ def render(
 
     chart_html = render_chart(rows, commit_titles=commit_titles, sha_to_tag=sha_to_tag)
 
+    # Hidden shell for the live pipeline-status layer: client-side JS asks
+    # the GitHub Actions API whether a regression run is in flight (or
+    # finished but not yet published here) and fills this in — see the
+    # "live pipeline status" section of the page script.
+    live_html = (
+        f'<div id="live-banner" class="live-banner" hidden role="status" '
+        f'data-repo="{esc(THIS_REPO)}" data-rendered-run-id="{esc(run_id)}">'
+        f'<span class="live-dot"></span><span id="live-banner-text"></span>'
+        f'<a id="live-banner-link" href="" target="_blank" rel="noopener noreferrer"></a>'
+        f'</div>'
+    )
+
     # Filled in and unhidden client-side when the data is older than
     # STALE_AFTER_HOURS — guards visitors against a silently stalled pipeline.
     stale_epoch = iso_epoch(reported_at)
@@ -2130,6 +2340,7 @@ def render(
 <body>
 <main>
   {run_banner}
+  {live_html}
   {stale_html}
   {report_desc}
   {stats_html}

@@ -18,8 +18,10 @@ Coverage scope:
       run-history strip and its data source.
     - ``render_table_row`` — the single-CI-link policy (validation job with
       full-run fallback), copy-SHA buttons, and filter/status attributes.
-    - ``render`` — page-level fixtures: staleness warning markup, metadata,
-      raw-data footer links.
+    - ``render`` — page-level fixtures: staleness warning markup, the
+      live-status banner shell, metadata, raw-data footer links.
+    - Live-status string contracts — the job-name prefixes and workflow
+      filenames shared between the page script and the CI workflows.
 
 Out of scope:
     - GitHub API / local-git lookup helpers (network and subprocess paths).
@@ -440,6 +442,12 @@ class TableRowTests(unittest.TestCase):
         assert 'data-status="failed"' in html
         assert "physlib" in html.split('data-filter="')[1].split('"')[0]
 
+    def test_row_carries_downstream_identity(self) -> None:
+        """Scenario: rows expose their downstream name so the live
+        pipeline-status layer can target them by name."""
+        html = _render_row(_make_row())
+        assert 'data-downstream="physlib"' in html
+
 
 class LoadRecentOutcomesTests(unittest.TestCase):
     """End-to-end coverage of the SQL history helper on in-memory SQLite."""
@@ -549,6 +557,37 @@ class LoadRecentOutcomesTests(unittest.TestCase):
         assert load_recent_outcomes(engine, "other/upstream") == {}
 
 
+class LiveStatusContractTests(unittest.TestCase):
+    """Pin the strings the page's live-status layer shares with the CI
+    workflows: job-name formats and the workflow filenames the GitHub
+    Actions API is addressed by.  The layer fails closed (it just hides),
+    so a drifted string would otherwise go unnoticed."""
+
+    _WORKFLOWS = Path(__file__).resolve().parent.parent / ".github" / "workflows"
+
+    def test_job_names_match_the_parsed_prefixes(self) -> None:
+        """Scenario: the report workflow names its matrix legs with the
+        `select: <name>` / `probe: <name>` prefixes that both the report
+        job's job-URL collection and the page's live-status layer parse."""
+        from scripts.generate_site import JS
+
+        workflow = (self._WORKFLOWS / "mathlib-downstream-report.yml").read_text()
+        assert 'name: "select: ${{ matrix.name }}"' in workflow
+        assert 'name: "probe: ${{ matrix.name }}"' in workflow
+        assert "/^probe: (.+)$/" in JS
+        assert "/^select: (.+)$/" in JS
+
+    def test_referenced_workflow_files_exist(self) -> None:
+        """Scenario: every workflow filename the live-status layer queries
+        the Actions API for is a real workflow in this repository."""
+        from scripts.generate_site import JS
+
+        filenames = re.findall(r"const \w+_WF = '([^']+)'", JS)
+        assert len(filenames) == 3, "expected the report, warm, and pages workflows"
+        for filename in filenames:
+            assert (self._WORKFLOWS / filename).is_file(), filename
+
+
 class RenderPageTests(unittest.TestCase):
     def _page(self, rows: list[dict]) -> str:
         return render(
@@ -569,6 +608,14 @@ class RenderPageTests(unittest.TestCase):
         html = self._page([_make_row()])
         assert 'id="stale-warning" class="stale-warning" hidden' in html
         assert 'data-reported-epoch=' in html
+
+    def test_live_banner_shell_present_but_hidden(self) -> None:
+        """Scenario: the live pipeline-status banner ships hidden with the
+        repo and rendered run id for the client-side Actions API check."""
+        html = self._page([_make_row()])
+        assert 'id="live-banner" class="live-banner" hidden' in html
+        assert 'data-repo="leanprover-community/downstream-reports"' in html
+        assert 'data-rendered-run-id="42"' in html
 
     def test_page_metadata_and_favicon(self) -> None:
         """Scenario: the page carries description/OpenGraph meta and an icon."""

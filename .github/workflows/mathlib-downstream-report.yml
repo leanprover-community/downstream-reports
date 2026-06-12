@@ -1,5 +1,8 @@
 name: mathlib-downstream-report
 
+# The status page's live-status layer (scripts/generate_site.py) queries this
+# workflow's runs by filename; pinned by scripts/test_generate_site.py.
+
 on:
   schedule:
     - cron: "0 3,15 * * *"
@@ -150,6 +153,9 @@ jobs:
     # (never the database), and computes the bisect window.  Never invokes
     # hopscotch.
     if: needs.plan.outputs.has_downstreams == 'true'
+    # The "select: <name>" job-name format is parsed by the status page's
+    # live-status layer (scripts/generate_site.py) to badge downstreams whose
+    # probe has not started yet; pinned by scripts/test_generate_site.py.
     name: "select: ${{ matrix.name }}"
     needs:
       - plan
@@ -226,6 +232,9 @@ jobs:
     # failed simply fails at download (fail-fast: false keeps the rest going),
     # so one downstream's transient blip costs one probe, not all of them.
     if: ${{ !cancelled() && needs.plan.outputs.has_downstreams == 'true' }}
+    # The "probe: <name>" job-name format is parsed by the report job's
+    # "Collect validate job URLs" step and by the status page's live-status
+    # layer (scripts/generate_site.py); pinned by scripts/test_generate_site.py.
     name: "probe: ${{ matrix.name }}"
     needs:
       - plan

@@ -16,6 +16,9 @@ name: warm-mathlib-cache
 #     workflow's upload_cache job), so feature-branch dispatch works.
 #   - Production runs are gated to main by the workflow_run filter
 #     below.
+#
+# The status page's live-status layer (scripts/generate_site.py) queries this
+# workflow's runs by filename; pinned by scripts/test_generate_site.py.
 
 on:
   # Eventual-consistency catch-up: every 6h, offset from the regression
