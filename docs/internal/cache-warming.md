@@ -15,8 +15,10 @@ merge commits, not every commit on master.
 
 The downstream-reports daily regression workflow records, per
 downstream, a `last_known_good_commit` (LKG) and `first_known_bad_commit`
-(FKB) — both are mathlib master SHAs. When those land on master commits
-that didn't go through CI, their cache is empty. A consumer that
+(FKB) — usually mathlib master SHAs, but a release-pinned downstream
+lands them on a release-tag commit (e.g. `v4.29.1`) that diverged from
+master. When those land on commits that didn't go through CI, their
+cache is empty. A consumer that
 fetches our `lkg/latest.json` and asks for the LKG ends up rebuilding
 mathlib from scratch.
 
@@ -170,9 +172,12 @@ Steps:
    from the checkout).
 3. Clone mathlib at the target SHA (`mathlib4/`, full commit graph,
    `--filter=blob:none` for size).
-4. **Verify SHA is on master** — `git merge-base --is-ancestor
-   "$SHA" origin/master`. The job exits 1 with a clear error
-   otherwise. Guards against typos in the dispatch input.
+4. **Verify SHA is published** — accepts the SHA if it's reachable
+   from `origin/master` (`git merge-base --is-ancestor`) or from a
+   published release tag (`git tag --contains`). The job exits 1 with
+   a clear error otherwise. Guards against typos in the dispatch input
+   while allowing release-pinned downstreams (see "Published-only"
+   under Trade-offs).
 5. Checkout the SHA.
 6. Clone mathlib master shallow into `mathlib4-tools/`.
 7. `lake build cache` in `mathlib4-tools/`.
@@ -435,10 +440,16 @@ data) the in-job verify can't.
   This is the same posture as
   `mathlib4/.github/workflows/build_template.yml`'s
   `build` → `upload_cache` → `post_steps` chain.
-- **Master-only.** `build_and_stage` refuses non-master SHAs via an
-  explicit ancestor check. Cache pushes for branch / tag SHAs would
-  pollute the canonical cache namespace and aren't meaningful for
-  our consumers.
+- **Published-only.** `build_and_stage` accepts SHAs reachable from
+  `origin/master` and SHAs reachable from a published release tag
+  (`git tag --contains`); everything else is refused via an explicit
+  check. Downstreams that pin a stable mathlib release (e.g.
+  `v4.29.1`) land their LKG/FKB on a tag that diverged from master,
+  and warming those oleans is exactly what `lake exe cache get` at
+  that tag wants — mathlib's own release CI already caches the same
+  content-addressed blobs, so this is idempotent rather than
+  namespace pollution. Arbitrary branch tips and typo SHAs are still
+  refused.
 - **Probe is best-effort.** `lake build --no-build -v Mathlib` after
   `cache get` is the canonical way to check completeness. False
   negatives (cache present but probe failed) waste a build but are

@@ -74,10 +74,14 @@ jobs:
         run: |
           git clone --filter=blob:none https://github.com/leanprover-community/mathlib4 mathlib4
 
-      # Refuse non-master SHAs. Guards against operator typos in
-      # `workflow_dispatch shas=...` and any future code path that
-      # might surface a non-master SHA from the DB.
-      - name: Verify SHA is on master
+      # Accept master-reachable SHAs and SHAs reachable from a published
+      # release tag (e.g. v4.29.1) — downstreams that pin a stable
+      # release land their LKG/FKB on a tag that diverged from master,
+      # and warming those oleans is exactly what `lake exe cache get` at
+      # that tag wants. Everything else is refused, which still guards
+      # against operator typos in `workflow_dispatch shas=...` and any
+      # garbage SHA surfaced from the DB.
+      - name: Verify SHA is published (master or release tag)
         env:
           SHA: ${{ inputs.sha }}
         working-directory: mathlib4
@@ -86,11 +90,14 @@ jobs:
             echo "::error::SHA $SHA does not exist in mathlib4."
             exit 1
           fi
-          if ! git merge-base --is-ancestor "$SHA" origin/master; then
-            echo "::error::SHA $SHA is not reachable from origin/master. Refusing to warm cache for non-master SHAs."
+          if git merge-base --is-ancestor "$SHA" origin/master; then
+            echo "Confirmed: $SHA is on master."
+          elif tags=$(git tag --contains "$SHA") && [ -n "$tags" ]; then
+            echo "Confirmed: $SHA is reachable from published tag(s): $(echo "$tags" | paste -sd, -)."
+          else
+            echo "::error::SHA $SHA is neither on master nor reachable from any published tag. Refusing to warm cache for unpublished SHAs."
             exit 1
           fi
-          echo "Confirmed: $SHA is on master."
 
       - name: Checkout SHA
         env:
