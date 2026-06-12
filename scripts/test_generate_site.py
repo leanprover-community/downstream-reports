@@ -330,20 +330,21 @@ class HistoryStripTests(unittest.TestCase):
         html = render_history_strip(history)
         assert html.count("hist-cell") == HISTORY_LIMIT
 
-    def test_different_breaking_commit_renders_orange(self) -> None:
-        """Scenario: a past failure with a different first-known-bad than the
-        most recent failure renders orange, naming both that break and the
-        current one so the difference is verifiable from the tooltip alone."""
+    def test_break_move_renders_orange_at_the_change_point(self) -> None:
+        """Scenario: a failed run whose first-known-bad differs from the
+        previous failing check renders orange exactly where the break moved,
+        naming both commits."""
         history = [
             {"outcome": "failed", "first_known_bad": "a" * 40, "reported_at": "2026-06-10", "run_url": None},
-            {"outcome": "failed", "first_known_bad": "z" * 40, "reported_at": "2026-06-09", "run_url": None},
-            {"outcome": "failed", "first_known_bad": "a" * 40, "reported_at": "2026-06-08", "run_url": None},
+            {"outcome": "failed", "first_known_bad": "a" * 40, "reported_at": "2026-06-09", "run_url": None},
+            {"outcome": "failed", "first_known_bad": "z" * 40, "reported_at": "2026-06-08", "run_url": None},
         ]
         html = render_history_strip(history)
         assert html.count("hist-failed-other") == 1
-        assert f"earlier incompatibility — first known bad {'z' * 7}" in html
-        assert f"the current break is {'a' * 7}" in html
-        assert html.count('hist-cell hist-failed"') == 2
+        assert f"breaking commit changed here: {'z' * 7} → {'a' * 7}" in html
+        # The change point is the 2026-06-09 run, between the z-break and the
+        # continuing a-break.
+        assert "2026-06-09" in html.split("hist-failed-other")[1].split("</")[0].replace("&#10;", " ")
 
     def test_same_breaking_commit_stays_red(self) -> None:
         """Scenario: failures from the same incompatibility all stay red."""
@@ -354,9 +355,31 @@ class HistoryStripTests(unittest.TestCase):
         html = render_history_strip(history)
         assert "hist-failed-other" not in html
 
+    def test_recovery_resets_the_comparison(self) -> None:
+        """Scenario: a pass closes the failing episode, so a later failure
+        with a new first-known-bad is a fresh break, not a moved one."""
+        history = [
+            {"outcome": "failed", "first_known_bad": "a" * 40, "reported_at": "2026-06-10", "run_url": None},
+            {"outcome": "passed", "first_known_bad": None, "reported_at": "2026-06-09", "run_url": None},
+            {"outcome": "failed", "first_known_bad": "z" * 40, "reported_at": "2026-06-08", "run_url": None},
+        ]
+        html = render_history_strip(history)
+        assert "hist-failed-other" not in html
+
+    def test_error_runs_do_not_reset_the_comparison(self) -> None:
+        """Scenario: error runs preserve episode state, so a break move is
+        still detected across an intervening error."""
+        history = [
+            {"outcome": "failed", "first_known_bad": "a" * 40, "reported_at": "2026-06-10", "run_url": None},
+            {"outcome": "error", "first_known_bad": None, "reported_at": "2026-06-09", "run_url": None},
+            {"outcome": "failed", "first_known_bad": "z" * 40, "reported_at": "2026-06-08", "run_url": None},
+        ]
+        html = render_history_strip(history)
+        assert html.count("hist-failed-other") == 1
+
     def test_unbisected_failures_are_not_marked_different(self) -> None:
         """Scenario: a failure with no recorded first-known-bad can't be
-        attributed to a different break, so it stays red."""
+        attributed to a moved break, so it stays red."""
         history = [
             {"outcome": "failed", "first_known_bad": "a" * 40, "reported_at": "2026-06-10", "run_url": None},
             {"outcome": "failed", "first_known_bad": None, "reported_at": "2026-06-09", "run_url": None},

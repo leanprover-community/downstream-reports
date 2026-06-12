@@ -36,7 +36,8 @@ GITHUB_API = "https://api.github.com"
 # Public snapshot store (see publish-lkg.yml / fetch-latest.sh).
 SNAPSHOT_BASE = "https://downstreamreports.z13.web.core.windows.net"
 # Number of recent runs rendered in each row's history strip.
-HISTORY_LIMIT = 15
+# Two full strip rows of 9 squares each (see .history-strip max-width).
+HISTORY_LIMIT = 18
 # Client-side warning threshold for an out-of-date report.
 STALE_AFTER_HOURS = 36
 
@@ -500,7 +501,7 @@ body {
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
   font-size: 14px; background: var(--bg); color: var(--fg); margin: 0; padding: 0;
 }
-main { max-width: 1100px; margin: 24px auto; padding: 0 16px; }
+main { max-width: 1160px; margin: 24px auto; padding: 0 16px; }
 a { color: var(--link); }
 code { color: var(--fg); }
 .run-banner {
@@ -583,7 +584,7 @@ th {
 .col-glossary-badge-item { display: flex; gap: 8px; align-items: center; font-size: 12px; }
 .col-glossary-badge-key { white-space: nowrap; min-width: 120px; }
 .col-glossary-badge-val { color: var(--fg-muted); }
-td { padding: 9px 12px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+td { padding: 9px 10px; border-bottom: 1px solid var(--border); vertical-align: middle; }
 tr:last-child td { border-bottom: none; }
 tbody tr.data-row { cursor: pointer; }
 tbody tr.data-row:hover td { background: var(--bg); }
@@ -607,8 +608,9 @@ tr.expanded .expander { transform: rotate(90deg); }
 .badge-red    { background: var(--badge-red-bg); color: var(--red); }
 .badge-yellow { background: var(--badge-yellow-bg); color: var(--yellow); }
 .badge-grey   { background: var(--surface-alt); color: var(--grey); }
-.checked-sub { font-size: 11px; color: var(--grey); margin-top: 3px; white-space: nowrap; }
-.history-strip { display: flex; gap: 2px; margin-top: 5px; }
+.checked-sub { font-size: 11px; color: var(--grey); margin-top: 3px; }
+/* Wraps after 9 squares: HISTORY_LIMIT renders as two full rows. */
+.history-strip { display: flex; flex-wrap: wrap; gap: 2px; margin-top: 5px; max-width: 88px; }
 .hist-cell { width: 8px; height: 8px; border-radius: 2px; display: block; }
 .hist-cell:hover, .hist-cell:focus-visible { outline: 1px solid var(--fg-muted); }
 .hist-passed { background: var(--green); opacity: .75; }
@@ -1699,29 +1701,34 @@ def render_history_strip(history: list[dict]) -> str:
     *history* is newest-first, as loaded from storage.  A single entry carries
     no more information than the row itself, so the strip needs at least two.
 
-    Failed runs whose first-known-bad differs from the most recent failure's
-    render in orange: the project was incompatible then too, but because of a
-    different breaking commit than the current one.
+    A failed run renders orange when its first-known-bad differs from the
+    previous failing check's (with no recovery in between): the project kept
+    failing, but the breaking commit moved — e.g. its pin was bumped past the
+    old break and hit a new one.
     """
     if len(history) < 2:
         return ""
-    current_fkb = next(
-        (h.get("first_known_bad") for h in history
-         if h.get("outcome") == "failed" and h.get("first_known_bad")),
-        None,
-    )
     cells = []
-    for h in reversed(history[:HISTORY_LIMIT]):
+    # The breaking commit of the previous failing check; a passing check
+    # closes the episode and resets the comparison.
+    prev_fkb: str | None = None
+    for h in reversed(history):
         outcome = h.get("outcome", "")
         cls = HIST_CLASS.get(outcome, "hist-error")
         label = COMPATIBILITY_LABEL.get(outcome, outcome)
         when = str(h.get("reported_at") or "")[:16].replace("T", " ")
         tip_lines = [f"{label} · {when}" if when else label]
         fkb = h.get("first_known_bad")
-        if outcome == "failed" and current_fkb and fkb and fkb != current_fkb:
-            cls = "hist-failed-other"
-            tip_lines.append(f"earlier incompatibility — first known bad {short_sha(fkb)}")
-            tip_lines.append(f"(the current break is {short_sha(current_fkb)})")
+        if outcome == "passed":
+            prev_fkb = None
+        elif outcome == "failed" and fkb:
+            if prev_fkb and fkb != prev_fkb:
+                cls = "hist-failed-other"
+                tip_lines.append(
+                    f"breaking commit changed here: {short_sha(prev_fkb)} → {short_sha(fkb)}"
+                )
+            prev_fkb = fkb
+        # error runs leave the comparison untouched: state is preserved.
         tip = "&#10;".join(esc(line) for line in tip_lines)
         url = h.get("run_url")
         if url:
@@ -1731,6 +1738,7 @@ def render_history_strip(history: list[dict]) -> str:
             )
         else:
             cells.append(f'<span class="hist-cell {cls}" data-tooltip="{tip}" tabindex="0"></span>')
+    cells = cells[-HISTORY_LIMIT:]
     n = len(cells)
     return (
         f'<div class="history-strip" role="img" '
@@ -1819,9 +1827,11 @@ def render_table_row(
     checked_epoch = iso_epoch(r.get("row_reported_at"))
     if checked_epoch:
         _checked_tip = f"This downstream&#39;s latest validation run finished at&#10;{esc(fmt_dt(r.get('row_reported_at')))}"
+        # Date-only fallback (the full timestamp is in the tooltip); the JS
+        # relative-time pass rewrites it to e.g. "checked 3h ago".
         compatibility_cell += (
             f'<div class="checked-sub" data-tooltip="{_checked_tip}">'
-            f'<span data-epoch="{checked_epoch}" data-rel-prefix="checked ">checked {esc(fmt_dt(r.get("row_reported_at")))}</span>'
+            f'<span data-epoch="{checked_epoch}" data-rel-prefix="checked ">checked {esc(fmt_dt(r.get("row_reported_at"))[:10])}</span>'
             f'</div>'
         )
     target_cell   = commit_link(UPSTREAM_REPO, target, ct(target), tg(target), cd(target))
