@@ -244,6 +244,13 @@
       "enabled": true,
       "warm_cache": true,
       "watch_manifest": true
+    },
+    {
+      "name": "DynamicalSystems",
+      "repo": "mcdoll/DynamicalSystems",
+      "default_branch": "main",
+      "dependency_name": "mathlib",
+      "enabled": true
     }
   ]
 }
