@@ -259,7 +259,9 @@
       "repo": "kim-em/erdos-unit-distance",
       "default_branch": "master",
       "dependency_name": "mathlib",
-      "enabled": true
+      "enabled": true,
+      "warm_cache": true,
+      "watch_manifest": true
     }
   ]
 }
