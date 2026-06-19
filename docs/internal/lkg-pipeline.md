@@ -175,11 +175,11 @@ Schema evolution: new optional fields may be added freely without a version
 bump. `schema_version` is incremented only for breaking changes (field removal
 or rename).
 
-## Runs snapshot schema (v1)
+## Runs snapshot schema (v2)
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "exported_at": "2026-04-20T06:05:00Z",
   "upstream": "leanprover-community/mathlib4",
   "source_run": {
@@ -201,7 +201,17 @@ or rename).
       "outcome": "failed",
       "episode_state": "failing",
       "first_known_bad_commit": "abc123...",
-      "last_known_good_commit": "0011..."
+      "last_known_good_commit": "0011...",
+      "proposed_fixes": [
+        {
+          "fixId": "module-deprecation",
+          "oldModule": "Mathlib.Topology.Algebra.Module.LinearMap",
+          "newModules": ["Mathlib.Topology.Algebra.Module.ContinuousLinearMap.Basic"],
+          "shimHasDeclarations": false
+        }
+      ],
+      "deprecated_imports": [],
+      "detection_notes": []
     }
   }
 }
@@ -214,6 +224,26 @@ best-effort (null when the underlying DB rows are missing).
 `result_artifact_name` is always `result-<downstream-name>` — it's a convention
 for the `result-<name>` artifact uploaded by the probe job, not a stored
 field.
+
+**v2 added the automated-fix fields** (carried verbatim from hopscotch's
+`results.json` schema v2; see hopscotch `docs/results.schema.json`):
+
+- `proposed_fixes` — mechanical import rewrites that repair the failure
+  boundary, recorded only on a stopped (failing) run, i.e. at the FKB a bisect
+  found. Each is hopscotch's `ProposedFix` object (`{fixId, oldModule,
+  newModules, shimHasDeclarations}`); an empty `newModules` means "remove the
+  import". The `bump-to-latest` action applies these to the FKB fix PR via
+  `hopscotch fix apply --from` (see `docs/actions.md`).
+- `deprecated_imports` — advisories: imports that build today but route through
+  a live `deprecated_module` shim, recorded on any conclusion (including
+  passing runs). Not applied by default.
+- `detection_notes` — strings explaining a culprit that has no available fix
+  (e.g. a module deleted with no replacement shim).
+
+All three default to `[]` (empty when the probe binary predates hopscotch
+schema v2, or no detection fired). They are additive, so a `schema_version >= 1`
+consumer that ignores unknown keys is unaffected; the bump documents their
+availability.
 
 ---
 

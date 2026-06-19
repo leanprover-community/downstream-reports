@@ -189,6 +189,19 @@ class ValidationResult:
     head_probe_summary: str | None = None
     pinned_commit: str | None = None
     search_base_not_ancestor: bool = False
+    # Automated-fix detection carried verbatim from hopscotch's results.json
+    # (schema v2+).  Each entry in proposed_fixes/deprecated_imports keeps
+    # hopscotch's own object shape — see docs/results.schema.json's ProposedFix:
+    # {fixId, oldModule, newModules, shimHasDeclarations} — so a consumer can
+    # hand the array straight to `hopscotch fix apply --from`.  proposed_fixes
+    # repairs the failure boundary (populated only on a stopped run, i.e. at the
+    # FKB a bisect found); deprecated_imports are advisories recorded on any
+    # conclusion (including passing runs); detection_notes explain culprits with
+    # no available fix.  All three are empty for tool versions predating
+    # schema v2, so older binaries degrade silently.
+    proposed_fixes: list[dict[str, Any]] = field(default_factory=list)
+    deprecated_imports: list[dict[str, Any]] = field(default_factory=list)
+    detection_notes: list[str] = field(default_factory=list)
 
     def to_json(self) -> dict[str, Any]:
         """Serialize the result using plain JSON-compatible values."""

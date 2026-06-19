@@ -123,6 +123,9 @@ def _make_run(
     job_id: str | None = "job_42",
     job_url: str | None = "https://example.com/jobs/42",
     culprit_log_artifact_url: str | None = None,
+    proposed_fixes: list | None = None,
+    deprecated_imports: list | None = None,
+    detection_notes: list | None = None,
 ) -> LatestRunRecord:
     return LatestRunRecord(
         run_id=run_id,
@@ -137,6 +140,9 @@ def _make_run(
         job_id=job_id,
         job_url=job_url,
         culprit_log_artifact_url=culprit_log_artifact_url,
+        proposed_fixes=proposed_fixes or [],
+        deprecated_imports=deprecated_imports or [],
+        detection_notes=detection_notes or [],
     )
 
 
@@ -152,7 +158,7 @@ class TestBuildRunsSnapshotSchema:
         """Scenario: snapshot schema_version matches the module constant."""
         snap = build_runs_snapshot({}, _INVENTORY, _UPSTREAM)
         assert snap["schema_version"] == SCHEMA_VERSION
-        assert snap["schema_version"] == 1
+        assert snap["schema_version"] == 2
 
     def test_upstream_reflects_argument(self) -> None:
         """Scenario: upstream field echoes the caller-supplied value."""
@@ -209,6 +215,9 @@ class TestBuildRunsSnapshotEntry:
         assert entry["episode_state"] is None
         assert entry["first_known_bad_commit"] is None
         assert entry["last_known_good_commit"] is None
+        assert entry["proposed_fixes"] == []
+        assert entry["deprecated_imports"] == []
+        assert entry["detection_notes"] == []
 
     def test_entry_without_run_still_has_result_artifact_name(self) -> None:
         """Scenario: result_artifact_name is derived from downstream name even without runs."""
@@ -231,6 +240,27 @@ class TestBuildRunsSnapshotEntry:
         assert entry["episode_state"] == "failing"
         assert entry["first_known_bad_commit"] == "bad_xyz"
         assert entry["last_known_good_commit"] == "good_uvw"
+
+    def test_proposed_fixes_propagate_verbatim(self) -> None:
+        """Scenario: hopscotch fix arrays carry through to the snapshot entry unchanged."""
+        fix = {
+            "fixId": "module-deprecation",
+            "oldModule": "Mathlib.Data.Real.Sqrt",
+            "newModules": ["Mathlib.Analysis.SpecialFunctions.Sqrt"],
+            "shimHasDeclarations": False,
+        }
+        run = _make_run(
+            proposed_fixes=[fix],
+            deprecated_imports=[fix],
+            detection_notes=["module-deprecation: Mathlib.Foo deleted with no shim"],
+        )
+        snap = build_runs_snapshot({"physlib": run}, _INVENTORY, _UPSTREAM)
+        entry = snap["downstreams"]["physlib"]
+        assert entry["proposed_fixes"] == [fix]
+        assert entry["deprecated_imports"] == [fix]
+        assert entry["detection_notes"] == [
+            "module-deprecation: Mathlib.Foo deleted with no shim"
+        ]
 
     def test_run_without_job_metadata_produces_null_job_fields(self) -> None:
         """Scenario: LatestRunRecord with no job_id/job_url renders null job fields."""
@@ -471,6 +501,9 @@ class TestLoadLatestRunPerDownstream:
         workflow: str = "regression",
         upstream: str = _UPSTREAM,
         culprit_log_artifact_url: str | None = None,
+        proposed_fixes: list | None = None,
+        deprecated_imports: list | None = None,
+        detection_notes: list | None = None,
     ) -> None:
         from scripts.storage import (
             RunResultRecord,
@@ -504,6 +537,9 @@ class TestLoadLatestRunPerDownstream:
             head_probe_failure_stage=None,
             culprit_log_text=None,
             culprit_log_artifact_url=culprit_log_artifact_url,
+            proposed_fixes=proposed_fixes or [],
+            deprecated_imports=deprecated_imports or [],
+            detection_notes=detection_notes or [],
         )
         validate_jobs: list[ValidateJobRecord] | None = None
         if job_id or job_url:
@@ -646,6 +682,49 @@ class TestLoadLatestRunPerDownstream:
         # LatestRunRecord has no culprit_log_text field — the log lives only in
         # the artifact, never in the database or the snapshot.
         assert not hasattr(rec, "culprit_log_text")
+
+    def test_fix_fields_round_trip_through_sql(self) -> None:
+        """Scenario: proposed_fixes/deprecated_imports/detection_notes survive save/load as JSON.
+
+        The columns store hopscotch's verbatim objects so the bump actions can
+        hand them straight to `hopscotch fix apply --from`.
+        """
+        from scripts.storage import load_latest_run_per_downstream
+
+        engine, _ = self._engine()
+        when = datetime(2026, 4, 20, 6, 0, 0, tzinfo=timezone.utc)
+        fix = {
+            "fixId": "module-deprecation",
+            "oldModule": "Mathlib.Topology.Algebra.Module.LinearMap",
+            "newModules": ["Mathlib.Topology.Algebra.Module.ContinuousLinearMap.Basic"],
+            "shimHasDeclarations": False,
+        }
+        self._seed_run(
+            engine,
+            "with-fixes",
+            when,
+            proposed_fixes=[fix],
+            deprecated_imports=[],
+            detection_notes=["module-deprecation: note"],
+        )
+
+        rec = load_latest_run_per_downstream(engine, "regression", _UPSTREAM)["physlib"]
+        assert rec.proposed_fixes == [fix]
+        assert rec.deprecated_imports == []
+        assert rec.detection_notes == ["module-deprecation: note"]
+
+    def test_fix_fields_default_to_empty_lists(self) -> None:
+        """Scenario: a run with no fix data reads back as empty lists, not None."""
+        from scripts.storage import load_latest_run_per_downstream
+
+        engine, _ = self._engine()
+        when = datetime(2026, 4, 20, 6, 0, 0, tzinfo=timezone.utc)
+        self._seed_run(engine, "no-fixes", when)
+
+        rec = load_latest_run_per_downstream(engine, "regression", _UPSTREAM)["physlib"]
+        assert rec.proposed_fixes == []
+        assert rec.deprecated_imports == []
+        assert rec.detection_notes == []
 
     def test_multiple_downstreams_each_get_latest(self) -> None:
         """Scenario: per-downstream latest is computed independently."""

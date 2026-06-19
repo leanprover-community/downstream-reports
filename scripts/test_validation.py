@@ -49,6 +49,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from scripts.models import CommitDetail, DownstreamConfig, Outcome, WindowSelection
 from scripts.validation import (
     append_commit_plan_artifact,
+    build_result_from_tool,
     build_skip_result,
     classify_exit_code,
     commit_plan_artifact_path,
@@ -208,6 +209,72 @@ class TestBuildSkipResult:
 
         # Assert
         assert result.tested_commits == [], "No target ⇒ empty list, not [None] — keeps first_bad_position honest"
+
+
+class TestBuildResultFromToolFixes:
+    """Automated-fix detection carried out of hopscotch's results.json (schema v2+)."""
+
+    _CONFIG = DownstreamConfig(
+        name="physlib",
+        repo="leanprover-community/physlib",
+        default_branch="master",
+    )
+    _FIX = {
+        "fixId": "module-deprecation",
+        "oldModule": "Mathlib.Topology.Algebra.Module.LinearMap",
+        "newModules": ["Mathlib.Topology.Algebra.Module.ContinuousLinearMap.Basic"],
+        "shimHasDeclarations": False,
+    }
+
+    def _build(self, returncode: int, state: dict):
+        return build_result_from_tool(
+            config=self._CONFIG,
+            downstream_commit="ds_abc",
+            upstream_ref="master",
+            target_commit="target_abc",
+            search_mode="bisect",
+            tested_commits=["a", "b"],
+            tested_commit_details=[],
+            truncated=False,
+            tool_run=Mock(returncode=returncode, stdout="", stderr=""),
+            state=state,
+            tool_summary="summary",
+        )
+
+    def test_proposed_fixes_carried_from_stopped_run(self) -> None:
+        """Scenario: a stopped bisect carries proposedFixes/deprecatedImports/detectionNotes verbatim."""
+        result = self._build(
+            1,
+            {
+                "firstFailingCommit": "b",
+                "lastSuccessfulCommit": "a",
+                "failureStage": "lake build",
+                "proposedFixes": [self._FIX],
+                "deprecatedImports": [],
+                "detectionNotes": ["module-deprecation: note"],
+            },
+        )
+        assert result.outcome == Outcome.FAILED
+        assert result.proposed_fixes == [self._FIX]
+        assert result.deprecated_imports == []
+        assert result.detection_notes == ["module-deprecation: note"]
+
+    def test_advisories_carried_from_passing_run(self) -> None:
+        """Scenario: a green run carries deprecatedImports advisories (proposedFixes stays empty)."""
+        result = self._build(
+            0,
+            {"lastSuccessfulCommit": "target_abc", "deprecatedImports": [self._FIX]},
+        )
+        assert result.outcome == Outcome.PASSED
+        assert result.proposed_fixes == []
+        assert result.deprecated_imports == [self._FIX]
+
+    def test_missing_fields_default_to_empty_lists(self) -> None:
+        """Scenario: a results.json from a pre-v2 binary (no fix fields) yields empty lists."""
+        result = self._build(1, {"firstFailingCommit": "b", "failureStage": "lake build"})
+        assert result.proposed_fixes == []
+        assert result.deprecated_imports == []
+        assert result.detection_notes == []
 
 
 class TestCommitPlanArtifact:

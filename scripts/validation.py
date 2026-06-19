@@ -369,6 +369,13 @@ def build_result_from_tool(
         head_probe_summary=head_probe_summary,
         pinned_commit=pinned_commit,
         search_base_not_ancestor=search_base_not_ancestor,
+        # Carried verbatim from results.json (schema v2+); empty for older
+        # binaries.  Detection runs on every conclusion, so these are read
+        # regardless of outcome.  `proposedFixes` is non-empty only when the
+        # run stopped at a repairable boundary (the FKB).
+        proposed_fixes=state.get("proposedFixes") or [],
+        deprecated_imports=state.get("deprecatedImports") or [],
+        detection_notes=state.get("detectionNotes") or [],
     )
 
     if tool_run.returncode == 0:

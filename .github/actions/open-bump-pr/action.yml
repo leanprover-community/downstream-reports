@@ -44,6 +44,15 @@ inputs:
     description: >
       Content to place in the PR body above the automated footer.
       Pass the bump-description output from bump-to-latest here.
+  fix-summary:
+    required: false
+    default: ''
+    description: >
+      hopscotch's own `fix apply` output (the `fix-summary` output of
+      bump-to-latest). When non-empty, it is rendered verbatim in the body and
+      the build adjusts the "mergeable as-is" framing — automated import
+      rewrites were applied that the bump's green build did not verify. Leave
+      empty when no fixes were applied. Ignored when `body` is set.
   token:
     required: false
     default: ${{ github.token }}
@@ -203,6 +212,8 @@ runs:
         BODY: ${{ inputs.body }}
         LABELS: ${{ inputs.labels }}
         MESSAGE: ${{ inputs.message }}
+        # hopscotch's verbatim fix-apply summary; empty when no fixes applied.
+        FIX_SUMMARY: ${{ inputs.fix-summary }}
         # Used to decide whether to surface the "CI does not run" warning:
         # the warning applies only when the PR is opened under the built-in
         # GITHUB_TOKEN. A custom App / PAT token differs from github.token,
@@ -230,8 +241,16 @@ runs:
               printf '%s\n\n' "$MESSAGE"
             fi
             printf -- '---\n\n'
-            printf 'This is an automated dependency bump to the latest commit this project is known to build against (its **last-known-good** commit). `lake build` was run against the new commit before this PR was opened and succeeded, so it should be mergeable as-is.\n\n'
-            printf 'Only `lake build` is checked, though — if your own CI does more (linting, failing on warnings, downstream tests, …), run it on this PR before merging.\n\n'
+            if [ -n "${FIX_SUMMARY:-}" ]; then
+              # Advisory rewrites were applied on top of the verified bump; the
+              # green build did NOT cover them, so the as-is claim no longer holds.
+              printf 'This is an automated dependency bump to the latest commit this project is known to build against (its **last-known-good** commit). `lake build` succeeded against the new commit before this PR was opened.\n\n'
+              printf 'On top of the bump, `hopscotch fix` applied the following deprecated-import migrations — these were **not** covered by that build, so run your CI on this PR before merging:\n\n'
+              printf '```\n%s\n```\n\n' "$FIX_SUMMARY"
+            else
+              printf 'This is an automated dependency bump to the latest commit this project is known to build against (its **last-known-good** commit). `lake build` was run against the new commit before this PR was opened and succeeded, so it should be mergeable as-is.\n\n'
+              printf 'Only `lake build` is checked, though — if your own CI does more (linting, failing on warnings, downstream tests, …), run it on this PR before merging.\n\n'
+            fi
             if [ "$TOKEN" = "$DEFAULT_TOKEN" ]; then
               printf '> [!WARNING]\n'
               printf '> This PR was opened by the default `github-actions[bot]` identity, so **your repository'"'"'s own CI does not run on it** — GitHub suppresses workflow triggers (`push` / `pull_request`) for events caused by the built-in `GITHUB_TOKEN`.\n'

@@ -16,7 +16,15 @@
 #   culprit_log_artifact_name, culprit_log_artifact_url,
 #   reported_at, target_commit, downstream_commit, outcome, episode_state,
 #   first_known_bad_commit, last_known_good_commit,
-#   downstream_name, repo
+#   downstream_name, repo,
+#   proposed_fixes_count, proposed_fixes_file,
+#   deprecated_imports_count, deprecated_imports_file
+#
+# The automated-fix arrays (hopscotch results.json schema v2+) are written
+# verbatim to JSON files under RUNNER_TEMP — they are arrays, not scalars, so
+# they go to files rather than GITHUB_OUTPUT.  `bump-to-latest` overlays
+# proposed_fixes onto a results.json scaffold and runs `hopscotch fix apply`.
+# Both files always contain a valid JSON array (`[]` when absent).
 #
 # The failing-commit log itself is not exposed here — consumers download the
 # `culprit-log-<name>` artifact via `culprit_log_artifact_url` when they need
@@ -32,6 +40,12 @@ set -uo pipefail
 
 SNAPSHOT_URL='https://downstreamreports.z13.web.core.windows.net/runs/latest.json'
 
+# Where the verbatim fix arrays are written.  Fixed paths under RUNNER_TEMP:
+# bump-to-latest runs against a single downstream per job, so there is no
+# collision.  Always populated with a valid JSON array.
+PROPOSED_FIXES_FILE="${RUNNER_TEMP:-/tmp}/hopscotch-proposed-fixes.json"
+DEPRECATED_IMPORTS_FILE="${RUNNER_TEMP:-/tmp}/hopscotch-deprecated-imports.json"
+
 # ------------------------------------------------------------------
 # Emit empty outputs.  Used as the failure path so that callers can
 # always read steps.*.outputs.<key> without conditional guards.
@@ -39,6 +53,8 @@ SNAPSHOT_URL='https://downstreamreports.z13.web.core.windows.net/runs/latest.jso
 emit_empty() {
   local reason="${1:-no data}"
   echo "Warning: $reason" >&2
+  printf '[]' > "$PROPOSED_FIXES_FILE"
+  printf '[]' > "$DEPRECATED_IMPORTS_FILE"
   {
     echo "run_id="
     echo "run_url="
@@ -56,6 +72,10 @@ emit_empty() {
     echo "last_known_good_commit="
     echo "downstream_name="
     echo "repo="
+    echo "proposed_fixes_count=0"
+    echo "proposed_fixes_file=$PROPOSED_FIXES_FILE"
+    echo "deprecated_imports_count=0"
+    echo "deprecated_imports_file=$DEPRECATED_IMPORTS_FILE"
   } >> "$GITHUB_OUTPUT"
 }
 
@@ -126,6 +146,13 @@ EPISODE_STATE=$(get episode_state)
 FKB_COMMIT=$(get first_known_bad_commit)
 LKG_COMMIT=$(get last_known_good_commit)
 
+# Automated-fix arrays → files (verbatim; default to [] when the field is
+# absent, e.g. a snapshot written before runs schema v2).
+printf '%s' "$ENTRY" | jq -c '.proposed_fixes // []' > "$PROPOSED_FIXES_FILE"
+printf '%s' "$ENTRY" | jq -c '.deprecated_imports // []' > "$DEPRECATED_IMPORTS_FILE"
+PROPOSED_FIXES_COUNT=$(jq 'length' "$PROPOSED_FIXES_FILE" 2>/dev/null || echo 0)
+DEPRECATED_IMPORTS_COUNT=$(jq 'length' "$DEPRECATED_IMPORTS_FILE" 2>/dev/null || echo 0)
+
 echo "Downstream:           $DS_NAME"
 echo "Repo:                 $REPO"
 echo "Latest run:           ${RUN_URL:-<none>}"
@@ -138,6 +165,8 @@ echo "Outcome:              ${OUTCOME:-<none>}"
 echo "Episode state:        ${EPISODE_STATE:-<none>}"
 echo "FKB commit:           ${FKB_COMMIT:-<none>}"
 echo "LKG commit:           ${LKG_COMMIT:-<none>}"
+echo "Proposed fixes:       ${PROPOSED_FIXES_COUNT:-0}"
+echo "Deprecated imports:   ${DEPRECATED_IMPORTS_COUNT:-0}"
 
 {
   echo "run_id=$RUN_ID"
@@ -156,4 +185,8 @@ echo "LKG commit:           ${LKG_COMMIT:-<none>}"
   echo "last_known_good_commit=$LKG_COMMIT"
   echo "downstream_name=$DS_NAME"
   echo "repo=$REPO"
+  echo "proposed_fixes_count=${PROPOSED_FIXES_COUNT:-0}"
+  echo "proposed_fixes_file=$PROPOSED_FIXES_FILE"
+  echo "deprecated_imports_count=${DEPRECATED_IMPORTS_COUNT:-0}"
+  echo "deprecated_imports_file=$DEPRECATED_IMPORTS_FILE"
 } >> "$GITHUB_OUTPUT"

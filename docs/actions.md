@@ -322,6 +322,8 @@ configuration needed.
 | `skip-build` | no | `false` | Set to `true` to only run `lake update` (pin lakefile + manifest) and skip the build. `build-failed` is always `false`; the bump succeeds (`updated=true`) only when `lake update` succeeds — if `lake update` fails the step fails so callers don't commit a half-baked tree. Used by the FKB fix-PR path. |
 | `generate-description` | no | `true` | Set to `false` to skip GitHub API calls; `pr-title`, `bump-description`, and `commit-message` will be empty |
 | `query-type` | no | `last-known-good` | Which commit to bump to: `last-known-good`, `first-known-bad`, or `last-good-release` (semver tag, e.g. `v4.13.0`) |
+| `apply-fixes` | no | `true` | For `query-type=first-known-bad` only: after bumping to the FKB, apply the boundary-repairing import fixes hopscotch recorded for that commit (published in `runs/latest.json` as `proposed_fixes`) via `hopscotch fix apply`, so the fix PR contains the repair, not just the rev bump. These always apply — the FKB build is broken by definition. **Best-effort:** if no fixes were published, the installed `hopscotch-version` lacks the `fix` subcommand, or the apply fails, the bump proceeds with the rev bump alone. Validated by the fix PR's own CI. The fixes come from the regression probe's full-range bisection (robust, offline migrations), not from this narrow re-bump. |
+| `apply-advisories` | no | `false` | Opt-in hygiene pass (any `query-type`, aimed at `last-known-good`): also run `hopscotch fix apply --advisories` to migrate deprecated-but-working imports (ones routing through a live `deprecated_module` shim that breaks at the upstream cleanup). Read from the bump's **own** `results.json`, not the published snapshot — an advisory is commit-specific, and the bump target is the right commit. Completeness tracks the build: a normal bump detects them fully, `skip-build` finds only the tree-resolved subset (no build log), and a short-circuited bump (already at target) applies none. Worst case is incomplete, never wrong; partial migrations are skipped by hopscotch. **Default off:** these imports build today, so the rewrites are *not* verified by an LKG bump's green build and undercut its "mergeable as-is" framing — enable only where the resulting PR's CI runs (a GitHub App / PAT token, not the default `GITHUB_TOKEN`). |
 
 ### Outputs
 
@@ -336,6 +338,7 @@ configuration needed.
 | `pr-title` | Suggested PR title (empty when skipped or `generate-description: false`) |
 | `bump-description` | Markdown paragraph describing the bump — new commit + previous pin, with subjects and dates. Pass to `open-bump-pr`'s `message` input. Empty when skipped or `generate-description: false`. |
 | `commit-message` | Suggested git commit message (empty when skipped or `generate-description: false`) |
+| `fixes-applied` | Number of automated import fixes applied to the working tree after an FKB bump (always `"0"` for LKG/release bumps, when `apply-fixes` is false, or when none were published/applied). |
 
 ---
 
@@ -378,6 +381,7 @@ tick of an awaiting-merge bump PR therefore never lands.
 | `commit-message` | no | `chore: dependency update` | Git commit message |
 | `labels` | no | `''` | Comma-separated labels to apply to the PR |
 | `message` | no | `''` | Content to place in the PR body above the automated footer. Pass the `bump-description` output from `bump-to-latest` here. |
+| `fix-summary` | no | `''` | hopscotch's own `fix apply` output (the `fix-summary` output of `bump-to-latest`). When non-empty it is rendered verbatim in the body and the "mergeable as-is" framing is adjusted — the applied import rewrites were *not* covered by the bump's green build, so CI should run before merge. Ignored when `body` is set. |
 | `token` | no | `GITHUB_TOKEN` | Token used to push the branch and create/update the PR. Pass a GitHub App installation token to have PRs opened by a bot account instead of `github-actions[bot]`. |
 | `git-user-name` | no | `github-actions[bot]` | `git user.name` for the bump commit. |
 | `git-user-email` | no | `41898282+github-actions[bot]@users.noreply.github.com` | `git user.email` for the bump commit. |

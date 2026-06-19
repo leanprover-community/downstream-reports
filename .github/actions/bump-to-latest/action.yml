@@ -50,6 +50,37 @@ inputs:
                                      (null when no active regression)
         last-good-release          — the latest semver release tag (e.g. v4.13.0)
                                      reachable from the last-known-good commit
+  apply-fixes:
+    required: false
+    default: 'true'
+    description: >
+      For query-type=first-known-bad only: after bumping to the FKB, apply the
+      boundary-repairing import fixes hopscotch recorded for that commit
+      (published in runs/latest.json as proposed_fixes) via `hopscotch fix
+      apply`, so the fix PR contains the repair, not just the rev bump. These
+      always apply — the FKB build is broken by definition. Best-effort: if no
+      fixes were published, the installed hopscotch lacks the `fix` subcommand,
+      or the apply fails, the bump PR opens with the rev bump alone. The applied
+      rewrites are validated by the fix PR's own CI.
+  apply-advisories:
+    required: false
+    default: 'false'
+    description: >
+      Opt-in hygiene pass (any query-type, but aimed at last-known-good): also
+      run `hopscotch fix apply --advisories` to migrate deprecated-but-working
+      imports — ones that route through a live `deprecated_module` shim and will
+      break at the upstream cleanup. Advisories are read from the bump's own
+      results.json (an advisory is commit-specific, so the commit just bumped to
+      is the right source — not the published snapshot, whose advisories are for
+      a later commit). Completeness depends on the build: a normal bump
+      (skip-build=false) detects them fully; under skip-build only the
+      tree-resolved subset is found (no build log), and a short-circuited bump
+      (already at target) runs nothing, so none apply. Worst case is incomplete,
+      never wrong. Partial migrations (the shim also defines compat aliases) are
+      skipped by hopscotch. Default off: these imports build today, so the
+      rewrites are NOT verified by an LKG bump's green build and undermine the
+      "mergeable as-is" framing of an LKG PR — enable only where the resulting
+      PR's CI runs (a GitHub App / PAT token, not the default `GITHUB_TOKEN`).
 
 outputs:
   rev:
@@ -86,6 +117,13 @@ outputs:
   commit-message:
     description: 'Suggested git commit message for the bump (empty when skipped)'
     value: ${{ steps.fetch-descriptions.outputs.commit_message }}
+  fix-summary:
+    description: >
+      hopscotch's own `fix apply` output, verbatim, when it rewrote imports
+      after the bump — empty when nothing was applied, the step was skipped, or
+      no fixes were recorded. Surface this in a PR body to describe the applied
+      migrations using the tool's own words rather than a synthesized count.
+    value: ${{ steps.apply-fixes.outputs.fix_summary }}
 
 runs:
   using: 'composite'
@@ -566,6 +604,110 @@ runs:
           echo "hopscotch: tool error (exit $EXIT_CODE)."
           exit "$EXIT_CODE"
         fi
+    # ------------------------------------------------------------------
+    # Steps 8–9: apply the automated import fixes hopscotch recorded.
+    #
+    # Two independent kinds, gated by the two inputs:
+    #   * proposed_fixes (FKB boundary repairs) — apply-fixes, default on.
+    #     The bisection that found the FKB (the regression probe) ran detection
+    #     over the full LKG→HEAD range and published its proposed_fixes in
+    #     runs/latest.json — robust, offline migrations.  We overlay those onto
+    #     the bump's own results.json rather than trusting this narrow re-bump's
+    #     detection.  Fetched here (FKB only).
+    #   * advisories (deprecated-but-working imports) — apply-advisories, opt-in.
+    #     Sourced from the bump's own results.json (detected at the exact commit
+    #     bumped to), so no fetch is needed.
+    #
+    # The whole pass is best-effort: any miss (nothing recorded, a hopscotch
+    # without the `fix` subcommand, a failed apply) leaves the rev-bumped tree
+    # untouched, so the bump PR still opens — just without the rewrites.  The
+    # PR's CI is what validates them.
+    # ------------------------------------------------------------------
+    - name: Fetch published fixes
+      id: fetch-fixes
+      if: >-
+        steps.compare.outputs.skipped != 'true'
+        && steps.run-hopscotch.outputs.updated == 'true'
+        && inputs.query-type == 'first-known-bad'
+        && inputs.apply-fixes == 'true'
+      shell: bash
+      env:
+        DOWNSTREAM: ${{ inputs.downstream }}
+      run: bash "${{ github.action_path }}/../../scripts/fetch-run-latest.sh"
+
+    - name: Apply automated fixes
+      id: apply-fixes
+      if: >-
+        steps.compare.outputs.skipped != 'true'
+        && steps.run-hopscotch.outputs.updated == 'true'
+        && (
+             (inputs.query-type == 'first-known-bad' && inputs.apply-fixes == 'true')
+             || inputs.apply-advisories == 'true'
+           )
+      shell: bash
+      env:
+        PROJECT_DIR: ${{ inputs.project-dir }}
+        # Empty when the fetch step was skipped (non-FKB / apply-fixes off).
+        PUBLISHED_FIXES: ${{ steps.fetch-fixes.outputs.proposed_fixes_file }}
+        APPLY_ADVISORIES: ${{ inputs.apply-advisories }}
+      run: |
+        set +e
+        SCAFFOLD="$RUNNER_TEMP/bump-results.json"
+        MERGED="$RUNNER_TEMP/hopscotch-fix-input.json"
+        LOG="$RUNNER_TEMP/hopscotch-fix-apply.log"
+        # hopscotch's own one-line apply summary, surfaced verbatim to the PR
+        # body.  We never synthesize a count or sentence — the tool reports what
+        # it did.  Empty unless hopscotch actually rewrote files.
+        FIX_SUMMARY=""
+
+        FLAGS=()
+        if [ "$APPLY_ADVISORIES" = "true" ]; then
+          FLAGS+=(--advisories)
+        fi
+
+        if ! command -v hopscotch >/dev/null 2>&1; then
+          echo "::warning::hopscotch not on PATH; opening the bump PR without import rewrites"
+        elif [ ! -f "$SCAFFOLD" ]; then
+          echo "::warning::no results.json scaffold from the bump; skipping fix apply"
+        else
+          # The scaffold is the bump's own results.json — it carries every field
+          # `hopscotch fix --from` requires for the installed binary, plus the
+          # advisories detected at the bumped-to commit.  For an FKB bump, overlay
+          # the published (wide-range) proposed fixes onto it; otherwise use it
+          # as-is (advisories come from the scaffold).
+          if [ -n "${PUBLISHED_FIXES:-}" ] && [ -s "$PUBLISHED_FIXES" ] \
+              && [ "$(jq 'length' "$PUBLISHED_FIXES" 2>/dev/null || echo 0)" -gt 0 ]; then
+            if ! jq --slurpfile pub "$PUBLISHED_FIXES" '.proposedFixes = $pub[0]' "$SCAFFOLD" > "$MERGED" 2>/dev/null; then
+              echo "::warning::could not build the fix input from $SCAFFOLD; skipping fix apply"
+              MERGED=""
+            fi
+          else
+            cp "$SCAFFOLD" "$MERGED"
+          fi
+
+          if [ -n "$MERGED" ] && [ -f "$MERGED" ]; then
+            # Let hopscotch decide what applies and report it.  Capture its
+            # output verbatim.
+            hopscotch fix apply --from "$MERGED" --project-dir "$PROJECT_DIR" "${FLAGS[@]}" 2>&1 | tee "$LOG"
+            rc=${PIPESTATUS[0]}
+            if [ "$rc" -ne 0 ]; then
+              echo "::warning::hopscotch fix apply failed; opening the bump PR without import rewrites"
+            elif grep -q "No applicable automated fixes" "$LOG" || grep -q "rewrote 0 file(s)" "$LOG"; then
+              # hopscotch's own phrasings for "nothing changed" — don't surface a line.
+              echo "hopscotch fix apply made no changes."
+            else
+              FIX_SUMMARY=$(cat "$LOG")
+            fi
+          fi
+        fi
+
+        {
+          echo "fix_summary<<__HOPSCOTCH_EOF__"
+          printf '%s\n' "$FIX_SUMMARY"
+          echo "__HOPSCOTCH_EOF__"
+        } >> "$GITHUB_OUTPUT"
+        set -e
+
     # ------------------------------------------------------------------
     # Final step: consolidate outputs with safe defaults so callers never
     # see empty strings for boolean-valued outputs.

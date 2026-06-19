@@ -848,6 +848,9 @@ runs:
         DEP_NAME: ${{ inputs.dependency-name }}
         FKB_COMMIT: ${{ steps.fkb.outputs.commit }}
         CULPRIT_LOG_ARTIFACT_URL: ${{ steps.run.outputs.culprit_log_artifact_url }}
+        # hopscotch's own `fix apply` summary (verbatim) when it rewrote imports;
+        # empty otherwise.  Surfaced as-is — never synthesized here.
+        FIX_SUMMARY: ${{ steps.bump.outputs.fix-summary }}
         # Used to decide whether to surface the "CI does not run" warning:
         # the warning applies only when the PR is opened under the built-in
         # GITHUB_TOKEN. A custom App / PAT token differs from github.token,
@@ -875,6 +878,10 @@ runs:
           printf -- '---\n\n'
           printf 'This PR bumps `%s` to an identified incompatible (first-known-bad) commit (`%s`) so you can reproduce and fix the incompatibility locally by checking out this branch.\n\n' \
             "$DEP_NAME" "$FKB_SHORT"
+          if [ -n "${FIX_SUMMARY:-}" ]; then
+            printf 'It also applies the automated import fixes `hopscotch fix` proposed for this boundary. Review them — a migration can be partial (e.g. when the upstream PR also renamed declarations) — and rely on this branch'"'"'s CI to validate the repair:\n\n'
+            printf '```\n%s\n```\n\n' "$FIX_SUMMARY"
+          fi
           if [ "$TOKEN" = "$DEFAULT_TOKEN" ]; then
             printf '> [!WARNING]\n'
             printf '> This PR was opened by the default `github-actions[bot]` identity, so **your repository'"'"'s own CI does not run on the PR as opened** — GitHub suppresses workflow triggers (`push` / `pull_request`) for events caused by the built-in `GITHUB_TOKEN`. Fix commits you push to this branch yourself *will* trigger CI normally.\n'
