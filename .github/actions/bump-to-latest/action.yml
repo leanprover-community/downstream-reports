@@ -67,9 +67,11 @@ inputs:
     default: 'false'
     description: >
       Opt-in hygiene pass (any query-type, but aimed at last-known-good): also
-      run `hopscotch fix apply --advisories` to migrate deprecated-but-working
-      imports — ones that route through a live `deprecated_module` shim and will
-      break at the upstream cleanup. Advisories are read from the bump's own
+      migrate deprecated-but-working imports — ones that route through a live
+      `deprecated_module` shim and will break at the upstream cleanup. hopscotch
+      `fix apply` does this by default; when this input is off (the default) the
+      action passes `--no-advisories` to suppress it. Advisories are read from
+      the bump's own
       results.json (an advisory is commit-specific, so the commit just bumped to
       is the right source — not the published snapshot, whose advisories are for
       a later commit). Completeness depends on the build: a normal bump
@@ -660,9 +662,12 @@ runs:
         # it did.  Empty unless hopscotch actually rewrote files.
         FIX_SUMMARY=""
 
+        # hopscotch's `fix apply` migrates deprecated-import advisories by
+        # default; pass --no-advisories to suppress them unless this bump opted
+        # in.  (Boundary proposedFixes always apply, regardless of this flag.)
         FLAGS=()
-        if [ "$APPLY_ADVISORIES" = "true" ]; then
-          FLAGS+=(--advisories)
+        if [ "$APPLY_ADVISORIES" != "true" ]; then
+          FLAGS+=(--no-advisories)
         fi
 
         if ! command -v hopscotch >/dev/null 2>&1; then
