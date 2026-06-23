@@ -275,9 +275,7 @@ short-circuits prevent waste:
 
 A caller using a non-default branch on `open-bump-pr` must pass the **same**
 value to `bump-to-latest`'s `branch` input. Otherwise the probe watches the
-wrong branch and the bump runs on every tick. To use a release-tag bump on
-a dedicated branch (e.g. `hopscotch/tag-bump`), set `branch: hopscotch/tag-bump`
-on both actions.
+wrong branch and the bump rebuilds on every run while a PR is open.
 
 ---
 
@@ -311,7 +309,8 @@ How a non-forward target (`behind`/`diverged`) is handled depends on
 - `last-good-release` → **clean skip** (`skipped=true`, `updated=false`, step
   succeeds). A release tag behind the pin means the project is already past the
   latest release — the normal state after a latest-commit bump has been merged.
-  This lets a release-tag bump job call `bump-to-latest` without a guard step.
+  This lets a scheduled `last-good-release` bump run without a caller-side
+  forward-move guard, skipping quietly until a newer release lands.
 
 The upstream repo for the compare call and commit-description lookups is
 taken from the snapshot's top-level `upstream` field — no configuration needed.
@@ -608,51 +607,6 @@ When `query-type: last-good-release`:
 - `rev` is a **tag name** (e.g. `v4.13.0`) that `hopscotch dep` and Lake's `inputRev` both accept directly.
 - `commit` is the resolved SHA, useful for consumers needing byte-equality comparison against the `rev` field in `lake-manifest.json`.
 - Both fields are empty when no semver release precedes the downstream's current LKG.
-
-**Open a release-tag bump PR alongside the latest-commit one (two-PR setup):**
-
-Run this as a second job next to the regular LKG `bump` job. It opens a PR
-that pins the dependency at the latest mathlib *release tag* on its own branch,
-so a downstream can keep its own `vX.Y.Z` tag at exactly the same upstream
-commit as mathlib's. No guard step is needed: when the latest release is behind
-the current pin (normal after a latest-commit bump),
-`bump-to-latest` returns `skipped=true` and the job stays green.
-
-```yaml
-  bump-tag:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-      pull-requests: write
-    steps:
-      - uses: actions/checkout@v6
-
-      - name: Bump to latest release tag
-        id: bump
-        uses: leanprover-community/downstream-reports/.github/actions/bump-to-latest@main
-        with:
-          query-type: last-good-release
-          branch: hopscotch/tag-bump        # must match open-bump-pr's branch
-
-      - name: Open or update tag bump PR
-        if: steps.bump.outputs.updated == 'true'
-        uses: leanprover-community/downstream-reports/.github/actions/open-bump-pr@main
-        with:
-          branch:         hopscotch/tag-bump  # must match bump-to-latest's branch
-          title:          ${{ steps.bump.outputs.pr-title }}
-          message:        ${{ steps.bump.outputs.bump-description }}
-          commit-message: ${{ steps.bump.outputs.commit-message }}
-```
-
-**Avoid the rewind.** The release tag is an ancestor of the latest commit, so
-two open PRs merged latest-commit-first rewind the pin when the tag PR merges
-after. Keep one bump PR open at a time, tag first: in the latest-commit `bump`
-job, when the release tag is ahead of the pin (compare the manifest pin against
-the `last-good-release` commit via the upstream compare API), skip the
-latest-commit bump and `gh pr close` its open PR instead of opening one. Merging
-the tag PR advances the pin past the tag; the tag is then no longer ahead and
-the latest-commit PR reappears. The pin only moves forward, regardless of merge
-order.
 
 **With a GitHub App token** (so bump PRs trigger your downstream's CI and are
 attributed to a bot account rather than `github-actions[bot]`) — see
