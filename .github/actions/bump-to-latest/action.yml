@@ -62,7 +62,7 @@ inputs:
 
 outputs:
   rev:
-    description: 'The human-readable ref passed to hopscotch (tag name for last-good-release, SHA otherwise)'
+    description: 'The human-readable ref passed to hopscotch (a tag name for last-good-release, or for a last-known-good bump that lands exactly on a release tag; a SHA otherwise)'
     value: ${{ steps.resolve-outputs.outputs.rev }}
   commit:
     description: 'The resolved commit SHA (always a SHA)'
@@ -111,6 +111,32 @@ runs:
         DOWNSTREAM: ${{ inputs.downstream }}
         QUERY_TYPE: ${{ inputs.query-type }}
       run: bash "${{ github.action_path }}/../../scripts/fetch-latest.sh"
+
+    # ------------------------------------------------------------------
+    # Step 1.2: When the target commit is exactly a release tag, relabel the
+    # rev to the tag name. hopscotch then pins the tag (manifest inputRev =
+    # the tag, rev = the resolved SHA, so it stays reproducible) and the PR
+    # shows the release name. Detected for free from the snapshot: the target
+    # lands on the release exactly when it equals last_good_release_commit.
+    # A last-good-release bump already carries a tag rev, so it is left as-is.
+    # ------------------------------------------------------------------
+    - name: Relabel target as a release tag when it lands on one
+      id: relabel
+      shell: bash
+      env:
+        RAW_REV: ${{ steps.fetch-snapshot.outputs.rev }}
+        RAW_COMMIT: ${{ steps.fetch-snapshot.outputs.commit }}
+        RELEASE_TAG: ${{ steps.fetch-snapshot.outputs.release_tag }}
+        RELEASE_COMMIT: ${{ steps.fetch-snapshot.outputs.release_commit }}
+      run: |
+        set -euo pipefail
+        EFF_REV="$RAW_REV"
+        if [ "$RAW_REV" = "$RAW_COMMIT" ] && [ -n "$RELEASE_TAG" ] \
+            && [ "$RAW_COMMIT" = "$RELEASE_COMMIT" ]; then
+          echo "Target ${RAW_COMMIT} is release ${RELEASE_TAG}; pinning the tag name."
+          EFF_REV="$RELEASE_TAG"
+        fi
+        echo "rev=$EFF_REV" >> "$GITHUB_OUTPUT"
 
     # ------------------------------------------------------------------
     # Step 1.5: If an open PR on the LKG bump branch already pins the
@@ -271,7 +297,7 @@ runs:
       id: compare
       shell: bash
       env:
-        TARGET_REV: ${{ steps.fetch-snapshot.outputs.rev }}
+        TARGET_REV: ${{ steps.relabel.outputs.rev }}
         TARGET_COMMIT: ${{ steps.fetch-snapshot.outputs.commit }}
         CURRENT_PIN: ${{ steps.read-manifest.outputs.current_pin }}
         REF_MATCH: ${{ steps.probe-ref.outputs.match }}
@@ -354,7 +380,7 @@ runs:
         UPSTREAM: ${{ steps.resolve-upstream.outputs.effective }}
         CURRENT_PIN: ${{ steps.read-manifest.outputs.current_pin }}
         TARGET_COMMIT: ${{ steps.fetch-snapshot.outputs.commit }}
-        TARGET_REV: ${{ steps.fetch-snapshot.outputs.rev }}
+        TARGET_REV: ${{ steps.relabel.outputs.rev }}
         QUERY_TYPE: ${{ inputs.query-type }}
       run: |
         set -euo pipefail
@@ -414,7 +440,7 @@ runs:
       shell: bash
       env:
         GH_TOKEN: ${{ github.token }}
-        TARGET_COMMIT: ${{ steps.fetch-snapshot.outputs.rev }}
+        TARGET_COMMIT: ${{ steps.relabel.outputs.rev }}
         TARGET_SHA: ${{ steps.fetch-snapshot.outputs.commit }}
         CURRENT_PIN: ${{ steps.read-manifest.outputs.current_pin }}
         DEPENDENCY_NAME: ${{ inputs.dependency-name }}
@@ -472,6 +498,10 @@ runs:
             "$DEPENDENCY_NAME" "$TARGET_LABEL" "$TARGET_URL" "$TARGET_SUFFIX"
           printf 'Previously at: [%s](%s)%s\n' \
             "$PREV_SHORT" "$PREV_URL" "$PREV_SUFFIX"
+          # When the target is a tag (rev != SHA), note it pins a named release.
+          if [ "$TARGET_COMMIT" != "$TARGET_SHA" ]; then
+            printf '\nThis pins the named release `%s`.\n' "$TARGET_LABEL"
+          fi
           echo "BUMP_EOF"
         } >> "$GITHUB_OUTPUT"
 
@@ -537,7 +567,7 @@ runs:
       env:
         DEPENDENCY_NAME: ${{ inputs.dependency-name }}
         CURRENT_PIN: ${{ steps.read-manifest.outputs.current_pin }}
-        TARGET_COMMIT: ${{ steps.fetch-snapshot.outputs.rev }}
+        TARGET_COMMIT: ${{ steps.relabel.outputs.rev }}
         PROJECT_DIR: ${{ inputs.project-dir }}
         GITHUB_TOKEN: ${{ github.token }}
         HOPSCOTCH_SKIP_BUILD: ${{ inputs.skip-build }}
@@ -616,7 +646,7 @@ runs:
       if: always()
       shell: bash
       env:
-        TARGET_REV: ${{ steps.fetch-snapshot.outputs.rev }}
+        TARGET_REV: ${{ steps.relabel.outputs.rev }}
         TARGET_COMMIT: ${{ steps.fetch-snapshot.outputs.commit }}
         CURRENT_PIN: ${{ steps.read-manifest.outputs.current_pin }}
         SKIPPED: ${{ steps.compare.outputs.skipped }}

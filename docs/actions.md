@@ -292,6 +292,13 @@ Also fetches human-readable commit metadata from the GitHub API to generate a
 suggested PR title, body snippet, and git commit message — pass
 `generate-description: 'false'` to skip these API calls.
 
+**Release-tag pinning.** When a bump lands exactly on a release tag (the target
+commit equals the snapshot's `last_good_release_commit`), the action pins the
+dependency to the tag name rather than the SHA: `lake-manifest.json`'s
+`inputRev` becomes e.g. `v4.32.0` (the resolved `rev` stays the SHA, so the pin
+is still reproducible), and the PR title/body name the release. `last-good-release`
+bumps already pin a tag this way.
+
 **Backwards-move guardrail.** Because the published snapshot can lag a
 downstream's manifest, the recorded target commit may be *older* than the
 project's current pin (the project already advanced past it). Before
@@ -332,7 +339,7 @@ taken from the snapshot's top-level `upstream` field — no configuration needed
 
 | Output | Description |
 |--------|-------------|
-| `rev` | The human-readable ref passed to hopscotch (tag name for `last-good-release`, SHA otherwise) |
+| `rev` | The human-readable ref passed to hopscotch: a tag name for `last-good-release`, or for a `last-known-good` bump that lands exactly on a release tag; a SHA otherwise |
 | `commit` | The resolved commit SHA |
 | `current-pin` | The commit the project was pinned to before this action ran |
 | `updated` | `"true"` if hopscotch produced a committable bump. The step **fails** instead of returning `updated=false` whenever hopscotch stops at a stage that leaves nothing committable, e.g. a `lake update` (bump-step) failure, which rewrites the lakefile but leaves `lake-manifest.json` stale. |
