@@ -7,12 +7,10 @@ description: >
 inputs:
   branch:
     required: false
-    # NOTE: this default is duplicated as a hardcoded constant in
-    # `.github/actions/bump-to-latest/action.yml` (the Step 1.5 probe
-    # short-circuits the bump when this branch already pins the target).
-    # If you change it here, update bump-to-latest's `REF` env var too —
-    # otherwise callers using the new default silently lose the probe
-    # optimization at sub-daily cadence.
+    # NOTE: this default mirrors bump-to-latest's `branch` input (its Step 1.5
+    # probe short-circuits the bump when this branch already pins the target).
+    # When using a non-default branch, pass the SAME value to bump-to-latest's
+    # `branch` input — otherwise the probe watches the wrong branch.
     default: 'hopscotch/lkg-bump'
     description: >
       Branch name for the PR. Each run creates a single fresh commit on top

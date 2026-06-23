@@ -16,12 +16,10 @@ tracks any incompatibility — compose `bump-to-latest` + `open-bump-pr` plus a
 `track-incompatibility` job. See the [canonical example](#canonical-example)
 below.
 
-> **Extensibility note.** Today the actions are used exclusively for the
-> mathlib upstream. The intent is to keep them general enough to support other
-> upstream/downstream pairs in the future. When adding features, avoid baking
-> in mathlib-specific assumptions: anything that varies per-upstream (dependency
-> name, repo) should be an explicit input with a sensible default rather than a
-> hardcoded constant.
+> **Extensibility note.** The actions support any upstream/downstream pair, not
+> just mathlib. When adding features, avoid mathlib-specific assumptions: anything
+> that varies per-upstream (dependency name, repo) should be an explicit input with
+> a sensible default, not a hardcoded constant.
 
 ---
 
@@ -38,10 +36,10 @@ below.
 
 GitHub Actions injects a `GITHUB_TOKEN` into every workflow run; the composite
 actions pick it up via the `token` input's default (`${{ github.token }}`).
-Two configuration steps are required before this works:
+Two configuration steps must be completed first:
 
-1. **Grant the necessary permissions in the workflow.** Add a `permissions:`
-   block at job (or workflow) scope. For `bump-to-latest` + `open-bump-pr`:
+1. **Grant permissions in the workflow.** Add a `permissions:` block at job
+   (or workflow) scope. For `bump-to-latest` + `open-bump-pr`:
 
    ```yaml
    permissions:
@@ -58,9 +56,9 @@ Two configuration steps are required before this works:
    Actions to create and approve pull requests"**. Without it, `open-bump-pr`
    (and `track-incompatibility`'s fix-PR side) fail with
    `GitHub Actions is not permitted to create or approve pull requests`. This
-   setting is org-level too — an org-wide block overrides the repo toggle.
+   setting is also org-level: an org-wide block overrides the repo toggle.
 
-With those two boxes ticked the [canonical example](#canonical-example) works
+With those two boxes ticked, the [canonical example](#canonical-example) works
 as-is.
 
 > [!WARNING]
@@ -72,24 +70,24 @@ as-is.
 > authored by `github-actions[bot]` but **do not run any of the workflows
 > configured on your repo** — `pull_request` / `push` checks stay blank.
 >
-> The bump and `lake build` are still verified inside `bump-to-latest`'s own
-> job, so the PR is safe to merge. But if you rely on additional CI (lints,
+> The bump and `lake build` are verified inside `bump-to-latest`'s own
+> job, so the PR is safe to merge. If you rely on additional CI (lints,
 > downstream-of-downstream tests, deploy previews, …) before merging, use a
 > GitHub App token ([Option B](#option-b--github-app-installation-token-recommended-for-ci-on-pr))
 > instead.
 >
 > To kick CI off on a single such PR without setting up an App, push a commit
-> yourself (e.g. `git commit --allow-empty -m "run CI"`) — a human-triggered
+> yourself (e.g. `git commit --allow-empty -m "run CI"`). A human-triggered
 > event isn't suppressed, and an empty commit is tree-identical, so
 > `open-bump-pr`'s `tree_unchanged` short-circuit leaves it in place on the
-> next run. (On a `track-incompatibility` fix PR this is moot: the fix commits
-> you push trigger CI anyway.)
+> next run. On a `track-incompatibility` fix PR this is unnecessary: the fix commits
+> you push trigger CI anyway.
 
 ### Option B — GitHub App installation token (recommended for CI-on-PR)
 
-A GitHub App acts as its own identity, so pushes and PRs it creates trigger
-workflows the same way a human commit would. The cost is a one-time setup;
-the benefit is full CI coverage on bump PRs and a stable bot identity.
+A GitHub App acts as its own identity, so its pushes and PRs trigger
+workflows the same way human commits would. One-time setup cost, but full CI
+coverage on bump PRs and a stable bot identity.
 
 1. **Create the App.** Settings → Developer settings → GitHub Apps → New
    GitHub App. Grant **repository** permissions:
@@ -102,43 +100,42 @@ the benefit is full CI coverage on bump PRs and a stable bot identity.
    No webhooks or user-level permissions are needed.
 
 2. **Install it** on the downstream repo (or on the owning org, scoped to
-   that repo). From the App's settings page:
+   the repo). From the App's settings page:
 
    1. Open the **Install App** tab in the left sidebar.
    2. Click **Install** next to the account that owns the downstream repo
-      (your user account, or the org).
+      (your user account or the org).
    3. Choose **Only select repositories** and pick the downstream repo
-      (recommended), or **All repositories** if the App will service several.
-   4. Confirm — GitHub takes you to the installation's settings page, whose
+      (recommended) or **All repositories** if the App will service multiple repos.
+   4. Confirm. GitHub takes you to the installation's settings page, whose
       URL ends in `/installations/<installation-id>`. You don't need to copy
-      this ID; `actions/create-github-app-token` resolves it from the App ID
+      this ID: `actions/create-github-app-token` resolves it from the App ID
       plus the target repo at runtime.
 
    GitHub's reference: [Installing your own GitHub App](https://docs.github.com/en/apps/using-github-apps/installing-your-own-github-app).
 
-3. **Store the credentials.** You need two pieces of data from the App's
+3. **Store the credentials.** Extract two pieces of data from the App's
    settings page:
 
    1. **App ID** — shown near the top of the **General** tab as a small
-      numeric value. Copy it and save it as a repository (or org) **variable**
+      numeric value. Save it as a repository (or org) **variable**
       named `MY_BOT_APP_ID` (Settings → Secrets and variables → Actions →
-      Variables → New repository variable). A variable, not a secret — App
-      IDs are not sensitive and storing them as variables lets you reference
-      them via `${{ vars.MY_BOT_APP_ID }}` in logs without masking.
+      Variables → New repository variable). Use a variable, not a secret: App
+      IDs are not sensitive, and variables let you reference them via
+      `${{ vars.MY_BOT_APP_ID }}` in logs without masking.
    2. **Private key** — scroll down to **Private keys** on the same General
       tab and click **Generate a private key**. A `.pem` file downloads
-      once; GitHub does not retain it. Open the file, copy its full
-      contents (including the `-----BEGIN/END RSA PRIVATE KEY-----` lines),
-      and save it as a repository (or org) **secret** named
-      `MY_BOT_PRIVATE_KEY` (Settings → Secrets and variables → Actions →
-      Secrets → New repository secret). Then delete the local `.pem` —
-      you can always generate a new key if you lose it.
+      once; GitHub does not retain it. Copy its full contents (including the
+      `-----BEGIN/END RSA PRIVATE KEY-----` lines) and save it as a repository
+      (or org) **secret** named `MY_BOT_PRIVATE_KEY` (Settings → Secrets and
+      variables → Actions → Secrets → New repository secret). Then delete the
+      local `.pem`. You can always generate a new key later if needed.
 
    GitHub's reference: [Managing private keys for GitHub Apps](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/managing-private-keys-for-github-apps).
 
-4. **Mint an installation token per run** with
+4. **Create an installation token per run** with
    [`actions/create-github-app-token`](https://github.com/actions/create-github-app-token)
-   and pass it to the composite actions via their `token` input:
+   and pass it to the composite actions via the `token` input:
 
    ```yaml
    jobs:
@@ -181,19 +178,18 @@ the benefit is full CI coverage on bump PRs and a stable bot identity.
    is not subject to the repo-wide PR-creation override.
 
 The "Allow GitHub Actions to create and approve pull requests" repo toggle
-is **not** required when using an App token — it only governs the default
+is not required when using an App token — it only governs the default
 `GITHUB_TOKEN`.
 
-#### Personal access token (PAT) 
+#### Personal access token (PAT)
 
-A classic or fine-grained PAT can be substituted for the App token: store
-it as a secret and pass it via the same `token` input. Two trade-offs vs an
-App:
+A classic or fine-grained PAT can substitute for the App token: store
+it as a secret and pass it via the same `token` input. Two trade-offs:
 
-- It's bound to a single human user, so that user authors the PRs and is
-  shown as the actor that triggered subsequent CI runs.
-- It counts against that user's per-hour API rate limit, shared with all
-  their other GitHub activity.
+- It's bound to a human user, so that user authors the PRs and is shown as the
+  actor triggering subsequent CI runs.
+- It counts against that user's per-hour API rate limit, shared with all their
+  other GitHub activity.
 
 Apps are preferred for shared / organisational repos and for anything
 long-lived; PATs are fine for personal sandboxes.
@@ -205,9 +201,9 @@ long-lived; PATs are fine for personal sandboxes.
 A two-job workflow that opens an LKG-bump PR (so the project can advance to
 the latest compatible dependency commit at any time) and, when a regression
 is reported, a separate fix PR pinned at the FKB (so the breaking change
-can be worked on in parallel). The two PRs live on different branches and
-don't conflict — the LKG PR is mergeable immediately to keep the project
-moving while the fix lands later.
+can be worked on in parallel). The two PRs live on different branches without
+conflict. The LKG PR is mergeable immediately to keep the project moving
+while the fix lands later.
 
 ```yaml
 name: Update Dependencies
@@ -264,23 +260,22 @@ PR is the FKB fix one), gate the `bump` job on `query-latest`'s
 The actions are idempotent on unchanged input, so the workflow above can run on
 a sub-daily cron (e.g. `"0 */2 * * *"`, every two hours) without producing
 PR / issue / CI noise on ticks where the snapshot hasn't moved. Two layered
-short-circuits make this safe:
+short-circuits prevent waste:
 
 - **`bump-to-latest`** probes the LKG bump-PR branch (`hopscotch/lkg-bump`,
   matching `open-bump-pr`'s default) before running hopscotch. If that branch's
   manifest already pins the dependency at the snapshot's target, the action
-  exits with `skipped=true` and never invokes `lake build`. Auto-disabled for
+  exits with `skipped=true` and skips `lake build`. Auto-disabled for
   `query-type: first-known-bad` (FKB lives on per-FKB-SHA branches handled
   by `track-incompatibility`).
 - **`open-bump-pr`** compares the local commit's tree against the remote bump
-  branch's HEAD tree. If they're identical and an open PR already points at
-  the branch, the force-push and the `gh pr edit` are both skipped (the
-  action surfaces this via `action: up-to-date`).
+  branch's HEAD tree. If they're identical and an open PR points at
+  the branch, the force-push and `gh pr edit` are both skipped (surfaced via
+  `action: up-to-date`).
 
-A caller using a non-default branch on `open-bump-pr` silently loses the
-`bump-to-latest` optimization: the probe 404s on `hopscotch/lkg-bump` and the
-bump runs every tick. That's correct (no false skips) but wasteful at sub-daily
-cadence — stick with the default branch name unless you have a reason not to.
+A caller using a non-default branch on `open-bump-pr` must pass the **same**
+value to `bump-to-latest`'s `branch` input. Otherwise the probe watches the
+wrong branch and the bump rebuilds on every run while a PR is open.
 
 ---
 
@@ -289,7 +284,7 @@ cadence — stick with the default branch name unless you have a reason not to.
 **Path:** `.github/actions/bump-to-latest`
 
 Fetches the snapshot, reads the current mathlib pin from
-`lake-manifest.json`, and (when a bump is needed) installs elan + hopscotch and
+`lake-manifest.json`, and when a bump is needed, installs elan + hopscotch and
 runs `hopscotch dep` to bump and build. On success the working tree contains
 modified `lakefile` and `lake-manifest.json` ready to commit.
 
@@ -298,18 +293,27 @@ suggested PR title, body snippet, and git commit message — pass
 `generate-description: 'false'` to skip these API calls.
 
 **Backwards-move guardrail.** Because the published snapshot can lag a
-downstream's own manifest, the recorded target commit may be *older* than the
-project's current pin (e.g. the project already advanced past it). Before
-building, the action queries the upstream repo's compare API and **fails** if
-the target is `behind` the current pin (an ancestor) or has `diverged` from it,
-rather than rewinding the dependency. Only a forward move (the target is a
-descendant of the current pin) proceeds. A transient/inconclusive compare API
-call is a warning, not a hard stop. This protects every consumer of
-`bump-to-latest`, including the fix-PR side of `track-incompatibility`.
+downstream's manifest, the recorded target commit may be *older* than the
+project's current pin (the project already advanced past it). Before
+building, the action queries the upstream repo's compare API and refuses to
+build unless the target is a forward move (a descendant of the current pin).
+A transient or inconclusive compare API call is a warning, not a hard stop.
+This protects every consumer of `bump-to-latest`, including the fix-PR side of
+`track-incompatibility`.
 
-The upstream repo for that compare call (and for the commit-description
-lookups) is taken from the snapshot's top-level `upstream` field — no
-configuration needed.
+How a non-forward target (`behind`/`diverged`) is handled depends on
+`query-type`, since the *meaning* differs:
+
+- `last-known-good` / `first-known-bad` → **hard fail**. A snapshot older than
+  the project's pin is a genuine anomaly worth surfacing.
+- `last-good-release` → **clean skip** (`skipped=true`, `updated=false`, step
+  succeeds). A release tag behind the pin means the project is already past the
+  latest release — the normal state after a latest-commit bump has been merged.
+  This lets a scheduled `last-good-release` bump run without a caller-side
+  forward-move guard, skipping quietly until a newer release lands.
+
+The upstream repo for the compare call and commit-description lookups is
+taken from the snapshot's top-level `upstream` field — no configuration needed.
 
 ### Inputs
 
@@ -319,9 +323,10 @@ configuration needed.
 | `project-dir` | no | `.` | Path to the downstream project root |
 | `dependency-name` | no | `mathlib` | Name of the dependency in the lakefile |
 | `hopscotch-version` | no | `v1.5.0` | Hopscotch release tag to download |
-| `skip-build` | no | `false` | Set to `true` to only run `lake update` (pin lakefile + manifest) and skip the build. `build-failed` is always `false`; the bump succeeds (`updated=true`) only when `lake update` succeeds — if `lake update` fails the step fails so callers don't commit a half-baked tree. Used by the FKB fix-PR path. |
+| `skip-build` | no | `false` | Set to `true` to only run `lake update` (pin lakefile + manifest) and skip the build. `build-failed` is always `false`; the bump succeeds (`updated=true`) only when `lake update` succeeds. If `lake update` fails the step fails so callers don't commit a half-baked tree. Used by the FKB fix-PR path. |
 | `generate-description` | no | `true` | Set to `false` to skip GitHub API calls; `pr-title`, `bump-description`, and `commit-message` will be empty |
 | `query-type` | no | `last-known-good` | Which commit to bump to: `last-known-good`, `first-known-bad`, or `last-good-release` (semver tag, e.g. `v4.13.0`) |
+| `branch` | no | `hopscotch/lkg-bump` | Bump-PR branch the Step 1.5 probe checks for an already-applied bump. Must match the `branch` passed to `open-bump-pr`, or the probe watches the wrong branch. Unused for `query-type: first-known-bad`. |
 
 ### Outputs
 
@@ -330,9 +335,9 @@ configuration needed.
 | `rev` | The human-readable ref passed to hopscotch (tag name for `last-good-release`, SHA otherwise) |
 | `commit` | The resolved commit SHA |
 | `current-pin` | The commit the project was pinned to before this action ran |
-| `updated` | `"true"` if hopscotch produced a committable bump. The step **fails** instead of returning `updated=false` whenever hopscotch stops at a stage that leaves nothing committable — e.g. a `lake update` (bump-step) failure, which rewrites the lakefile but leaves `lake-manifest.json` stale. |
+| `updated` | `"true"` if hopscotch produced a committable bump. The step **fails** instead of returning `updated=false` whenever hopscotch stops at a stage that leaves nothing committable, e.g. a `lake update` (bump-step) failure, which rewrites the lakefile but leaves `lake-manifest.json` stale. |
 | `skipped` | `"true"` if the project was already at the target commit (or target is empty) |
-| `build-failed` | `"true"` only for the expected case: a `first-known-bad` bump whose `lake build` (verify) stage failed after `lake update` succeeded (`failureStage = "lake build"` in hopscotch's `results.json`). Any other failure (including a `lake update` failure) fails the step rather than returning here. |
+| `build-failed` | `"true"` only for the expected case: a `first-known-bad` bump whose `lake build` (verify) stage failed after `lake update` succeeded (`failureStage = "lake build"` in hopscotch's `results.json`). Any other failure, including `lake update` failure, fails the step rather than returning here. |
 | `pr-title` | Suggested PR title (empty when skipped or `generate-description: false`) |
 | `bump-description` | Markdown paragraph describing the bump — new commit + previous pin, with subjects and dates. Pass to `open-bump-pr`'s `message` input. Empty when skipped or `generate-description: false`. |
 | `commit-message` | Suggested git commit message (empty when skipped or `generate-description: false`) |
@@ -343,29 +348,28 @@ configuration needed.
 
 **Path:** `.github/actions/open-bump-pr`
 
-Generic commit-and-PR action. Independent of `bump-to-latest` — works with any
-working-tree changes.
+Generic commit-and-PR action. Independent of `bump-to-latest` and works with
+any working-tree changes.
 
 Commits all working-tree changes onto a dedicated branch (force-pushed on every
 run to keep the PR to a single commit), then creates or updates an open PR. The
 auto-generated PR body is the optional `message` (the `bump-description` from
-`bump-to-latest`), a `---` rule, a short explanation that this is a verified
+`bump-to-latest`), a `---` rule, a brief explanation that this is a verified
 last-known-good bump that should be mergeable as-is, and a footer linking back to
 the triggering run. When the PR is opened under the built-in `GITHUB_TOKEN` (no
-App token), the body also carries a warning that the downstream's own CI does not
+App token), the body also includes a warning that downstream CI does not
 run on the PR, pointing at [Set up authentication](#set-up-authentication). Pass
-`body` to override the whole thing.
+`body` to override everything.
 
 If there are no working-tree changes (`git diff` is clean) the action exits with
 `action=noop` and no PR is touched.
 
 To stay quiet under sub-daily cadences, the action also short-circuits when the
 remote branch already has a commit whose **tree** matches the one it would push
-*and* an open PR already points at the branch. In that case both the force-push
-and the PR title/body edit are skipped, and the action exits with
-`action=up-to-date` (with the existing PR's `pr-number` / `pr-url` surfaced).
-The fresh-SHA / same-tree commit that would otherwise trigger PR CI on every
-tick of an awaiting-merge bump PR therefore never lands.
+and an open PR points at the branch. Both the force-push and PR title/body edit
+are skipped, and the action exits with `action=up-to-date` (with the existing PR's
+`pr-number` / `pr-url` surfaced). The fresh-SHA / same-tree commit that would
+otherwise trigger PR CI on every tick never lands.
 
 ### Inputs
 
@@ -396,19 +400,18 @@ tick of an awaiting-merge bump PR therefore never lands.
 
 **Path:** `.github/actions/track-incompatibility`
 
-Opens or maintains a persistent tracking issue **and** (by default) a fix PR
-with the lakefile bumped to the FKB commit, so downstream maintainers have a
-ready starting point for investigation.  When the FKB advances, stale fix PRs
-are closed automatically.  When the regression clears, both the issue and any
+Opens or maintains a persistent tracking issue and (by default) a fix PR
+with the lakefile bumped to the FKB commit, giving downstream maintainers a
+ready starting point for investigation. When the FKB advances, stale fix PRs
+are closed automatically. When the regression clears, both the issue and any
 open fix PRs are closed with resolution comments.
 
-Set `open-pr: false` to run in issue-only mode, where no PR is opened. Set
-`open-issue: false` for the symmetric PR-only mode — useful when you reserve
-issues for longer-lasting problems and want incompatibilities surfaced only
-as fix PRs. Setting both to `false` puts the action in read-only mode: it
-still fetches and logs the current FKB/LKG and last-run metadata, but opens
-or closes nothing — handy for temporarily pausing side effects without
-removing the job.
+Set `open-pr: false` to run in issue-only mode. Set `open-issue: false` for
+PR-only mode, useful when you reserve issues for longer-lasting problems and
+want incompatibilities surfaced only as fix PRs. Setting both to `false` puts
+the action in read-only mode: it fetches and logs the current FKB/LKG and
+last-run metadata but opens or closes nothing — handy for temporarily pausing
+side effects without removing the job.
 
 ### Inputs
 
@@ -418,8 +421,8 @@ removing the job.
 | `label` | no | `dependency-incompatibility` | Label identifying the tracking issue. Created if missing. |
 | `title` | no | auto | Full issue title; auto-generated when empty. |
 | `close-on-resolve` | no | `true` | Close the tracking issue with a resolution comment when FKB clears. |
-| `token` | no | `github.token` | Token for PR-side operations (push, fix-PR open/close). Needs `contents: write` and `pull-requests: write` when `open-pr: true`. Typically a GitHub App token, since pushes by the default `GITHUB_TOKEN` do not trigger downstream CI and PR creation can be disabled repo-wide. Ignored when `open-pr: false`. |
-| `issue-token` | no | `github.token` | Token for issue-side operations (label, list, create, edit, comment, close). Defaults to `GITHUB_TOKEN`, which is reliable here because `issues: write` granted via the workflow's `permissions:` block isn't subject to repo-wide overrides. Override only to change the issue author. Ignored when `open-issue: false`. |
+| `token` | no | `github.token` | Token for PR-side operations (push, fix-PR open/close). Needs `contents: write` and `pull-requests: write` when `open-pr: true`. Use a GitHub App token: pushes by the default `GITHUB_TOKEN` do not trigger downstream CI and PR creation can be disabled repo-wide. Ignored when `open-pr: false`. |
+| `issue-token` | no | `github.token` | Token for issue-side operations (label, list, create, edit, comment, close). Defaults to `GITHUB_TOKEN`, which is reliable here because `issues: write` granted via the workflow's `permissions:` block isn't subject to repo-wide overrides. Override only to change the issue author. Ignored when `open-issue: false`.  |
 | `open-issue` | no | `true` | Master switch for the tracking-issue side. Set `false` for PR-only mode (no issue is opened or closed). |
 | `open-pr` | no | `true` | Master switch for the fix-PR side. Set `false` for issue-only mode. |
 | `pr-label` | no | `dependency-incompatibility-fix` | Label applied to fix PRs; primary key for stale-PR detection. Created automatically. |
@@ -447,7 +450,7 @@ removing the job.
 
 **Path:** `.github/workflows/track-incompatibility.yml`
 
-Thin wrapper around the composite action.  Minimal usage (with PR side):
+Thin wrapper around the composite action. Minimal usage (with PR side):
 
 ```yaml
 name: Track mathlib regression
@@ -505,7 +508,7 @@ Accepts the same inputs as the composite action and forwards them through.
 **Path:** `.github/actions/query-latest`
 
 Lightweight read-only action. Fetches the snapshot and returns the target
-commit for a downstream — without cloning repos, installing elan, or running
+commit for a downstream without cloning repos, installing elan, or running
 hopscotch.
 
 Accepts either a downstream **name key** (e.g. `physlib`) or a **repo slug**
@@ -602,10 +605,10 @@ jobs:
 
 When `query-type: last-good-release`:
 - `rev` is a **tag name** (e.g. `v4.13.0`) that `hopscotch dep` and Lake's `inputRev` both accept directly.
-- `commit` is the resolved SHA, for consumers that need byte-equality comparison against the `rev` field in `lake-manifest.json`.
+- `commit` is the resolved SHA, useful for consumers needing byte-equality comparison against the `rev` field in `lake-manifest.json`.
 - Both fields are empty when no semver release precedes the downstream's current LKG.
 
 **With a GitHub App token** (so bump PRs trigger your downstream's CI and are
 attributed to a bot account rather than `github-actions[bot]`) — see
 [Authentication → Option B](#option-b--github-app-installation-token-recommended-for-ci-on-pr)
-for the full setup and example.
+for setup details and an example.
