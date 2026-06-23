@@ -277,10 +277,11 @@ short-circuits make this safe:
   the branch, the force-push and the `gh pr edit` are both skipped (the
   action surfaces this via `action: up-to-date`).
 
-A caller using a non-default branch on `open-bump-pr` silently loses the
-`bump-to-latest` optimization: the probe 404s on `hopscotch/lkg-bump` and the
-bump runs every tick. That's correct (no false skips) but wasteful at sub-daily
-cadence — stick with the default branch name unless you have a reason not to.
+A caller using a non-default branch on `open-bump-pr` must pass the **same**
+value to `bump-to-latest`'s `branch` input. Otherwise the probe watches the
+wrong branch and the bump runs on every invocation. To use a release-tag bump on
+a dedicated branch (e.g. `hopscotch/tag-bump`), set `branch: hopscotch/tag-bump`
+on both actions.
 
 ---
 
@@ -300,12 +301,22 @@ suggested PR title, body snippet, and git commit message — pass
 **Backwards-move guardrail.** Because the published snapshot can lag a
 downstream's own manifest, the recorded target commit may be *older* than the
 project's current pin (e.g. the project already advanced past it). Before
-building, the action queries the upstream repo's compare API and **fails** if
-the target is `behind` the current pin (an ancestor) or has `diverged` from it,
-rather than rewinding the dependency. Only a forward move (the target is a
-descendant of the current pin) proceeds. A transient/inconclusive compare API
-call is a warning, not a hard stop. This protects every consumer of
-`bump-to-latest`, including the fix-PR side of `track-incompatibility`.
+building, the action queries the upstream repo's compare API and refuses to
+build unless the target is a forward move (a descendant of the current pin). A
+transient/inconclusive compare API call is a warning, not a hard stop. This
+protects every consumer of `bump-to-latest`, including the fix-PR side of
+`track-incompatibility`.
+
+How a non-forward target (`behind`/`diverged`) is handled depends on
+`query-type`, because the *meaning* differs:
+
+- `last-known-good` / `first-known-bad` → **hard fail**. A snapshot older than
+  the project's pin is a genuine anomaly worth surfacing.
+- `last-good-release` → **clean skip** (`skipped=true`, `updated=false`, step
+  succeeds). A release tag behind the pin means the project is already past the
+  latest release — the normal state once a latest-commit bump has been merged.
+  This lets a release-tag bump job call `bump-to-latest` unconditionally
+  without a guard step.
 
 The upstream repo for that compare call (and for the commit-description
 lookups) is taken from the snapshot's top-level `upstream` field — no
@@ -322,6 +333,7 @@ configuration needed.
 | `skip-build` | no | `false` | Set to `true` to only run `lake update` (pin lakefile + manifest) and skip the build. `build-failed` is always `false`; the bump succeeds (`updated=true`) only when `lake update` succeeds — if `lake update` fails the step fails so callers don't commit a half-baked tree. Used by the FKB fix-PR path. |
 | `generate-description` | no | `true` | Set to `false` to skip GitHub API calls; `pr-title`, `bump-description`, and `commit-message` will be empty |
 | `query-type` | no | `last-known-good` | Which commit to bump to: `last-known-good`, `first-known-bad`, or `last-good-release` (semver tag, e.g. `v4.13.0`) |
+| `branch` | no | `hopscotch/lkg-bump` | Bump-PR branch the Step 1.5 probe checks for an already-applied bump. Must match the `branch` passed to `open-bump-pr`, or the probe watches the wrong branch. Unused for `query-type: first-known-bad`. |
 
 ### Outputs
 
@@ -604,6 +616,46 @@ When `query-type: last-good-release`:
 - `rev` is a **tag name** (e.g. `v4.13.0`) that `hopscotch dep` and Lake's `inputRev` both accept directly.
 - `commit` is the resolved SHA, for consumers that need byte-equality comparison against the `rev` field in `lake-manifest.json`.
 - Both fields are empty when no semver release precedes the downstream's current LKG.
+
+**Open a release-tag bump PR alongside the latest-commit one (two-PR setup):**
+
+Run this as a second job next to the regular LKG `bump` job. It opens a PR
+that pins the dependency at the latest mathlib *release tag* on its own branch,
+so a downstream can keep its own `vX.Y.Z` tag at exactly the same upstream
+commit as mathlib's. No guard step is needed: when the latest release is behind
+the current pin (the normal state once you've merged a latest-commit bump),
+`bump-to-latest` returns `skipped=true` and the job stays green.
+
+```yaml
+  bump-tag:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Bump to latest release tag
+        id: bump
+        uses: leanprover-community/downstream-reports/.github/actions/bump-to-latest@main
+        with:
+          query-type: last-good-release
+          branch: hopscotch/tag-bump        # must match open-bump-pr's branch
+
+      - name: Open or update tag bump PR
+        if: steps.bump.outputs.updated == 'true'
+        uses: leanprover-community/downstream-reports/.github/actions/open-bump-pr@main
+        with:
+          branch:         hopscotch/tag-bump  # must match bump-to-latest's branch
+          title:          ${{ steps.bump.outputs.pr-title }}
+          message:        ${{ steps.bump.outputs.bump-description }}
+          commit-message: ${{ steps.bump.outputs.commit-message }}
+```
+
+To avoid two PRs at the same commit when the latest release tag *is* the latest
+commit, gate the latest-commit `bump` job's `open-bump-pr` step on
+`steps.bump.outputs.commit != <release commit>` (look the release commit up with
+`query-latest` + `query-type: last-good-release`).
 
 **With a GitHub App token** (so bump PRs trigger your downstream's CI and are
 attributed to a bot account rather than `github-actions[bot]`) — see
