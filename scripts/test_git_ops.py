@@ -617,7 +617,7 @@ class TestNextReleaseTagAfter:
         """From the v4.12.0 commit there is no later release, so None.
 
         The co-located non-semver tag ``master-2026-04-15`` must not be
-        returned; the finals filter excludes it.
+        returned; the release-tag filter excludes it.
         """
         assert next_release_tag_after(git_fixture.repo, git_fixture.c2) is None
 
@@ -625,11 +625,12 @@ class TestNextReleaseTagAfter:
         """From HEAD (past every tag) there is no next release → None (park)."""
         assert next_release_tag_after(git_fixture.repo, git_fixture.head) is None
 
-    def test_finals_only_skips_prerelease_for_a_later_final(self) -> None:
-        """A ``-rcN`` tag is not a valid stop: from before a prerelease and a
-        following final, the function returns the final ``v4.21.0`` and skips
-        ``v4.21.0-rc1`` (the finals filter leaves only the final, so the result
-        is independent of how git version-sorts a prerelease against its final).
+    def test_prerelease_counts_as_a_release(self) -> None:
+        """A prerelease is a valid next release.  From before both a ``-rc1`` and
+        its final, the next release is the rc (the closest descendant tag), not
+        the final.  Choosing by commit distance keeps this correct regardless of
+        how git version-sorts a prerelease against its final.  From the rc commit
+        itself the next release is the final.
         """
         with tempfile.TemporaryDirectory() as name:
             repo = Path(name)
@@ -645,26 +646,7 @@ class TestNextReleaseTagAfter:
                 elif msg == "c2":
                     _git(repo, "tag", "v4.21.0")
             c0 = _git(repo, "rev-list", "--max-parents=0", "HEAD")
+            rc_commit = _git(repo, "rev-parse", "v4.21.0-rc1^{}")
 
-            assert next_release_tag_after(repo, c0) == "v4.21.0"
-
-    def test_finals_only_false_allows_prerelease(self) -> None:
-        """With only a prerelease present, ``finals_only=True`` finds no release
-        (None) while ``finals_only=False`` returns the prerelease — confirming
-        the filter is what excludes ``-rcN`` tags, not the discovery itself.
-        """
-        with tempfile.TemporaryDirectory() as name:
-            repo = Path(name)
-            run(["git", "init", "-b", "main", str(repo)])
-            _git(repo, "config", "user.email", "test@example.com")
-            _git(repo, "config", "user.name", "Test")
-            for msg in ("c0", "c1", "c2"):
-                (repo / "f.txt").write_text(msg)
-                _git(repo, "add", "f.txt")
-                _git(repo, "commit", "-m", msg)
-                if msg == "c1":
-                    _git(repo, "tag", "v4.21.0-rc1")
-            c0 = _git(repo, "rev-list", "--max-parents=0", "HEAD")
-
-            assert next_release_tag_after(repo, c0) is None
-            assert next_release_tag_after(repo, c0, finals_only=False) == "v4.21.0-rc1"
+            assert next_release_tag_after(repo, c0) == "v4.21.0-rc1"
+            assert next_release_tag_after(repo, rc_commit) == "v4.21.0"

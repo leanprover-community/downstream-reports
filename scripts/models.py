@@ -31,8 +31,9 @@ class DownstreamConfig:
     # Which upstream commit the regression pipeline advances this downstream
     # toward.  "master" (default) targets the tip of the upstream default branch,
     # like the rest of the fleet.  "next-release" bounds the target at the next
-    # semver release tag (finals only, e.g. v4.32.0) that is a descendant of the
-    # downstream's current pin, so the published last-known-good never advances
+    # semver release tag (including prereleases, e.g. v4.32.0 or v4.32.0-rc1)
+    # that is a descendant of the downstream's current pin, so the published
+    # last-known-good never advances
     # past that tag; once the downstream reaches the tag, the next run targets the
     # release after it, and when the pin is already at/after the newest tag the
     # target parks at the pin (no probing until a new release is tagged).
