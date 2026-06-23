@@ -213,14 +213,15 @@ class TestNukeLakedirFlag:
 class TestTargetMode:
     """The ``target_mode`` field (master vs next-release)."""
 
-    def test_default_is_master(self) -> None:
-        """Omitting target_mode leaves the fleet-wide behavior (track master).
+    def test_default_is_next_release(self) -> None:
+        """Omitting target_mode opts into release-stepping (the fleet default):
+        target the next release tag, falling back to master HEAD when caught up.
 
-        A new default of anything else would silently re-point every existing
-        downstream at release tags.
+        Reverting this default to "master" would stop every downstream stepping
+        through release tags, so the default is asserted explicitly.
         """
         config = DownstreamConfig(name="foo", repo="owner/foo", default_branch="main")
-        assert config.target_mode == "master"
+        assert config.target_mode == "next-release"
 
     def test_invalid_value_raises(self) -> None:
         """A typo'd target_mode is rejected at construction, not silently
@@ -233,16 +234,18 @@ class TestTargetMode:
                 target_mode="nextrelease",
             )
 
-    def test_inventory_opt_in_propagates(self, tmp_path: Path) -> None:
-        """``target_mode: "next-release"`` in inventory reaches DownstreamConfig."""
+    def test_inventory_master_override_propagates(self, tmp_path: Path) -> None:
+        """The non-default ``target_mode: "master"`` opt-out reaches
+        DownstreamConfig (testing a non-default value, since "next-release" is
+        now the default and would pass even if propagation were broken)."""
         inventory = {
             "downstreams": [
                 {
-                    "name": "Tracker",
-                    "repo": "owner/Tracker",
+                    "name": "Bleeding",
+                    "repo": "owner/Bleeding",
                     "default_branch": "main",
                     "enabled": True,
-                    "target_mode": "next-release",
+                    "target_mode": "master",
                 },
             ],
         }
@@ -251,6 +254,6 @@ class TestTargetMode:
 
         loaded = load_inventory(path)
 
-        assert loaded["Tracker"].target_mode == "next-release", (
+        assert loaded["Bleeding"].target_mode == "master", (
             "Inventory's `target_mode` override must propagate to DownstreamConfig"
         )

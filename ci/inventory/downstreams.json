@@ -226,8 +226,7 @@
       "default_branch": "main",
       "dependency_name": "mathlib",
       "enabled": true,
-      "watch_manifest": true,
-      "target_mode": "next-release"
+      "watch_manifest": true
     },
     {
       "name": "TauCeti",

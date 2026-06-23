@@ -260,12 +260,11 @@ def main() -> int:
             last_known_good=None,
         )
 
-        # Release-tracking downstreams (target_mode: next-release) advance only
-        # to the next release tag after their current pin, not master HEAD, so
-        # the published last-known-good is bounded by that tag.  The fresh bare
-        # clone above carries mathlib's tags, so no extra fetch is needed.  When
-        # the pin is already at/past the newest tag, park the target at the pin
-        # (nothing to probe until a new release is tagged).
+        # next-release (the default) bounds the target at the next release tag
+        # after the current pin, so the downstream steps through releases and
+        # never jumps over one.  When the pin is already at/past the newest tag,
+        # the target stays at the upstream tip resolved above (track master until
+        # a new tag lands).  The fresh bare clone above carries mathlib's tags.
         if config.target_mode == "next-release" and selection.pinned_commit:
             next_tag = next_release_tag_after(upstream_dir, selection.pinned_commit)
             if next_tag is not None:
@@ -275,10 +274,9 @@ def main() -> int:
                     f"({selection.target_commit[:9]}) instead of {args.upstream_ref} HEAD."
                 )
             else:
-                selection.target_commit = selection.pinned_commit
                 print(
-                    "target_mode=next-release: no release tag after the current "
-                    "pin; parking the target at the pin."
+                    "target_mode=next-release: no release tag after the pin; "
+                    f"tracking {args.upstream_ref} HEAD."
                 )
 
         # Boundary revalidation (probe step) is only sound while the
