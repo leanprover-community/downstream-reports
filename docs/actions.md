@@ -644,10 +644,15 @@ the current pin (normal after a latest-commit bump),
           commit-message: ${{ steps.bump.outputs.commit-message }}
 ```
 
-To avoid two PRs at the same commit when the latest release tag *is* the latest
-commit, gate the latest-commit `bump` job's `open-bump-pr` step on
-`steps.bump.outputs.commit != <release commit>` (look the release commit up with
-`query-latest` + `query-type: last-good-release`).
+**Avoid the rewind.** The release tag is an ancestor of the latest commit, so
+two open PRs merged latest-commit-first rewind the pin when the tag PR merges
+after. Keep one bump PR open at a time, tag first: in the latest-commit `bump`
+job, when the release tag is ahead of the pin (compare the manifest pin against
+the `last-good-release` commit via the upstream compare API), skip the
+latest-commit bump and `gh pr close` its open PR instead of opening one. Merging
+the tag PR advances the pin past the tag; the tag is then no longer ahead and
+the latest-commit PR reappears. The pin only moves forward, regardless of merge
+order.
 
 **With a GitHub App token** (so bump PRs trigger your downstream's CI and are
 attributed to a bot account rather than `github-actions[bot]`) — see
