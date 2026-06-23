@@ -54,6 +54,7 @@ from scripts.git_ops import (
     git_url_from_manifest,
     latest_reachable_tag,
     dependency_files_changed_between,
+    next_release_tag_after,
     repo_clone_source,
     resolve_tag,
     run,
@@ -581,3 +582,89 @@ class TestDependencyFilesChangedBetween:
             )
             is None
         )
+
+
+class TestNextReleaseTagAfter:
+    """Tests for ``next_release_tag_after`` against the shared fixture repo.
+
+    The fixture's tag layout (c0 untagged → c1=v4.11.0 → c2=v4.12.0 +
+    master-2026-04-15 → c3=HEAD untagged) exercises the three states a
+    release-tracking downstream cycles through: pinned before a release,
+    pinned exactly at a release, and pinned past the newest release.
+    """
+
+    def test_before_any_tag_returns_earliest_release(
+        self, git_fixture: _GitFixture
+    ) -> None:
+        """From the untagged root, the next release is the earliest tag (v4.11.0).
+
+        This is the "behind" state: a release-tracker pinned before any release
+        advances to the first release ahead of it, not the latest.
+        """
+        assert next_release_tag_after(git_fixture.repo, git_fixture.c0) == "v4.11.0"
+
+    def test_at_a_release_returns_the_following_release(
+        self, git_fixture: _GitFixture
+    ) -> None:
+        """From the v4.11.0 commit, the next release is v4.12.0, not v4.11.0.
+
+        The tag pointing at the pin itself is skipped — otherwise the project
+        would never advance off the release it already sits on.
+        """
+        assert next_release_tag_after(git_fixture.repo, git_fixture.c1) == "v4.12.0"
+
+    def test_at_newest_release_returns_none(self, git_fixture: _GitFixture) -> None:
+        """From the v4.12.0 commit there is no later release, so None.
+
+        The co-located non-semver tag ``master-2026-04-15`` must not be
+        returned; the finals filter excludes it.
+        """
+        assert next_release_tag_after(git_fixture.repo, git_fixture.c2) is None
+
+    def test_past_all_tags_returns_none(self, git_fixture: _GitFixture) -> None:
+        """From HEAD (past every tag) there is no next release → None (park)."""
+        assert next_release_tag_after(git_fixture.repo, git_fixture.head) is None
+
+    def test_finals_only_skips_prerelease_for_a_later_final(self) -> None:
+        """A ``-rcN`` tag is not a valid stop: from before a prerelease and a
+        following final, the function returns the final ``v4.21.0`` and skips
+        ``v4.21.0-rc1`` (the finals filter leaves only the final, so the result
+        is independent of how git version-sorts a prerelease against its final).
+        """
+        with tempfile.TemporaryDirectory() as name:
+            repo = Path(name)
+            run(["git", "init", "-b", "main", str(repo)])
+            _git(repo, "config", "user.email", "test@example.com")
+            _git(repo, "config", "user.name", "Test")
+            for msg in ("c0", "c1", "c2", "c3"):
+                (repo / "f.txt").write_text(msg)
+                _git(repo, "add", "f.txt")
+                _git(repo, "commit", "-m", msg)
+                if msg == "c1":
+                    _git(repo, "tag", "v4.21.0-rc1")
+                elif msg == "c2":
+                    _git(repo, "tag", "v4.21.0")
+            c0 = _git(repo, "rev-list", "--max-parents=0", "HEAD")
+
+            assert next_release_tag_after(repo, c0) == "v4.21.0"
+
+    def test_finals_only_false_allows_prerelease(self) -> None:
+        """With only a prerelease present, ``finals_only=True`` finds no release
+        (None) while ``finals_only=False`` returns the prerelease — confirming
+        the filter is what excludes ``-rcN`` tags, not the discovery itself.
+        """
+        with tempfile.TemporaryDirectory() as name:
+            repo = Path(name)
+            run(["git", "init", "-b", "main", str(repo)])
+            _git(repo, "config", "user.email", "test@example.com")
+            _git(repo, "config", "user.name", "Test")
+            for msg in ("c0", "c1", "c2"):
+                (repo / "f.txt").write_text(msg)
+                _git(repo, "add", "f.txt")
+                _git(repo, "commit", "-m", msg)
+                if msg == "c1":
+                    _git(repo, "tag", "v4.21.0-rc1")
+            c0 = _git(repo, "rev-list", "--max-parents=0", "HEAD")
+
+            assert next_release_tag_after(repo, c0) is None
+            assert next_release_tag_after(repo, c0, finals_only=False) == "v4.21.0-rc1"

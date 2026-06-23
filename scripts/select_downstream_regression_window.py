@@ -29,8 +29,10 @@ from scripts.git_ops import (
     describe_commits,
     is_strict_ancestor,
     dependency_files_changed_between,
+    next_release_tag_after,
     parent_commit,
     resolve_search_base_commit,
+    resolve_tag,
     resolve_upstream_target,
     select_search_base_from_candidates,
 )
@@ -257,6 +259,27 @@ def main() -> int:
             upstream_dir=upstream_dir,
             last_known_good=None,
         )
+
+        # Release-tracking downstreams (target_mode: next-release) advance only
+        # to the next release tag after their current pin, not master HEAD, so
+        # the published last-known-good is bounded by that tag.  The fresh bare
+        # clone above carries mathlib's tags, so no extra fetch is needed.  When
+        # the pin is already at/past the newest tag, park the target at the pin
+        # (nothing to probe until a new release is tagged).
+        if config.target_mode == "next-release" and selection.pinned_commit:
+            next_tag = next_release_tag_after(upstream_dir, selection.pinned_commit)
+            if next_tag is not None:
+                selection.target_commit = resolve_tag(upstream_dir, next_tag)
+                print(
+                    f"target_mode=next-release: bounding target at {next_tag} "
+                    f"({selection.target_commit[:9]}) instead of {args.upstream_ref} HEAD."
+                )
+            else:
+                selection.target_commit = selection.pinned_commit
+                print(
+                    "target_mode=next-release: no release tag after the current "
+                    "pin; parking the target at the pin."
+                )
 
         # Boundary revalidation (probe step) is only sound while the
         # downstream's dependency context is unchanged; compare the

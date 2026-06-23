@@ -35,6 +35,8 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from scripts.models import DownstreamConfig, load_inventory
@@ -205,4 +207,50 @@ class TestNukeLakedirFlag:
 
         assert loaded["BrauerGroup"].nuke_lakedir, (
             "Inventory's `nuke_lakedir: true` must propagate to DownstreamConfig"
+        )
+
+
+class TestTargetMode:
+    """The ``target_mode`` field (master vs next-release)."""
+
+    def test_default_is_master(self) -> None:
+        """Omitting target_mode leaves the fleet-wide behavior (track master).
+
+        A new default of anything else would silently re-point every existing
+        downstream at release tags.
+        """
+        config = DownstreamConfig(name="foo", repo="owner/foo", default_branch="main")
+        assert config.target_mode == "master"
+
+    def test_invalid_value_raises(self) -> None:
+        """A typo'd target_mode is rejected at construction, not silently
+        treated as 'master' (which would hide the misconfiguration)."""
+        with pytest.raises(ValueError, match="invalid target_mode"):
+            DownstreamConfig(
+                name="foo",
+                repo="owner/foo",
+                default_branch="main",
+                target_mode="nextrelease",
+            )
+
+    def test_inventory_opt_in_propagates(self, tmp_path: Path) -> None:
+        """``target_mode: "next-release"`` in inventory reaches DownstreamConfig."""
+        inventory = {
+            "downstreams": [
+                {
+                    "name": "Tracker",
+                    "repo": "owner/Tracker",
+                    "default_branch": "main",
+                    "enabled": True,
+                    "target_mode": "next-release",
+                },
+            ],
+        }
+        path = tmp_path / "inventory.json"
+        path.write_text(json.dumps(inventory))
+
+        loaded = load_inventory(path)
+
+        assert loaded["Tracker"].target_mode == "next-release", (
+            "Inventory's `target_mode` override must propagate to DownstreamConfig"
         )
