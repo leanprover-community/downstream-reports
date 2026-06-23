@@ -59,6 +59,19 @@ inputs:
       watches the wrong branch and the bump rebuilds on every run. Unused for
       query-type=first-known-bad (the probe is disabled there). Defaults to
       open-bump-pr's own default.
+  stop-on-release-tag:
+    required: false
+    default: 'false'
+    description: >
+      When 'true', account for the latest semver release reachable from the LKG:
+        last-known-good  — if that release is ahead of the current pin, bump to
+                           the release tag instead of the LKG commit (stop at the
+                           release rather than jumping past it). Once the project
+                           reaches the release, later runs resume bumping to LKG.
+        first-known-bad  — skip the bump (skipped=true) when the FKB is beyond
+                           that release, since a regression past the release a
+                           release-tracking project pins is not yet relevant.
+      No effect for query-type=last-good-release.
 
 outputs:
   rev:
@@ -113,6 +126,112 @@ runs:
       run: bash "${{ github.action_path }}/../../scripts/fetch-latest.sh"
 
     # ------------------------------------------------------------------
+    # Step 1.2: Read the current dependency pin from lake-manifest.json.
+    # Read before the probe/compare so Step 1.3 can decide the target.
+    # ------------------------------------------------------------------
+    - name: Read current pin from lake-manifest.json
+      id: read-manifest
+      shell: bash
+      env:
+        PROJECT_DIR: ${{ inputs.project-dir }}
+        DEPENDENCY_NAME: ${{ inputs.dependency-name }}
+      run: |
+        set -euo pipefail
+
+        MANIFEST="$PROJECT_DIR/lake-manifest.json"
+        if [ ! -f "$MANIFEST" ]; then
+          echo "Error: $MANIFEST not found in project-dir '$PROJECT_DIR'."
+          exit 1
+        fi
+
+        CURRENT_PIN=$(jq -r --arg dep "$DEPENDENCY_NAME" \
+          '.packages[] | select(.name == $dep) | .rev' \
+          "$MANIFEST")
+
+        if [ -z "$CURRENT_PIN" ]; then
+          echo "Error: dependency '$DEPENDENCY_NAME' not found in $MANIFEST."
+          echo "Packages present:"
+          jq -r '.packages[].name' "$MANIFEST"
+          exit 1
+        fi
+
+        echo "Current pin for '$DEPENDENCY_NAME': $CURRENT_PIN"
+        echo "current_pin=$CURRENT_PIN" >> "$GITHUB_OUTPUT"
+
+    # ------------------------------------------------------------------
+    # Step 1.3: Resolve the effective target.
+    #
+    # By default this is just the snapshot target for `query-type`. With
+    # `stop-on-release-tag: true` on a last-known-good bump, if the latest
+    # release reachable from the LKG is *ahead* of the current pin, target
+    # that release tag instead of the LKG commit — so the project stops at
+    # the release rather than jumping past it. Everything downstream (probe,
+    # compare, guardrail, descriptions, build, outputs) keys off this.
+    #
+    # A failed/inconclusive compare keeps the snapshot target (forward to the
+    # LKG), so a transient API error never blocks an otherwise-valid bump.
+    # ------------------------------------------------------------------
+    - name: Resolve the effective target
+      id: resolve-target
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        QUERY_TYPE: ${{ inputs.query-type }}
+        STOP_ON_RELEASE_TAG: ${{ inputs.stop-on-release-tag }}
+        RAW_REV: ${{ steps.fetch-snapshot.outputs.rev }}
+        RAW_COMMIT: ${{ steps.fetch-snapshot.outputs.commit }}
+        RELEASE_TAG: ${{ steps.fetch-snapshot.outputs.release_tag }}
+        RELEASE_COMMIT: ${{ steps.fetch-snapshot.outputs.release_commit }}
+        CURRENT_PIN: ${{ steps.read-manifest.outputs.current_pin }}
+        SNAPSHOT_UPSTREAM: ${{ steps.fetch-snapshot.outputs.upstream }}
+      run: |
+        set -euo pipefail
+
+        EFF_REV="$RAW_REV"
+        EFF_COMMIT="$RAW_COMMIT"
+        UP="${SNAPSHOT_UPSTREAM:-leanprover-community/mathlib4}"
+
+        if [ "$STOP_ON_RELEASE_TAG" = "true" ] \
+            && [ "$QUERY_TYPE" = "last-known-good" ] \
+            && [ -n "$RELEASE_COMMIT" ] \
+            && [ "$RELEASE_COMMIT" != "$RAW_COMMIT" ]; then
+          # Divert to the release tag when it is ahead of the current pin, so the
+          # project stops at the release instead of jumping past it to the LKG.
+          status=$(gh api "repos/${UP}/compare/${CURRENT_PIN}...${RELEASE_COMMIT}" \
+            --jq '.status' 2>/dev/null || echo "error")
+          echo "stop-on-release-tag (LKG): compare pin ${CURRENT_PIN}...release ${RELEASE_COMMIT} => ${status}"
+          if [ "$status" = "ahead" ]; then
+            echo "Release ${RELEASE_TAG} is ahead of the pin; stopping there instead of ${RAW_REV}."
+            EFF_REV="$RELEASE_TAG"
+            EFF_COMMIT="$RELEASE_COMMIT"
+          else
+            echo "Release ${RELEASE_TAG} is not ahead of the pin (${status}); targeting ${RAW_REV}."
+          fi
+
+        elif [ "$STOP_ON_RELEASE_TAG" = "true" ] \
+            && [ "$QUERY_TYPE" = "first-known-bad" ] \
+            && [ -n "$RAW_COMMIT" ] \
+            && [ -n "$RELEASE_COMMIT" ]; then
+          # A release-tracking project only cares about regressions at or before
+          # the latest release. If the FKB is *beyond* that release, clear the
+          # target so the bump skips (compare treats an empty target as a no-op).
+          status=$(gh api "repos/${UP}/compare/${RELEASE_COMMIT}...${RAW_COMMIT}" \
+            --jq '.status' 2>/dev/null || echo "error")
+          echo "stop-on-release-tag (FKB): compare release ${RELEASE_COMMIT}...FKB ${RAW_COMMIT} => ${status}"
+          if [ "$status" = "ahead" ]; then
+            echo "FKB ${RAW_COMMIT} is beyond the latest release ${RELEASE_TAG}; not relevant to a release-tracking project. Skipping."
+            EFF_REV=""
+            EFF_COMMIT=""
+          else
+            echo "FKB ${RAW_COMMIT} is at or before the latest release ${RELEASE_TAG} (${status}); proceeding."
+          fi
+        fi
+
+        echo "Effective target: ${EFF_REV:-<none>} (${EFF_COMMIT:-<none>})"
+        echo "rev=$EFF_REV"       >> "$GITHUB_OUTPUT"
+        echo "commit=$EFF_COMMIT" >> "$GITHUB_OUTPUT"
+
+    # ------------------------------------------------------------------
     # Step 1.5: If an open PR on the LKG bump branch already pins the
     # dependency at the target, short-circuit the bump (Compare pins
     # below). Avoids redundant lake builds on sub-daily reruns while a
@@ -131,14 +250,14 @@ runs:
       id: probe-ref
       if: >-
         inputs.query-type != 'first-known-bad'
-        && steps.fetch-snapshot.outputs.commit != ''
+        && steps.resolve-target.outputs.commit != ''
       shell: bash
       env:
         GH_TOKEN: ${{ github.token }}
         # Bump-PR branch to probe. Override via the `branch` input to keep it
         # in sync with open-bump-pr (e.g. a release-tag bump on `hopscotch/tag-bump`).
         REF: ${{ inputs.branch }}
-        TARGET_COMMIT: ${{ steps.fetch-snapshot.outputs.commit }}
+        TARGET_COMMIT: ${{ steps.resolve-target.outputs.commit }}
         DEPENDENCY_NAME: ${{ inputs.dependency-name }}
         PROJECT_DIR: ${{ inputs.project-dir }}
       run: |
@@ -231,38 +350,6 @@ runs:
         fi
 
     # ------------------------------------------------------------------
-    # Step 2: Read the current mathlib pin from lake-manifest.json.
-    # ------------------------------------------------------------------
-    - name: Read current pin from lake-manifest.json
-      id: read-manifest
-      shell: bash
-      env:
-        PROJECT_DIR: ${{ inputs.project-dir }}
-        DEPENDENCY_NAME: ${{ inputs.dependency-name }}
-      run: |
-        set -euo pipefail
-
-        MANIFEST="$PROJECT_DIR/lake-manifest.json"
-        if [ ! -f "$MANIFEST" ]; then
-          echo "Error: $MANIFEST not found in project-dir '$PROJECT_DIR'."
-          exit 1
-        fi
-
-        CURRENT_PIN=$(jq -r --arg dep "$DEPENDENCY_NAME" \
-          '.packages[] | select(.name == $dep) | .rev' \
-          "$MANIFEST")
-
-        if [ -z "$CURRENT_PIN" ]; then
-          echo "Error: dependency '$DEPENDENCY_NAME' not found in $MANIFEST."
-          echo "Packages present:"
-          jq -r '.packages[].name' "$MANIFEST"
-          exit 1
-        fi
-
-        echo "Current pin for '$DEPENDENCY_NAME': $CURRENT_PIN"
-        echo "current_pin=$CURRENT_PIN" >> "$GITHUB_OUTPUT"
-
-    # ------------------------------------------------------------------
     # Step 3: Compare pins. Skip the build steps when the bump is already
     # done — either because project-dir's manifest is at the target, or
     # because the bump-PR branch's manifest is (per the step 1.5 probe).
@@ -271,15 +358,15 @@ runs:
       id: compare
       shell: bash
       env:
-        TARGET_REV: ${{ steps.fetch-snapshot.outputs.rev }}
-        TARGET_COMMIT: ${{ steps.fetch-snapshot.outputs.commit }}
+        TARGET_REV: ${{ steps.resolve-target.outputs.rev }}
+        TARGET_COMMIT: ${{ steps.resolve-target.outputs.commit }}
         CURRENT_PIN: ${{ steps.read-manifest.outputs.current_pin }}
         REF_MATCH: ${{ steps.probe-ref.outputs.match }}
       run: |
         # Use TARGET_COMMIT (SHA) for the equality check so that tag names
         # compare correctly against the SHA stored in lake-manifest.json.
         if [ -z "$TARGET_REV" ]; then
-          echo "Target commit is empty (no active entry for this query-type) — nothing to do."
+          echo "No target to bump to (no entry for this query-type, or cleared by stop-on-release-tag) — nothing to do."
           echo "skipped=true" >> "$GITHUB_OUTPUT"
         elif [ "${REF_MATCH:-}" = "true" ]; then
           echo "Bump-PR branch already pins the dependency at target $TARGET_REV — nothing to do."
@@ -353,8 +440,8 @@ runs:
         GH_TOKEN: ${{ github.token }}
         UPSTREAM: ${{ steps.resolve-upstream.outputs.effective }}
         CURRENT_PIN: ${{ steps.read-manifest.outputs.current_pin }}
-        TARGET_COMMIT: ${{ steps.fetch-snapshot.outputs.commit }}
-        TARGET_REV: ${{ steps.fetch-snapshot.outputs.rev }}
+        TARGET_COMMIT: ${{ steps.resolve-target.outputs.commit }}
+        TARGET_REV: ${{ steps.resolve-target.outputs.rev }}
         QUERY_TYPE: ${{ inputs.query-type }}
       run: |
         set -euo pipefail
@@ -414,8 +501,8 @@ runs:
       shell: bash
       env:
         GH_TOKEN: ${{ github.token }}
-        TARGET_COMMIT: ${{ steps.fetch-snapshot.outputs.rev }}
-        TARGET_SHA: ${{ steps.fetch-snapshot.outputs.commit }}
+        TARGET_COMMIT: ${{ steps.resolve-target.outputs.rev }}
+        TARGET_SHA: ${{ steps.resolve-target.outputs.commit }}
         CURRENT_PIN: ${{ steps.read-manifest.outputs.current_pin }}
         DEPENDENCY_NAME: ${{ inputs.dependency-name }}
         DEPENDENCY_REPO: ${{ steps.resolve-upstream.outputs.effective }}
@@ -537,7 +624,7 @@ runs:
       env:
         DEPENDENCY_NAME: ${{ inputs.dependency-name }}
         CURRENT_PIN: ${{ steps.read-manifest.outputs.current_pin }}
-        TARGET_COMMIT: ${{ steps.fetch-snapshot.outputs.rev }}
+        TARGET_COMMIT: ${{ steps.resolve-target.outputs.rev }}
         PROJECT_DIR: ${{ inputs.project-dir }}
         GITHUB_TOKEN: ${{ github.token }}
         HOPSCOTCH_SKIP_BUILD: ${{ inputs.skip-build }}
@@ -616,8 +703,8 @@ runs:
       if: always()
       shell: bash
       env:
-        TARGET_REV: ${{ steps.fetch-snapshot.outputs.rev }}
-        TARGET_COMMIT: ${{ steps.fetch-snapshot.outputs.commit }}
+        TARGET_REV: ${{ steps.resolve-target.outputs.rev }}
+        TARGET_COMMIT: ${{ steps.resolve-target.outputs.commit }}
         CURRENT_PIN: ${{ steps.read-manifest.outputs.current_pin }}
         SKIPPED: ${{ steps.compare.outputs.skipped }}
         GUARD_SKIPPED: ${{ steps.guard.outputs.skipped }}

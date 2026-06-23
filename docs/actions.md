@@ -327,6 +327,7 @@ taken from the snapshot's top-level `upstream` field — no configuration needed
 | `generate-description` | no | `true` | Set to `false` to skip GitHub API calls; `pr-title`, `bump-description`, and `commit-message` will be empty |
 | `query-type` | no | `last-known-good` | Which commit to bump to: `last-known-good`, `first-known-bad`, or `last-good-release` (semver tag, e.g. `v4.13.0`) |
 | `branch` | no | `hopscotch/lkg-bump` | Bump-PR branch the Step 1.5 probe checks for an already-applied bump. Must match the `branch` passed to `open-bump-pr`, or the probe watches the wrong branch. Unused for `query-type: first-known-bad`. |
+| `stop-on-release-tag` | no | `false` | Account for the latest release reachable from the LKG. **`last-known-good`**: if that release is ahead of the pin, bump to the release tag instead of the LKG commit (stop at the release rather than past it); after reaching it, later runs resume bumping to the LKG. **`first-known-bad`**: skip (`skipped=true`) when the FKB is beyond that release, since a post-release regression isn't relevant to a release-tracking project. No effect for `last-good-release`. |
 
 ### Outputs
 
@@ -607,6 +608,39 @@ When `query-type: last-good-release`:
 - `rev` is a **tag name** (e.g. `v4.13.0`) that `hopscotch dep` and Lake's `inputRev` both accept directly.
 - `commit` is the resolved SHA, useful for consumers needing byte-equality comparison against the `rev` field in `lake-manifest.json`.
 - Both fields are empty when no semver release precedes the downstream's current LKG.
+
+**Stop at the latest release tag (single-call, forward-only):**
+
+A maintainer who wants their own `vX.Y.Z` to pin the same upstream commit as
+the upstream's `vX.Y.Z` can run one `last-known-good` bump with
+`stop-on-release-tag: true`. When the latest release reachable from the LKG is
+ahead of the current pin, the action bumps to that release tag; otherwise it
+bumps to the LKG commit as usual. So the project stops at the release rather
+than jumping past it, and once it is at the release a later run advances to the
+LKG. One branch, one PR, and the pin only moves forward.
+
+```yaml
+      - name: Bump (stop at a release tag if one is ahead)
+        id: bump
+        uses: leanprover-community/downstream-reports/.github/actions/bump-to-latest@main
+        with:
+          stop-on-release-tag: true
+
+      - name: Open or update PR
+        if: steps.bump.outputs.updated == 'true'
+        uses: leanprover-community/downstream-reports/.github/actions/open-bump-pr@main
+        with:
+          title:          ${{ steps.bump.outputs.pr-title }}
+          message:        ${{ steps.bump.outputs.bump-description }}
+          commit-message: ${{ steps.bump.outputs.commit-message }}
+```
+
+The action's `rev`/`commit` outputs report whichever target it chose, so the PR
+title and body reflect the release tag or the commit accordingly.
+
+The same flag on a `first-known-bad` bump skips (`skipped=true`) when the FKB is
+beyond the latest release, so a regression that exists only on commits past the
+release the project pins does not open a fix PR.
 
 **With a GitHub App token** (so bump PRs trigger your downstream's CI and are
 attributed to a bot account rather than `github-actions[bot]`) — see
