@@ -92,6 +92,11 @@ case "$RESOLVED_TYPE" in
     COMMIT_LABEL="LKG commit" ;;
 esac
 
+# Always expose the latest reachable release tag + its commit, so the action can
+# pin to the tag name when a bump lands exactly on it. Empty when none.
+RELEASE_TAG=$(printf '%s' "$ENTRY" | jq -r '.last_good_release // empty')
+RELEASE_COMMIT=$(printf '%s' "$ENTRY" | jq -r '.last_good_release_commit // empty')
+
 echo "Downstream:   $DS_NAME"
 echo "Repo:         $REPO"
 echo "Dependency:   $DEP_NAME"
@@ -105,3 +110,5 @@ echo "downstream_name=$DS_NAME"       >> "$GITHUB_OUTPUT"
 echo "repo=$REPO"                     >> "$GITHUB_OUTPUT"
 echo "dependency_name=$DEP_NAME"      >> "$GITHUB_OUTPUT"
 echo "upstream=$UPSTREAM"             >> "$GITHUB_OUTPUT"
+echo "release_tag=$RELEASE_TAG"       >> "$GITHUB_OUTPUT"
+echo "release_commit=$RELEASE_COMMIT" >> "$GITHUB_OUTPUT"
