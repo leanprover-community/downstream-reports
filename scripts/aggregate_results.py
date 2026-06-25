@@ -401,10 +401,34 @@ def _pin_crossed_fkb(
     )
 
 
+def _target_behind_fkb(
+    fkb: str,
+    target: str | None,
+    distances: dict[tuple[str, str], int | None],
+) -> bool:
+    """Return True when this run's target sits strictly behind (or diverged from) fkb.
+
+    A PASSED result at such a target is not a recovery: the run never built the
+    known-bad commit, so it carries no evidence the break is fixed (e.g. a
+    release-stepped target that lands on a release older than the stored FKB).
+
+    Uses the (target, fkb) compare: ``ahead_by`` counts commits reachable from
+    fkb but not from target, so a positive value means fkb has history target
+    lacks — target is behind it or has diverged.  Requires positive evidence;
+    an absent or failed lookup returns False so a flaky compare API never blocks
+    a genuine recovery (and the common target-past-fkb case stays unaffected).
+    """
+    if target is None or target == fkb:
+        return False
+    dist = distances.get((target, fkb))
+    return dist is not None and dist > 0
+
+
 def apply_result(
     current: DownstreamStatusRecord | None,
     result: ValidationResult,
     pin_past_fkb: bool = False,
+    target_before_fkb: bool = False,
 ) -> tuple[DownstreamStatusRecord, EpisodeState]:
     """Apply one validation result to the persisted regression state.
 
@@ -414,6 +438,13 @@ def apply_result(
     GitHub compare API) that the downstream's current pin is strictly ahead of
     the stored ``first_known_bad_commit``.  In that case a continuing FAILED
     result opens a new episode rather than prolonging the old one.
+
+    ``target_before_fkb`` should be True when the run's ``target_commit`` sits
+    behind (or diverged from) the stored ``first_known_bad_commit`` — the run
+    never reached the known break.  A PASSED result is then *not* a recovery:
+    the failing episode and its boundary are preserved verbatim.  This guards
+    any producer that can target below the break (e.g. release-stepping), so a
+    pass on an older release can't be misread as the regression clearing.
 
     Adjacency invariant: when this function returns a record with both
     ``last_known_good_commit`` and ``first_known_bad_commit`` set, the LKG is
@@ -440,6 +471,17 @@ def apply_result(
         ), EpisodeState.ERROR
 
     if result.outcome is Outcome.PASSED:
+        if was_failing and target_before_fkb and current is not None:
+            # A pass at a target behind the known break is not a recovery — the
+            # run never built the breaking commit.  Preserve the failing episode
+            # and its (already-adjacent) boundary verbatim; no state transition,
+            # no alert.
+            return DownstreamStatusRecord(
+                last_known_good_commit=current.last_known_good_commit,
+                first_known_bad_commit=current.first_known_bad_commit,
+                pinned_commit=pin,
+                downstream_commit=ds_commit,
+            ), EpisodeState.FAILING
         episode_state = EpisodeState.RECOVERED if was_failing else EpisodeState.PASSING
         return DownstreamStatusRecord(
             last_known_good_commit=result.target_commit,
@@ -803,35 +845,46 @@ def main() -> int:
     # tested_commit_details is not stored; keep it alongside for the markdown report.
     tested_details_per_record: list[list[dict[str, Any]]] = []
 
-    # Pre-fetch commit distances for (stored_fkb, pin) pairs — both the prior run's
-    # pin and the current run's pin — consumed by _pin_crossed_fkb() below.
-    fkb_pin_pairs: set[tuple[str, str]] = set()
+    # Pre-fetch commit distances for FKB-relative pairs, consumed below:
+    #   (fkb, pin)    — both prior and current pin → _pin_crossed_fkb (did the
+    #                   pin advance past the break, opening a new episode?)
+    #   (target, fkb) — _target_behind_fkb (did this run's target reach the
+    #                   break, or pass on something older that isn't a recovery?)
+    fkb_pairs: set[tuple[str, str]] = set()
     for loaded in loaded_results:
         r = loaded.result
         prior = prior_statuses.get(r.downstream)
         if prior and prior.first_known_bad_commit:
             fkb = prior.first_known_bad_commit
             if r.pinned_commit and r.pinned_commit != fkb:
-                fkb_pin_pairs.add((fkb, r.pinned_commit))
+                fkb_pairs.add((fkb, r.pinned_commit))
             if prior.pinned_commit and prior.pinned_commit != fkb:
-                fkb_pin_pairs.add((fkb, prior.pinned_commit))
-    fkb_pin_distances: dict[tuple[str, str], int | None] = {}
-    if fkb_pin_pairs:
-        print(f"Checking if pins have advanced past stored FKB for {len(fkb_pin_pairs)} pair(s)…")
-        fkb_pin_distances = fetch_commit_distances(fkb_pin_pairs, args.upstream, args.github_token)
+                fkb_pairs.add((fkb, prior.pinned_commit))
+            if r.target_commit and r.target_commit != fkb:
+                fkb_pairs.add((r.target_commit, fkb))
+    fkb_distances: dict[tuple[str, str], int | None] = {}
+    if fkb_pairs:
+        print(f"Checking pin/target position relative to stored FKB for {len(fkb_pairs)} pair(s)…")
+        fkb_distances = fetch_commit_distances(fkb_pairs, args.upstream, args.github_token)
 
     for loaded in sorted(loaded_results, key=lambda item: item.result.downstream):
         result = loaded.result
         prior = prior_statuses.get(result.downstream)
         pin_past_fkb = False
+        target_before_fkb = False
         if prior and prior.first_known_bad_commit:
             pin_past_fkb = _pin_crossed_fkb(
                 fkb=prior.first_known_bad_commit,
                 prior_pin=prior.pinned_commit,
                 current_pin=result.pinned_commit,
-                distances=fkb_pin_distances,
+                distances=fkb_distances,
             )
-        updated, episode_state = apply_result(prior, result, pin_past_fkb=pin_past_fkb)
+            target_before_fkb = _target_behind_fkb(
+                prior.first_known_bad_commit, result.target_commit, fkb_distances,
+            )
+        updated, episode_state = apply_result(
+            prior, result, pin_past_fkb=pin_past_fkb, target_before_fkb=target_before_fkb,
+        )
         updated_statuses[result.downstream] = updated
         record = RunResultRecord(
             upstream=args.upstream,

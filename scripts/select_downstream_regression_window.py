@@ -80,6 +80,33 @@ def boundary_bisect_overdue(
     return current - moment > timedelta(days=max_age_days)
 
 
+def should_release_step(
+    *,
+    target_mode: str,
+    pinned_commit: str | None,
+    previous: DownstreamStatusRecord | None,
+) -> bool:
+    """Return whether the next-release target bound should apply this run.
+
+    Release-stepping advances a *catching-up* downstream one release tag at a
+    time instead of jumping to the upstream tip.  It is suppressed when:
+
+    - the mode is not ``"next-release"`` (``"master"`` opts out, tracking the tip);
+    - the pin could not be resolved (nothing to step from); or
+    - a known-bad boundary is active.  A failing downstream is parked behind a
+      break, so it must keep targeting the tip until it recovers — bounding the
+      target back to a release that predates the break would pass and be misread
+      as a recovery, discarding the stored boundary.  (``apply_result``'s
+      ``target_before_fkb`` guard is the backstop for any producer that still
+      targets below the break.)
+    """
+    if target_mode != "next-release":
+        return False
+    if not pinned_commit:
+        return False
+    return previous is None or previous.first_known_bad_commit is None
+
+
 # ---------------------------------------------------------------------------
 # Skip heuristic: already-good
 # ---------------------------------------------------------------------------
@@ -265,7 +292,12 @@ def main() -> int:
         # never jumps over one.  When the pin is already at/past the newest tag,
         # the target stays at the upstream tip resolved above (track master until
         # a new tag lands).  The fresh bare clone above carries mathlib's tags.
-        if config.target_mode == "next-release" and selection.pinned_commit:
+        # Suppressed while a known-bad boundary is active — see should_release_step.
+        if should_release_step(
+            target_mode=config.target_mode,
+            pinned_commit=selection.pinned_commit,
+            previous=previous,
+        ):
             next_tag = next_release_tag_after(upstream_dir, selection.pinned_commit)
             if next_tag is not None:
                 selection.target_commit = resolve_tag(upstream_dir, next_tag)
@@ -278,6 +310,11 @@ def main() -> int:
                     "target_mode=next-release: no release tag after the pin; "
                     f"tracking {args.upstream_ref} HEAD."
                 )
+        elif config.target_mode == "next-release" and previous and previous.first_known_bad_commit:
+            print(
+                "target_mode=next-release: active known-bad boundary; tracking "
+                f"{args.upstream_ref} HEAD until the downstream recovers."
+            )
 
         # Boundary revalidation (probe step) is only sound while the
         # downstream's dependency context is unchanged; compare the

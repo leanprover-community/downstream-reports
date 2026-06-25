@@ -24,7 +24,8 @@ just the current outcome. It is what tells you whether something changed.
 | `passing` | passing | passed | Healthy; no action needed. |
 | `new_failure` | passing | failed | A regression was introduced. Investigate `first_known_bad`. |
 | `failing` | failing | failed | Ongoing regression. `first_known_bad` is preserved from the initial episode. |
-| `recovered` | failing | passed | The downstream builds again; the episode is closed. |
+| `failing` | failing | passed (target behind the break) | Not a recovery: the run targeted a commit older than `first_known_bad` (e.g. release-stepping landed on an earlier release), which predates the regression, so the pass proves nothing. The episode and its boundary are preserved. |
+| `recovered` | failing | passed (target at/past the break) | The downstream builds again at or beyond `first_known_bad`; the episode is closed. |
 | `error` | (any) | error | Transient problem; episode state is unchanged. Check the validate job log. |
 
 **`error` results are silent with respect to the state machine.** If a

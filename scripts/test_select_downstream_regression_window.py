@@ -42,6 +42,7 @@ from scripts.models import Outcome
 from scripts.select_downstream_regression_window import (
     boundary_bisect_overdue,
     build_parser as select_build_parser,
+    should_release_step,
     try_skip_already_good,
 )
 from scripts.storage import DownstreamStatusRecord
@@ -226,6 +227,54 @@ class TestBoundaryBisectOverdue:
         assert (
             boundary_bisect_overdue("2026-06-08T00:00:00", max_age_days=7, now=self._NOW)
             is False
+        )
+
+
+class TestShouldReleaseStep:
+    """``should_release_step`` — when the next-release target bound applies.
+
+    The active-FKB suppression is the load-bearing case: without it a failing
+    downstream pinned behind a break would re-target a release older than its
+    stored FKB, pass, and be misread as RECOVERED — clearing the boundary.
+    """
+
+    def test_next_release_with_clean_pin_steps(self) -> None:
+        """Scenario: next-release mode, a resolved pin, no active FKB → step."""
+        assert should_release_step(
+            target_mode="next-release", pinned_commit="pin", previous=None,
+        )
+
+    def test_passing_episode_still_steps(self) -> None:
+        """Scenario: a prior record with no FKB (passing) does not block stepping."""
+        prev = DownstreamStatusRecord(last_known_good_commit="good")
+        assert should_release_step(
+            target_mode="next-release", pinned_commit="pin", previous=prev,
+        )
+
+    def test_active_known_bad_boundary_suppresses_stepping(self) -> None:
+        """Scenario: a stored FKB parks the downstream on the tip — no release bound.
+
+        This is the guard against the spurious recovery: keep targeting the tip
+        so the failing episode keeps being exercised instead of passing on an
+        older release.
+        """
+        prev = DownstreamStatusRecord(
+            last_known_good_commit="good", first_known_bad_commit="bad",
+        )
+        assert not should_release_step(
+            target_mode="next-release", pinned_commit="pin", previous=prev,
+        )
+
+    def test_master_mode_never_steps(self) -> None:
+        """Scenario: the "master" opt-out always tracks the tip."""
+        assert not should_release_step(
+            target_mode="master", pinned_commit="pin", previous=None,
+        )
+
+    def test_unresolved_pin_does_not_step(self) -> None:
+        """Scenario: no pin to step from → fall back to the tip."""
+        assert not should_release_step(
+            target_mode="next-release", pinned_commit=None, previous=None,
         )
 
 

@@ -61,6 +61,7 @@ from scripts.aggregate_results import (
     Outcome,
     ValidationResult,
     _pin_crossed_fkb,
+    _target_behind_fkb,
     apply_result,
     find_non_adjacent_endpoints,
     load_culprit_log_text,
@@ -346,6 +347,44 @@ class TestApplyResult:
         assert updated.last_known_good_commit == "now_good"
         assert updated.first_known_bad_commit is None
 
+    def test_failing_plus_passed_below_fkb_is_not_recovery(self) -> None:
+        """Scenario: a pass at a target behind the known break is not a recovery.
+
+        Release-stepping (or any producer) can target a release older than the
+        stored FKB; that build passes because it predates the break, but it is
+        no evidence the regression cleared.  ``target_before_fkb=True`` must keep
+        the episode FAILING with its (LKG, FKB) boundary preserved verbatim — not
+        clear the FKB and emit a spurious RECOVERED.
+        """
+        current = DownstreamStatusRecord(
+            last_known_good_commit="good_old",
+            first_known_bad_commit="was_bad",
+        )
+        result = _make_result(
+            outcome=Outcome.PASSED, target_commit="older_release", pinned_commit="new_pin",
+        )
+        updated, state = apply_result(current, result, target_before_fkb=True)
+        assert state == EpisodeState.FAILING
+        assert updated.first_known_bad_commit == "was_bad"
+        assert updated.last_known_good_commit == "good_old"
+        # Pin/downstream still advance to the current run's values.
+        assert updated.pinned_commit == "new_pin"
+        assert updated.downstream_commit == "ds_head"
+
+    def test_passed_below_fkb_without_active_episode_is_passing(self) -> None:
+        """Scenario: target_before_fkb only suppresses recovery within a failing episode.
+
+        With no stored FKB there is nothing to be "behind", so the flag is inert
+        and a pass is an ordinary PASSING — guarding against the flag leaking the
+        episode into a non-failing record.
+        """
+        current = DownstreamStatusRecord(last_known_good_commit="good_old")
+        result = _make_result(outcome=Outcome.PASSED, target_commit="now_good")
+        updated, state = apply_result(current, result, target_before_fkb=True)
+        assert state == EpisodeState.PASSING
+        assert updated.last_known_good_commit == "now_good"
+        assert updated.first_known_bad_commit is None
+
     # -- error handling --
 
     def test_error_preserves_passing_state(self) -> None:
@@ -571,6 +610,40 @@ class TestPinCrossedFkb:
         """Scenario: prior pin was exactly at FKB; current pin is ahead — new episode."""
         distances = self._distances({("fkb", "new_pin"): 2})
         assert _pin_crossed_fkb("fkb", "fkb", "new_pin", distances)
+
+
+class TestTargetBehindFkb:
+    """Tests for the _target_behind_fkb helper that guards the recovery transition.
+
+    Pair orientation is (target, fkb): ``ahead_by`` counts commits in fkb absent
+    from target, so a positive value means the target lacks history fkb has — it
+    is behind the break (or diverged) and a pass there is not a recovery.
+    """
+
+    def _distances(self, mapping: dict[tuple[str, str], int]) -> dict[tuple[str, str], int | None]:
+        return dict(mapping)
+
+    def test_returns_true_when_target_is_behind_fkb(self) -> None:
+        """Scenario: target predates the break (fkb has commits target lacks)."""
+        distances = self._distances({("old_release", "fkb"): 4})
+        assert _target_behind_fkb("fkb", "old_release", distances)
+
+    def test_returns_false_when_target_is_past_fkb(self) -> None:
+        """Scenario: target descends from the break, so nothing in fkb is missing."""
+        distances = self._distances({("head", "fkb"): 0})
+        assert not _target_behind_fkb("fkb", "head", distances)
+
+    def test_returns_false_when_target_equals_fkb(self) -> None:
+        """Scenario: target is exactly the break — it reached it, not behind it."""
+        assert not _target_behind_fkb("fkb", "fkb", {})
+
+    def test_returns_false_when_target_is_none(self) -> None:
+        """Scenario: no target in result."""
+        assert not _target_behind_fkb("fkb", None, {})
+
+    def test_returns_false_when_api_distance_missing(self) -> None:
+        """Scenario: compare API failed; require positive evidence, so never block recovery."""
+        assert not _target_behind_fkb("fkb", "old_release", {})
 
 
 class TestTruncateLogText:
