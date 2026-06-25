@@ -171,6 +171,21 @@ def fetch_commit_titles(
     return cache
 
 
+# A release tag looks like v4.32.0 or v4.32.0-rc1.  When a commit carries both
+# a release tag and a co-located daily tag (master-YYYY-MM-DD, nightly-*), prefer
+# the release name so a release-stepped target renders as e.g. "v4.32.0".
+_RELEASE_TAG_RE = re.compile(r"^v\d+\.\d+\.\d+(-rc\d+)?$")
+
+
+def _prefer_release_tag(current: str | None, candidate: str) -> str:
+    """Pick the tag to keep for a SHA, preferring a release-shaped name."""
+    if current is None:
+        return candidate
+    if _RELEASE_TAG_RE.match(candidate) and not _RELEASE_TAG_RE.match(current):
+        return candidate
+    return current
+
+
 def fetch_tags(
     repo: str,
     token: str | None,
@@ -178,8 +193,10 @@ def fetch_tags(
 ) -> dict[str, str]:
     """Return {full_sha: tag_name} for the most recent tags in *repo*.
 
-    Fetches up to *max_pages* × 100 tags (newest first).  On any error the
-    partial result collected so far is returned so callers degrade gracefully.
+    Fetches up to *max_pages* × 100 tags (newest first).  When a commit has
+    several tags, a release-shaped one is preferred (see ``_prefer_release_tag``).
+    On any error the partial result collected so far is returned so callers
+    degrade gracefully.
     """
     headers: dict[str, str] = {
         "Accept": "application/vnd.github+json",
@@ -201,8 +218,8 @@ def fetch_tags(
             for tag in data:
                 sha = tag.get("commit", {}).get("sha")
                 name = tag.get("name")
-                if sha and name and sha not in result:
-                    result[sha] = name
+                if sha and name:
+                    result[sha] = _prefer_release_tag(result.get(sha), name)
         except Exception as exc:
             print(f"  warning: could not fetch tags for {repo} (page {page}): {exc}")
             break
@@ -290,8 +307,9 @@ def git_tag_map(repo_dir: Path) -> dict[str, str]:
     """Return {commit_sha: tag_name} from a local clone.
 
     Uses ``git for-each-ref`` sorted by descending semver so the newest tag
-    wins when multiple tags point to the same commit — matching the behaviour
-    of ``fetch_tags`` which iterates pages newest-first.
+    wins when multiple tags point to the same commit, except that a release-
+    shaped tag is preferred over a co-located non-release tag (see
+    ``_prefer_release_tag``).  Matches ``fetch_tags``.
     """
     # Each output line: "tag_name full_sha deref_sha_or_empty"
     # Tag names and SHAs contain no spaces, so space-splitting is safe.
@@ -318,8 +336,8 @@ def git_tag_map(repo_dir: Path) -> dict[str, str]:
         obj_sha = parts[1]
         deref_sha = parts[2] if len(parts) >= 3 else ""
         commit_sha = deref_sha or obj_sha
-        if commit_sha and name and commit_sha not in result:
-            result[commit_sha] = name
+        if commit_sha and name:
+            result[commit_sha] = _prefer_release_tag(result.get(commit_sha), name)
     return result
 
 
@@ -351,8 +369,8 @@ def git_signed_distance(repo_dir: Path, base: str, head: str) -> int | None:
 COL_DESC = {
     "downstream":        "Project tested updating the Mathlib dependency\n(click the row for run details)",
     "compatibility":     "Compatibility of the downstream with the target Mathlib revision\n(based on the result of the latest validation run)",
-    "target":            "Mathlib revision targeted in the latest validation run",
-    "last_known_good":   "Latest Mathlib revision compatible with the downstream",
+    "target":            "Mathlib revision targeted in the latest validation run.\nBy default this is the next release tag after the pinned revision; once the\ndownstream is caught up to the newest release it is the latest master commit.",
+    "last_known_good":   "Latest Mathlib revision known compatible with the downstream\n(up to the revision targeted this run)",
     "last_good_release": "Latest Mathlib semver release tag compatible with the downstream",
     "first_known_bad":   "Earliest Mathlib revision incompatible with the downstream\n(always the commit immediately after 'last known good')",
     "pinned":            "Mathlib revision in the downstream's lake manifest",

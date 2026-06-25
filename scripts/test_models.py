@@ -35,6 +35,8 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from scripts.models import DownstreamConfig, load_inventory
@@ -205,4 +207,53 @@ class TestNukeLakedirFlag:
 
         assert loaded["BrauerGroup"].nuke_lakedir, (
             "Inventory's `nuke_lakedir: true` must propagate to DownstreamConfig"
+        )
+
+
+class TestTargetMode:
+    """The ``target_mode`` field (master vs next-release)."""
+
+    def test_default_is_next_release(self) -> None:
+        """Omitting target_mode opts into release-stepping (the fleet default):
+        target the next release tag, falling back to master HEAD when caught up.
+
+        Reverting this default to "master" would stop every downstream stepping
+        through release tags, so the default is asserted explicitly.
+        """
+        config = DownstreamConfig(name="foo", repo="owner/foo", default_branch="main")
+        assert config.target_mode == "next-release"
+
+    def test_invalid_value_raises(self) -> None:
+        """A typo'd target_mode is rejected at construction, not silently
+        treated as 'master' (which would hide the misconfiguration)."""
+        with pytest.raises(ValueError, match="invalid target_mode"):
+            DownstreamConfig(
+                name="foo",
+                repo="owner/foo",
+                default_branch="main",
+                target_mode="nextrelease",
+            )
+
+    def test_inventory_master_override_propagates(self, tmp_path: Path) -> None:
+        """The non-default ``target_mode: "master"`` opt-out reaches
+        DownstreamConfig (testing a non-default value, since "next-release" is
+        now the default and would pass even if propagation were broken)."""
+        inventory = {
+            "downstreams": [
+                {
+                    "name": "Bleeding",
+                    "repo": "owner/Bleeding",
+                    "default_branch": "main",
+                    "enabled": True,
+                    "target_mode": "master",
+                },
+            ],
+        }
+        path = tmp_path / "inventory.json"
+        path.write_text(json.dumps(inventory))
+
+        loaded = load_inventory(path)
+
+        assert loaded["Bleeding"].target_mode == "master", (
+            "Inventory's `target_mode` override must propagate to DownstreamConfig"
         )
