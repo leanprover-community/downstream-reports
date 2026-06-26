@@ -67,28 +67,28 @@ inputs:
     default: 'true'
     description: >
       After the bump, run `hopscotch fix apply` so the PR carries the import
-      repairs hopscotch recorded, not just the rev bump. Like the tool's own
-      default, this applies BOTH the failure-boundary `proposedFixes` (for an
-      FKB bump, overlaid from the regression probe's published wide-range
-      bisection) AND deprecated-import advisories (imports routing through a live
-      `deprecated_module` shim that breaks at the upstream cleanup). Runs on any
-      query-type. Set `no-advisories` to restrict it to the boundary repairs.
-      Best-effort: if no fixes were recorded, the installed hopscotch lacks the
-      `fix` subcommand, or the apply fails, the bump PR opens with the rev bump
-      alone. The applied rewrites are validated by the PR's own CI.
-  no-advisories:
+      repairs hopscotch recorded, not just the rev bump. By default this applies
+      only the failure-boundary `proposedFixes` — for an FKB bump, the repair for
+      the boundary, overlaid from the regression probe's published wide-range
+      bisection (an LKG bump is green, so it has none and this is a no-op). Runs
+      on any query-type. Set `apply-advisories` to also migrate deprecated-import
+      advisories. Best-effort: if no fixes were recorded, the installed hopscotch
+      lacks the `fix` subcommand, or the apply fails, the bump PR opens with the
+      rev bump alone. The applied rewrites are validated by the PR's own CI.
+  apply-advisories:
     required: false
     default: 'false'
     description: >
-      Pass `--no-advisories` to `hopscotch fix apply`, restricting it to the
-      boundary-repairing `proposedFixes` and skipping deprecated-import
-      advisories (mirrors hopscotch's own flag; advisories apply by default).
-      Set this for an LKG bump you want to keep "mergeable as-is": advisory
-      rewrites are not covered by the bump's green build, so suppressing them
-      preserves that property. (Advisories are read from the bump's own
-      results.json — detected at the commit just bumped to — so they are
-      complete only when that bump built; under skip-build only the
-      tree-resolved subset is found.) No effect when `apply-fixes` is false.
+      Opt-in hygiene pass: also migrate deprecated-but-working imports — ones
+      that route through a live `deprecated_module` shim and break at the
+      upstream cleanup. Off by default because these imports build today, so the
+      rewrites are NOT covered by an LKG bump's green build and would undercut an
+      LKG PR's "mergeable as-is" guarantee; enable it for an explicit hygiene
+      pass, ideally where the resulting PR's CI runs (a GitHub App / PAT token,
+      not the default `GITHUB_TOKEN`). Advisories are read from the bump's own
+      results.json (detected at the commit just bumped to), so they are complete
+      only when that bump built; under skip-build only the tree-resolved subset
+      is found. No effect when `apply-fixes` is false.
 
 outputs:
   rev:
@@ -717,7 +717,7 @@ runs:
         # Empty when the fetch step was skipped (non-FKB bump): only an FKB bump
         # overlays published proposedFixes; otherwise the scaffold is used as-is.
         PUBLISHED_FIXES: ${{ steps.fetch-fixes.outputs.proposed_fixes_file }}
-        NO_ADVISORIES: ${{ inputs.no-advisories }}
+        APPLY_ADVISORIES: ${{ inputs.apply-advisories }}
       run: |
         set +e
         SCAFFOLD="$RUNNER_TEMP/bump-results.json"
@@ -729,10 +729,11 @@ runs:
         FIX_SUMMARY=""
 
         # hopscotch's `fix apply` migrates deprecated-import advisories by
-        # default; pass --no-advisories only when the caller opted out.
-        # (Boundary proposedFixes apply regardless of this flag.)
+        # default; we keep them OFF unless the caller opts in, so a default bump
+        # applies only the failure-boundary proposedFixes.  (Those apply
+        # regardless of this flag.)
         FLAGS=()
-        if [ "$NO_ADVISORIES" = "true" ]; then
+        if [ "$APPLY_ADVISORIES" != "true" ]; then
           FLAGS+=(--no-advisories)
         fi
 
@@ -779,10 +780,15 @@ runs:
           fi
         fi
 
+        # Random, unguessable heredoc delimiter (GitHub's guidance for untrusted
+        # multiline values): a fixed marker that the tool output happened to
+        # contain on its own line would close the block early and corrupt
+        # GITHUB_OUTPUT.
+        DELIM="HOPSCOTCH_EOF_$(openssl rand -hex 16 2>/dev/null || echo "${RANDOM}${RANDOM}${RANDOM}")"
         {
-          echo "fix_summary<<__HOPSCOTCH_EOF__"
+          echo "fix_summary<<$DELIM"
           printf '%s\n' "$FIX_SUMMARY"
-          echo "__HOPSCOTCH_EOF__"
+          echo "$DELIM"
         } >> "$GITHUB_OUTPUT"
         set -e
 
