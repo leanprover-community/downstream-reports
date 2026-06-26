@@ -147,7 +147,7 @@ FKB_COMMIT=$(get first_known_bad_commit)
 LKG_COMMIT=$(get last_known_good_commit)
 
 # Automated-fix arrays → files (verbatim; default to [] when the field is
-# absent, e.g. a snapshot written before runs schema v2).
+# absent, e.g. a snapshot written before these fields were added).
 printf '%s' "$ENTRY" | jq -c '.proposed_fixes // []' > "$PROPOSED_FIXES_FILE"
 printf '%s' "$ENTRY" | jq -c '.deprecated_imports // []' > "$DEPRECATED_IMPORTS_FILE"
 PROPOSED_FIXES_COUNT=$(jq 'length' "$PROPOSED_FIXES_FILE" 2>/dev/null || echo 0)
