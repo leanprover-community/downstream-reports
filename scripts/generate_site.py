@@ -1418,50 +1418,45 @@ def render_window_strip(
     lkg = r.get("last_known_good")
     fkb = r.get("first_known_bad")
     target = r.get("target_commit")
+    age = r.get("age_commits")
+    bump = r.get("bump_commits")
 
-    # (sha, label, kind) in history order; kind drives node/segment colours.
+    # Each node's distance from the pinned commit (pinned = 0). LKG and FKB are
+    # an adjacent commit pair, so FKB is one past LKG. The target can land
+    # anywhere — including behind LKG/FKB, when a release-stepped target is
+    # older than the stored break — so order nodes by these positions rather
+    # than assuming pinned ≤ LKG ≤ FKB ≤ target.
+    fkb_pos = (bump + 1) if bump is not None else None
     candidates = [
-        (pin, "pinned", "good"),
-        (lkg, "last known good", "good"),
-        (fkb, "first known bad", "bad"),
-        (target, "target", "good" if outcome == "passed" else "bad"),
+        (pin, "pinned", "good", 0),
+        (lkg, "last known good", "good", bump),
+        (fkb, "first known bad", "bad", fkb_pos),
+        (target, "target", "good" if outcome == "passed" else "bad", age),
     ]
+    candidates = [c for c in candidates if c[0]]
+    # Sort by position when every position is known; otherwise keep the listed
+    # (history-assumed) order. Stable, so equal positions keep their order.
+    if candidates and all(c[3] is not None for c in candidates):
+        candidates.sort(key=lambda c: c[3])
+
     nodes: list[dict] = []
-    for sha, label, kind in candidates:
-        if not sha:
-            continue
+    for sha, label, kind, pos in candidates:
         if nodes and nodes[-1]["sha"] == sha:
             nodes[-1]["labels"].append(label)
             if kind == "bad":
                 nodes[-1]["kind"] = "bad"
             continue
-        nodes.append({"sha": sha, "labels": [label], "kind": kind})
+        nodes.append({"sha": sha, "labels": [label], "kind": kind, "pos": pos})
     if len(nodes) < 2:
         return ""
 
-    age = r.get("age_commits")
-    bump = r.get("bump_commits")
-
     def seg_distance(prev: dict, node: dict) -> int | None:
-        """Commit count between two strip nodes, derived from the row's
-        age/bump counters (LKG and FKB are adjacent, so FKB→target is
-        age − bump − 1)."""
-        proles, nroles = set(prev["labels"]), set(node["labels"])
-        if "pinned" in proles and "last known good" in nroles:
-            return bump
-        if "first known bad" in proles and "target" in nroles:
-            if age is None:
-                return None
-            d = age - (bump if bump is not None else 0) - 1
-            return d if d >= 0 else None
-        if "pinned" in proles and "target" in nroles:
-            return age
-        if "last known good" in proles and "target" in nroles:
-            if age is None or bump is None:
-                return None
-            d = age - bump
-            return d if d >= 0 else None
-        return None
+        """Commit count between two strip nodes, from their pin-relative
+        positions. None when a position is unknown."""
+        if prev["pos"] is None or node["pos"] is None:
+            return None
+        d = node["pos"] - prev["pos"]
+        return d if d >= 0 else None
 
     def seg_with_note(seg_cls: str, prev: dict, node: dict, extra_note: str | None = None) -> str:
         dist = seg_distance(prev, node)
@@ -1533,8 +1528,11 @@ def render_chart(
     """Render the advance map: one track per downstream on a shared
     commits-behind-target axis (log scale).
 
-    Because the axis is shared and monotonic, projects broken by the same
-    Mathlib commit have their first-known-bad markers vertically aligned.
+    Each row's distances are measured from its own target, which can differ
+    per downstream (release-stepping), so first-known-bad markers only align
+    across rows that happen to share a target. A target that sits behind a
+    known break gives that row commits *beyond* its target (negative distance);
+    the axis is extended so the furthest such commit is the right edge.
     """
 
     def ct(sha: str | None) -> str | None:
@@ -1559,13 +1557,26 @@ def render_chart(
 
     dmax = max(r["age_commits"] for r in included) or 1
 
+    # A release-stepped target can sit behind a known break, so some rows have a
+    # commit *beyond* their target (a negative "commits behind target"). Extend
+    # the axis to the furthest-ahead commit across all rows so those points fit;
+    # the right edge becomes that commit rather than always the target. dmin == 0
+    # (no beyond-target points) reduces to the old target-at-the-right-edge axis.
+    dmin = 0
+    for _r in included:
+        _b = _r.get("bump_commits")
+        if _r.get("outcome") == "failed" and _r.get("first_known_bad") and _b is not None:
+            dmin = min(dmin, _r["age_commits"] - _b - 1)
+    span = (dmax - dmin) or 1
+
     # Both scales are rendered: log positions inline (the default), linear in
-    # data attributes that the scale toggle swaps in client-side.
+    # data attributes that the scale toggle swaps in client-side. d is shifted by
+    # dmin so the furthest-ahead commit is the right edge and log1p stays defined.
     def x_log(d: int) -> float:
-        return 100.0 * (1.0 - math.log1p(d) / math.log1p(dmax))
+        return 100.0 * (1.0 - math.log1p(d - dmin) / math.log1p(span))
 
     def x_lin(d: int) -> float:
-        return 100.0 * (1.0 - d / dmax)
+        return 100.0 * (1.0 - (d - dmin) / span)
 
     _TICK_STEPS = (1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000, 50000)
 
@@ -1585,7 +1596,9 @@ def render_chart(
     lin_ticks = list(range(0, dmax + 1, lin_step))
 
     def axis_span(c: int, pos: float, scale_cls: str) -> str:
-        cls = f"{scale_cls} tick-end" if c == 0 else scale_cls
+        # "target" (c == 0) is the right edge only when nothing reaches beyond a
+        # target (dmin == 0); otherwise the furthest-ahead commit is the edge.
+        cls = f"{scale_cls} tick-end" if (c == 0 and dmin == 0) else scale_cls
         label = "target" if c == 0 else f"-{c}"
         return f'<span class="{cls}" style="left:{pos:.2f}%">{label}</span>'
 
@@ -1621,7 +1634,12 @@ def render_chart(
         title = ct(sha)
         if title:
             parts.append(title)
-        parts.append(f"{d} commit{'s' if d != 1 else ''} behind target" if d else "= target")
+        if not d:
+            parts.append("= target")
+        elif d > 0:
+            parts.append(f"{d} commit{'s' if d != 1 else ''} behind target")
+        else:
+            parts.append(f"{-d} commit{'s' if d != -1 else ''} beyond target")
         tip = "&#10;".join(esc(p) for p in parts)
         url = f"{GITHUB}/{UPSTREAM_REPO}/commit/{sha}"
         # The visual shape lives in an inner span so the FKB diamond's
@@ -1655,13 +1673,13 @@ def render_chart(
         pin = r.get("pinned_commit")
         lkg = r.get("last_known_good")
         fkb = r.get("first_known_bad")
-        d_lkg = max(age - bump, 0) if bump is not None else None
+        d_lkg = (age - bump) if bump is not None else None
 
         track = ['<div class="chart-baseline"></div>', gridlines]
         if outcome == "passed":
             track.append(bar("chart-bar-good", age, 0))
         elif outcome == "failed" and lkg and fkb and d_lkg is not None:
-            d_fkb = max(d_lkg - 1, 0)
+            d_fkb = d_lkg - 1
             track.append(bar("chart-bar-good", age, d_lkg))
             track.append(bar("chart-bar-bad", d_fkb, 0))
         elif outcome == "failed":
@@ -1674,7 +1692,7 @@ def render_chart(
         if lkg and d_lkg:
             track.append(marker("lkg", "last known good", lkg, d_lkg))
         if outcome == "failed" and fkb and d_lkg is not None:
-            track.append(marker("fkb", "first known bad", fkb, max(d_lkg - 1, 0)))
+            track.append(marker("fkb", "first known bad", fkb, d_lkg - 1))
 
         compatibility_search = {"passed": "compatible", "failed": "incompatible"}.get(outcome, outcome)
         filter_tokens = " ".join(filter(None, [
@@ -1738,8 +1756,8 @@ def render_chart(
         '<summary>Advance map — how far behind each project stands, and how far it can safely move</summary>'
         '<div class="chart-wrap" data-scale="log">'
         '<div class="chart-head">'
-        '<div class="chart-caption">Commits behind the target Mathlib revision (the right edge is the target). '
-        'Projects broken by the same commit have their first-known-bad markers vertically aligned.</div>'
+        '<div class="chart-caption">Commits relative to each project&#39;s target Mathlib revision (the <strong>target</strong> tick). '
+        'The right edge is the furthest commit any project reached, so a break beyond a release-stepped target sits to the right of its target.</div>'
         f'{scale_toggle}'
         '</div>'
         f'{axis_html}'
