@@ -64,17 +64,19 @@ inputs:
       open-bump-pr's own default.
   apply-fixes:
     required: false
-    default: 'true'
+    default: 'false'
     description: >
       After the bump, run `hopscotch fix apply` so the PR carries the fixes
-      hopscotch recorded for the bump, not just the rev bump. Applies everything
-      hopscotch proposes — the failure-boundary fixes (for an FKB bump, overlaid
-      from the regression probe's published wide-range bisection) and the
-      deprecation advisories. Set `no-advisories` to restrict it to the
-      boundary fixes. Runs on any query-type. Best-effort: if no fixes were
-      recorded, the installed hopscotch lacks the `fix` subcommand, or the apply
-      fails, the bump PR opens with the rev bump alone. The applied changes are
-      validated by the PR's own CI.
+      hopscotch recorded for the bump, not just the rev bump. When enabled,
+      applies everything hopscotch proposes — the failure-boundary fixes (for an
+      FKB bump, overlaid from the regression probe's published wide-range
+      bisection) and the deprecation advisories; set `no-advisories` to restrict
+      it to the boundary fixes. Runs on any query-type. Best-effort: if no fixes
+      were recorded, the installed hopscotch lacks the `fix` subcommand, or the
+      apply fails, the bump PR opens with the rev bump alone; the applied changes
+      are validated by the PR's own CI. **Off by default** during rollout — the
+      fixes are published to the snapshot regardless, so opt a downstream in
+      (`apply-fixes: true`) once they start showing up there.
   no-advisories:
     required: false
     default: 'false'
