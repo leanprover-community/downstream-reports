@@ -39,10 +39,8 @@ from scripts.storage import (
     create_backend,
 )
 
-# Stays at 1 across the proposed_fixes addition: it is optional and additive, and
-# the evolution rule (see docs/internal/lkg-pipeline.md) reserves a version bump
-# for breaking changes (field removal/rename) — a consumer that ignores unknown
-# keys reads the extended snapshot unchanged.
+# Bumped only for breaking changes (field removal/rename); optional additive
+# fields don't move it (see the evolution rule in docs/internal/lkg-pipeline.md).
 SCHEMA_VERSION = 1
 
 # GitHub base URL used when constructing source run URLs from a run ID.

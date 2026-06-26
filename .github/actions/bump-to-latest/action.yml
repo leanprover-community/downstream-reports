@@ -74,9 +74,9 @@ inputs:
       it to the boundary fixes. Runs on any query-type. Best-effort: if no fixes
       were recorded, the installed hopscotch lacks the `fix` subcommand, or the
       apply fails, the bump PR opens with the rev bump alone; the applied changes
-      are validated by the PR's own CI. **Off by default** during rollout — the
-      fixes are published to the snapshot regardless, so opt a downstream in
-      (`apply-fixes: true`) once they start showing up there.
+      are validated by the PR's own CI. Off by default; the fixes publish to the
+      snapshot regardless of this flag, so set it `true` per downstream to apply
+      them.
   no-advisories:
     required: false
     default: 'false'
@@ -760,13 +760,11 @@ runs:
           fi
 
           if [ -n "$MERGED" ] && [ -f "$MERGED" ]; then
-            # Let hopscotch decide what applies and report it.  Capture its
-            # output verbatim.  Whether it actually changed anything is decided
-            # by inspecting the working tree before/after — NOT by parsing the
-            # tool's prose: keying the merge-safety message off an undocumented,
-            # version-specific output string is brittle.  The downstream `.lake`
-            # (where `fix apply` writes its backups) is gitignored, so a porcelain
-            # diff isolates exactly the changes `fix apply` made on top of the rev bump.
+            # Let hopscotch apply what it will and capture its output verbatim.
+            # A working-tree diff decides whether anything changed: the downstream
+            # `.lake` (where `fix apply` writes its backups) is gitignored, so the
+            # porcelain diff isolates exactly the changes `fix apply` made on top
+            # of the rev bump — the signal that drives the merge-safety message.
             TREE_BEFORE=$(git -C "$PROJECT_DIR" status --porcelain 2>/dev/null | sort)
             hopscotch fix apply --from "$MERGED" --project-dir "$PROJECT_DIR" "${FLAGS[@]}" 2>&1 | tee "$LOG"
             rc=${PIPESTATUS[0]}

@@ -176,10 +176,9 @@ class RunResultRecord:
     # itself (`culprit_log_text` above) is held only in memory for the in-process
     # markdown report and Zulip alert payload — never written to SQL.
     culprit_log_artifact_url: str | None = None
-    # Hopscotch boundary fixes (results.json `proposedFixes`; field landed in
-    # schema v3), stored verbatim as JSON in one TEXT column — hopscotch's own
-    # ProposedFix objects (see models.ValidationResult), treated opaquely.  Empty
-    # list when the probe binary predates schema v3.
+    # Hopscotch boundary fixes (results.json `proposedFixes`), stored verbatim as
+    # JSON text — hopscotch's own ProposedFix objects (see models.ValidationResult),
+    # treated opaquely.  Empty list when none were recorded.
     proposed_fixes: list[dict[str, Any]] = field(default_factory=list)
 
 
@@ -553,10 +552,10 @@ def _parse_dt(value: str) -> Any:
 
 
 def _loads_json_list(value: Any) -> list:
-    """Decode a JSON-array TEXT column, tolerating NULL/empty as ``[]``.
+    """Decode a JSON-array TEXT column, treating NULL or empty as ``[]``.
 
-    Used for the ``run_result`` automated-fix columns, which a row written
-    before the columns existed (or by a tool predating schema v3) leaves NULL.
+    Used for ``run_result.proposed_fixes``, where a NULL (a row with no recorded
+    fixes) reads back as an empty list.
     """
     if not value:
         return []

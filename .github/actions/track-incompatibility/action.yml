@@ -119,8 +119,8 @@ inputs:
       Forwarded to bump-to-latest: when 'true', run `hopscotch fix apply` on the
       first-known-bad bump so the fix PR carries the fixes hopscotch recommends
       (overlaid from the published wide-range proposals) plus deprecation
-      advisories, not just the rev bump.  Off by default during rollout — opt a
-      downstream in once its fixes show up in the runs snapshot.
+      advisories, not just the rev bump.  Off by default; set it 'true' per
+      downstream to apply them.
   no-advisories:
     required: false
     default: 'false'

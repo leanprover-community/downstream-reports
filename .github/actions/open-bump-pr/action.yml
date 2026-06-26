@@ -240,8 +240,9 @@ runs:
             fi
             printf -- '---\n\n'
             if [ -n "${FIX_SUMMARY:-}" ]; then
-              # `hopscotch fix` changed files on top of the verified bump; the
-              # green build did NOT cover them, so the as-is claim no longer holds.
+              # `hopscotch fix` changed files on top of the verified bump that the
+              # green build did not cover, so this branch drops the "mergeable
+              # as-is" framing and asks for CI.
               printf 'This is an automated dependency bump to the latest commit this project is known to build against (its **last-known-good** commit). `lake build` succeeded against the new commit before this PR was opened.\n\n'
               printf 'On top of the bump, `hopscotch fix` applied the following changes — these were **not** covered by that build, so run your CI on this PR before merging:\n\n'
               printf '%s' "$FIX_SUMMARY" | bash "${{ github.action_path }}/../../scripts/md-fenced-block.sh"

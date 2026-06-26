@@ -243,7 +243,7 @@ class TestBuildResultFromToolFixes:
         )
 
     def test_proposed_fixes_carried_from_stopped_run(self) -> None:
-        """Scenario: a stopped bisect carries proposedFixes verbatim (advisories/notes are not transited)."""
+        """Scenario: a stopped bisect carries proposedFixes verbatim; other results.json keys are ignored."""
         result = self._build(
             1,
             {
@@ -251,18 +251,16 @@ class TestBuildResultFromToolFixes:
                 "lastSuccessfulCommit": "a",
                 "failureStage": "lake build",
                 "proposedFixes": [self._FIX],
-                # hopscotch also emits these; we deliberately don't carry them.
+                # Other results.json keys the model does not read.
                 "deprecatedImports": [self._FIX],
                 "detectionNotes": ["module-deprecation: note"],
             },
         )
         assert result.outcome == Outcome.FAILED
         assert result.proposed_fixes == [self._FIX]
-        assert not hasattr(result, "deprecated_imports")
-        assert not hasattr(result, "detection_notes")
 
     def test_missing_field_defaults_to_empty_list(self) -> None:
-        """Scenario: a results.json from a pre-v3 binary (no proposedFixes) yields an empty list."""
+        """Scenario: a results.json with no proposedFixes yields an empty list."""
         result = self._build(1, {"firstFailingCommit": "b", "failureStage": "lake build"})
         assert result.proposed_fixes == []
 

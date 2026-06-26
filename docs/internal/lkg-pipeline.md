@@ -224,26 +224,20 @@ best-effort (null when the underlying DB rows are missing).
 for the `result-<name>` artifact uploaded by the probe job, not a stored
 field.
 
-**The `proposed_fixes` field** (added without a `schema_version` bump — it is
-optional and additive, per the evolution rule above; carried verbatim from
-hopscotch's `results.json` `proposedFixes`, which landed in schema v3; see
-hopscotch `docs/results.schema.json`):
+**`proposed_fixes`** — the fixes hopscotch recorded for the failure boundary,
+carried verbatim from its `results.json` `proposedFixes` (see hopscotch
+`docs/results.schema.json`):
 
-- `proposed_fixes` — the fixes hopscotch recorded for the failure boundary,
-  recorded only on a stopped (failing) run, i.e. at the FKB a bisect found.
-  Each is hopscotch's `ProposedFix` object (`{fixId, oldModule, newModules,
-  partialFix, note}`), treated opaquely — we are fix-type-agnostic. The
-  `bump-to-latest` action applies these to the FKB fix PR via `hopscotch fix
-  apply --from` (see `docs/actions.md`).
+- Populated only on a stopped (failing) run, i.e. at the FKB a bisect found;
+  `[]` otherwise. Each entry is hopscotch's `ProposedFix` object (`{fixId,
+  oldModule, newModules, partialFix, note}`), treated opaquely — the snapshot is
+  fix-type-agnostic. The `bump-to-latest` action applies these to the FKB fix PR
+  via `hopscotch fix apply --from` (see `docs/actions.md`).
 
-We carry only this — the one field the bump action consumes. hopscotch also
-emits `deprecatedImports` (advisories) and `detectionNotes`, but the bump
-applies advisories from its own run (commit-specific) and nothing consumes the
-notes, so neither is transited.
-
-The field defaults to `[]` (empty when the probe binary predates hopscotch
-schema v3, or no fixes were found). Being additive, it leaves `schema_version`
-at 1: a consumer that ignores unknown keys reads the extended snapshot unchanged.
+It is the only fix data the snapshot carries: the bump applies deprecation
+advisories from its own run, so it has no need for hopscotch's other result
+arrays. The field is optional and additive, so `schema_version` stays 1 (a
+consumer that ignores unknown keys is unaffected).
 
 ---
 

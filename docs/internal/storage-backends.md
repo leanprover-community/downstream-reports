@@ -77,16 +77,15 @@ create_schema(create_engine("postgresql://user:pass@host/dbname"))
 `create_schema` is idempotent — safe to re-run on a database that is already
 provisioned. It creates *missing tables* but does **not** add columns to tables
 that already exist (`create_all` only emits `CREATE TABLE … IF NOT EXISTS`). New
-columns on an existing production table need a manual `ALTER`. The
-`proposed_fixes` column was added this way; on a database provisioned before it,
-run once:
+columns on an existing production table need a manual `ALTER`. For
+`run_result.proposed_fixes`:
 
 ```sql
 ALTER TABLE run_result ADD COLUMN IF NOT EXISTS proposed_fixes TEXT NOT NULL DEFAULT '[]';
 ```
 
 The `DEFAULT '[]'` mirrors the SQLAlchemy `server_default`, so the backfill is
-free and pre-existing rows read back as empty lists.
+free and existing rows read back as empty lists.
 
 ### Schema
 

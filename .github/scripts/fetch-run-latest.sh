@@ -141,8 +141,8 @@ EPISODE_STATE=$(get episode_state)
 FKB_COMMIT=$(get first_known_bad_commit)
 LKG_COMMIT=$(get last_known_good_commit)
 
-# Boundary fixes → file (verbatim; default to [] when the field is absent,
-# e.g. a snapshot written before it was added).
+# Boundary fixes → file (verbatim; default to [] when the snapshot entry has no
+# proposed_fixes).
 printf '%s' "$ENTRY" | jq -c '.proposed_fixes // []' > "$PROPOSED_FIXES_FILE"
 PROPOSED_FIXES_COUNT=$(jq 'length' "$PROPOSED_FIXES_FILE" 2>/dev/null || echo 0)
 

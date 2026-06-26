@@ -208,11 +208,10 @@ class ValidationResult:
     pinned_commit: str | None = None
     search_base_not_ancestor: bool = False
     # The fixes hopscotch recorded for the boundary, carried verbatim from its
-    # results.json `proposedFixes` (fields landed in schema v3) so the bump
-    # action can overlay them onto its own run and `hopscotch fix apply`.  Each
-    # entry keeps hopscotch's own object shape and is treated opaquely — we are
-    # fix-type-agnostic; we only transit what the apply step consumes.  Empty for
-    # tool versions predating schema v3 (older binaries degrade silently).
+    # results.json `proposedFixes` so the bump action can overlay them onto its
+    # own run and `hopscotch fix apply`.  Each entry keeps hopscotch's own object
+    # shape and is treated opaquely (fix-type-agnostic).  Empty when none were
+    # recorded.
     proposed_fixes: list[dict[str, Any]] = field(default_factory=list)
 
     def to_json(self) -> dict[str, Any]:
