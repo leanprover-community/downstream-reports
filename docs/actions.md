@@ -329,7 +329,7 @@ taken from the snapshot's top-level `upstream` field — no configuration needed
 | `downstream` | no | `${{ github.repository }}` | Downstream name key or repo slug (`owner/repo`). Auto-detected by presence of `/`. Defaults to the repository running this action. |
 | `project-dir` | no | `.` | Path to the downstream project root |
 | `dependency-name` | no | `mathlib` | Name of the dependency in the lakefile |
-| `hopscotch-version` | no | `v2.0.0` | Hopscotch release tag to download. `v2.0.0`+ is required for the `fix` subcommand (used by `apply-fixes`); older tags lack it and the apply step degrades to a rev-bump-only PR. |
+| `hopscotch-version` | no | `v2.0.0-beta` | Hopscotch release tag to download. `v2.0.0-beta`+ is required for the `fix` subcommand (used by `apply-fixes`); older tags lack it and the apply step degrades to a rev-bump-only PR. |
 | `skip-build` | no | `false` | Set to `true` to only run `lake update` (pin lakefile + manifest) and skip the build. `build-failed` is always `false`; the bump succeeds (`updated=true`) only when `lake update` succeeds. If `lake update` fails the step fails so callers don't commit a half-baked tree. Used by the FKB fix-PR path. |
 | `generate-description` | no | `true` | Set to `false` to skip GitHub API calls; `pr-title`, `bump-description`, and `commit-message` will be empty |
 | `query-type` | no | `last-known-good` | Which commit to bump to: `last-known-good`, `first-known-bad`, or `last-good-release` (semver tag, e.g. `v4.13.0`) |
