@@ -264,8 +264,8 @@ jobs:
           echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
 
       - name: Download hopscotch binary
-        # Pinned at v2.0.0-beta: emits results.json schema v3 with the automated-fix
-        # fields (proposedFixes/deprecatedImports/detectionNotes).  Must stay
+        # Pinned at v2.0.0-beta: emits results.json schema v3 (its proposed
+        # boundary fixes feed runs/latest.json).  Must stay
         # >= v1.5.0, where `Hopscotch.secretScrubEnv` strips GITHUB_TOKEN from
         # every `lake` / `git` child env — the "Run probe" step below relies on
         # that to authenticate API calls without leaking the token into

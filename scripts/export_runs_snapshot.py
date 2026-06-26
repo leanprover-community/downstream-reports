@@ -39,11 +39,10 @@ from scripts.storage import (
     create_backend,
 )
 
-# Stays at 1 across the automated-fix additions (proposed_fixes,
-# deprecated_imports, detection_notes): they are optional and additive, and the
-# evolution rule (see docs/internal/lkg-pipeline.md) reserves a version bump for
-# breaking changes (field removal/rename) — a consumer that ignores unknown keys
-# reads the extended snapshot unchanged.
+# Stays at 1 across the proposed_fixes addition: it is optional and additive, and
+# the evolution rule (see docs/internal/lkg-pipeline.md) reserves a version bump
+# for breaking changes (field removal/rename) — a consumer that ignores unknown
+# keys reads the extended snapshot unchanged.
 SCHEMA_VERSION = 1
 
 # GitHub base URL used when constructing source run URLs from a run ID.
@@ -76,11 +75,9 @@ def _entry_from_run(config: DownstreamConfig, run: LatestRunRecord | None) -> di
         "episode_state": None,
         "first_known_bad_commit": None,
         "last_known_good_commit": None,
-        # Automated-fix detection (verbatim hopscotch shapes).  The bump actions
-        # apply `proposed_fixes` to a fix PR via `hopscotch fix apply --from`.
+        # Hopscotch boundary fixes (verbatim).  The bump actions apply these to
+        # a fix PR via `hopscotch fix apply --from`.
         "proposed_fixes": [],
-        "deprecated_imports": [],
-        "detection_notes": [],
     }
     if run is None:
         return base
@@ -99,8 +96,6 @@ def _entry_from_run(config: DownstreamConfig, run: LatestRunRecord | None) -> di
             "first_known_bad_commit": run.first_known_bad,
             "last_known_good_commit": run.last_known_good,
             "proposed_fixes": run.proposed_fixes,
-            "deprecated_imports": run.deprecated_imports,
-            "detection_notes": run.detection_notes,
         }
     )
     return base

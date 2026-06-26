@@ -199,10 +199,8 @@ class ValidationResult:
     head_probe_failure_stage: str | None = None
     pinned_commit: str | None = None
     search_base_not_ancestor: bool = False
-    # Hopscotch automated-fix detection, carried verbatim (see models.py).
+    # Hopscotch fixes for the boundary, carried verbatim (see models.py).
     proposed_fixes: list[dict[str, Any]] = field(default_factory=list)
-    deprecated_imports: list[dict[str, Any]] = field(default_factory=list)
-    detection_notes: list[str] = field(default_factory=list)
 
     @classmethod
     def from_json(cls, payload: dict[str, Any]) -> "ValidationResult":
@@ -228,8 +226,6 @@ class ValidationResult:
             pinned_commit=payload.get("pinned_commit"),
             search_base_not_ancestor=payload.get("search_base_not_ancestor", False),
             proposed_fixes=payload.get("proposed_fixes") or [],
-            deprecated_imports=payload.get("deprecated_imports") or [],
-            detection_notes=payload.get("detection_notes") or [],
         )
 
 
@@ -865,8 +861,6 @@ def main() -> int:
             pinned_commit=result.pinned_commit,
             search_base_not_ancestor=result.search_base_not_ancestor,
             proposed_fixes=result.proposed_fixes,
-            deprecated_imports=result.deprecated_imports,
-            detection_notes=result.detection_notes,
         )
         result_records.append(record)
         tested_details_per_record.append(

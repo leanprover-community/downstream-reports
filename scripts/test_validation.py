@@ -243,7 +243,7 @@ class TestBuildResultFromToolFixes:
         )
 
     def test_proposed_fixes_carried_from_stopped_run(self) -> None:
-        """Scenario: a stopped bisect carries proposedFixes/deprecatedImports/detectionNotes verbatim."""
+        """Scenario: a stopped bisect carries proposedFixes verbatim (advisories/notes are not transited)."""
         result = self._build(
             1,
             {
@@ -251,31 +251,20 @@ class TestBuildResultFromToolFixes:
                 "lastSuccessfulCommit": "a",
                 "failureStage": "lake build",
                 "proposedFixes": [self._FIX],
-                "deprecatedImports": [],
+                # hopscotch also emits these; we deliberately don't carry them.
+                "deprecatedImports": [self._FIX],
                 "detectionNotes": ["module-deprecation: note"],
             },
         )
         assert result.outcome == Outcome.FAILED
         assert result.proposed_fixes == [self._FIX]
-        assert result.deprecated_imports == []
-        assert result.detection_notes == ["module-deprecation: note"]
+        assert not hasattr(result, "deprecated_imports")
+        assert not hasattr(result, "detection_notes")
 
-    def test_advisories_carried_from_passing_run(self) -> None:
-        """Scenario: a green run carries deprecatedImports advisories (proposedFixes stays empty)."""
-        result = self._build(
-            0,
-            {"lastSuccessfulCommit": "target_abc", "deprecatedImports": [self._FIX]},
-        )
-        assert result.outcome == Outcome.PASSED
-        assert result.proposed_fixes == []
-        assert result.deprecated_imports == [self._FIX]
-
-    def test_missing_fields_default_to_empty_lists(self) -> None:
-        """Scenario: a results.json from a pre-v2 binary (no fix fields) yields empty lists."""
+    def test_missing_field_defaults_to_empty_list(self) -> None:
+        """Scenario: a results.json from a pre-v3 binary (no proposedFixes) yields an empty list."""
         result = self._build(1, {"firstFailingCommit": "b", "failureStage": "lake build"})
         assert result.proposed_fixes == []
-        assert result.deprecated_imports == []
-        assert result.detection_notes == []
 
 
 class TestCommitPlanArtifact:

@@ -116,12 +116,10 @@ class LatestRunRecord:
     # The log text itself is not persisted — consumers fetch the artifact when they
     # need the contents, so the database stays free of arbitrary build output.
     culprit_log_artifact_url: str | None = None
-    # Hopscotch automated-fix detection, surfaced in runs/latest.json so the bump
-    # actions can apply `hopscotch fix` to a fix PR.  Verbatim hopscotch shapes
-    # (see RunResultRecord); empty lists when none were recorded.
+    # Hopscotch boundary fixes, surfaced in runs/latest.json so the bump actions
+    # can apply `hopscotch fix` to a fix PR.  Verbatim hopscotch shapes (see
+    # RunResultRecord); empty list when none were recorded.
     proposed_fixes: list[dict[str, Any]] = field(default_factory=list)
-    deprecated_imports: list[dict[str, Any]] = field(default_factory=list)
-    detection_notes: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -178,14 +176,11 @@ class RunResultRecord:
     # itself (`culprit_log_text` above) is held only in memory for the in-process
     # markdown report and Zulip alert payload — never written to SQL.
     culprit_log_artifact_url: str | None = None
-    # Hopscotch automated-fix detection (results.json; fields landed in schema v3),
-    # stored verbatim as JSON in three TEXT columns.  proposed_fixes/deprecated_imports
-    # hold hopscotch's own ProposedFix objects (see models.ValidationResult);
-    # detection_notes is a list of strings.  Empty lists when the probe binary
-    # predates schema v3.
+    # Hopscotch boundary fixes (results.json `proposedFixes`; field landed in
+    # schema v3), stored verbatim as JSON in one TEXT column — hopscotch's own
+    # ProposedFix objects (see models.ValidationResult), treated opaquely.  Empty
+    # list when the probe binary predates schema v3.
     proposed_fixes: list[dict[str, Any]] = field(default_factory=list)
-    deprecated_imports: list[dict[str, Any]] = field(default_factory=list)
-    detection_notes: list[str] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -492,13 +487,11 @@ try:
         Column("bump_commits", Integer),
         Column("search_base_not_ancestor", Boolean, nullable=False, server_default="false"),
         Column("culprit_log_artifact_url", String),
-        # Hopscotch automated-fix detection, stored as JSON text (schema v3+).
+        # Hopscotch boundary fixes, stored as JSON text (schema v3+).
         # server_default '[]' keeps a manual ALTER on the production table
         # backfill-free, and lets create_all populate fresh DBs.  Read back
         # through json.loads (None/'' tolerated as []).
         Column("proposed_fixes", String, nullable=False, server_default="[]"),
-        Column("deprecated_imports", String, nullable=False, server_default="[]"),
-        Column("detection_notes", String, nullable=False, server_default="[]"),
     )
 
     _sa_validate_job = Table(
@@ -836,8 +829,6 @@ class SqlBackend:
                     "search_base_not_ancestor": r.search_base_not_ancestor,
                     "culprit_log_artifact_url": r.culprit_log_artifact_url,
                     "proposed_fixes": json.dumps(r.proposed_fixes or []),
-                    "deprecated_imports": json.dumps(r.deprecated_imports or []),
-                    "detection_notes": json.dumps(r.detection_notes or []),
                 })
 
             for downstream, s in updated_statuses.items():
@@ -1154,8 +1145,6 @@ def load_latest_run_per_downstream(
             vj.c.job_url,
             rr.c.culprit_log_artifact_url,
             rr.c.proposed_fixes,
-            rr.c.deprecated_imports,
-            rr.c.detection_notes,
         )
         .join(latest_per_ds, rr.c.downstream == latest_per_ds.c.downstream)
         .join(
@@ -1199,8 +1188,6 @@ def load_latest_run_per_downstream(
             job_url=row[11],
             culprit_log_artifact_url=row[12],
             proposed_fixes=_loads_json_list(row[13]),
-            deprecated_imports=_loads_json_list(row[14]),
-            detection_notes=_loads_json_list(row[15]),
         )
     return result
 
