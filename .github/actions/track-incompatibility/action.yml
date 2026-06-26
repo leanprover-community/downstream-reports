@@ -880,7 +880,8 @@ runs:
             "$DEP_NAME" "$FKB_SHORT"
           if [ -n "${FIX_SUMMARY:-}" ]; then
             printf 'It also applies the automated import fixes `hopscotch fix` proposed for this boundary. Review them — a migration can be partial (e.g. when the upstream PR also renamed declarations) — and rely on this branch'"'"'s CI to validate the repair:\n\n'
-            printf '```\n%s\n```\n\n' "$FIX_SUMMARY"
+            printf '%s' "$FIX_SUMMARY" | bash "${{ github.action_path }}/../../scripts/md-fenced-block.sh"
+            printf '\n'
           fi
           if [ "$TOKEN" = "$DEFAULT_TOKEN" ]; then
             printf '> [!WARNING]\n'

@@ -758,14 +758,21 @@ runs:
 
           if [ -n "$MERGED" ] && [ -f "$MERGED" ]; then
             # Let hopscotch decide what applies and report it.  Capture its
-            # output verbatim.
+            # output verbatim.  Whether it actually rewrote anything is decided
+            # by inspecting the working tree before/after — NOT by parsing the
+            # tool's prose: keying the merge-safety message off an undocumented,
+            # version-specific output string is brittle.  The downstream `.lake`
+            # (where `fix apply` writes its backups) is gitignored, so a porcelain
+            # diff isolates exactly the import rewrites on top of the rev bump.
+            TREE_BEFORE=$(git -C "$PROJECT_DIR" status --porcelain 2>/dev/null | sort)
             hopscotch fix apply --from "$MERGED" --project-dir "$PROJECT_DIR" "${FLAGS[@]}" 2>&1 | tee "$LOG"
             rc=${PIPESTATUS[0]}
+            TREE_AFTER=$(git -C "$PROJECT_DIR" status --porcelain 2>/dev/null | sort)
             if [ "$rc" -ne 0 ]; then
               echo "::warning::hopscotch fix apply failed; opening the bump PR without import rewrites"
-            elif grep -q "No applicable automated fixes" "$LOG" || grep -q "rewrote 0 file(s)" "$LOG"; then
-              # hopscotch's own phrasings for "nothing changed" — don't surface a line.
-              echo "hopscotch fix apply made no changes."
+            elif [ "$TREE_BEFORE" = "$TREE_AFTER" ]; then
+              # Nothing changed on top of the bump — no fixes to surface.
+              echo "hopscotch fix apply made no changes to the working tree."
             else
               FIX_SUMMARY=$(cat "$LOG")
             fi

@@ -244,7 +244,8 @@ runs:
               # green build did NOT cover them, so the as-is claim no longer holds.
               printf 'This is an automated dependency bump to the latest commit this project is known to build against (its **last-known-good** commit). `lake build` succeeded against the new commit before this PR was opened.\n\n'
               printf 'On top of the bump, `hopscotch fix` applied the following deprecated-import migrations — these were **not** covered by that build, so run your CI on this PR before merging:\n\n'
-              printf '```\n%s\n```\n\n' "$FIX_SUMMARY"
+              printf '%s' "$FIX_SUMMARY" | bash "${{ github.action_path }}/../../scripts/md-fenced-block.sh"
+              printf '\n'
             else
               printf 'This is an automated dependency bump to the latest commit this project is known to build against (its **last-known-good** commit). `lake build` was run against the new commit before this PR was opened and succeeded, so it should be mergeable as-is.\n\n'
               printf 'Only `lake build` is checked, though — if your own CI does more (linting, failing on warnings, downstream tests, …), run it on this PR before merging.\n\n'
