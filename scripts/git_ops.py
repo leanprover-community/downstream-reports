@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import subprocess
 import tomllib
@@ -206,6 +207,35 @@ def latest_reachable_tag(
 def resolve_tag(repo_dir: Path, tag: str) -> str:
     """Return the commit SHA for `tag`."""
     return git(repo_dir, "rev-list", "-n", "1", tag)
+
+
+# Semver release tags, including prereleases (e.g. v4.32.0 and v4.32.0-rc1);
+# excludes non-release tags like master-2026-04-15 or nightly-*.
+RELEASE_TAG_RE = re.compile(r"^v\d+\.\d+\.\d+(-rc\d+)?$")
+
+
+def next_release_tag_after(repo_dir: Path, commit: str) -> str | None:
+    """Return the release tag immediately after `commit`, or None.
+
+    Considers every release tag that is a descendant of `commit` (a tag pointing
+    at `commit` itself is excluded, since we want the *next* one) and returns the
+    closest by commit distance. Picking by distance rather than by version-sort
+    keeps it correct regardless of how git orders a prerelease against its final.
+    Prereleases (`v4.32.0-rc1`) count as releases. Returns None when no release
+    tag is a descendant of `commit` (the commit is at or past the newest tag).
+    """
+    output = git(repo_dir, "tag", "--contains", commit, "--list", RELEASE_TAG_GLOB)
+    candidates = [
+        tag
+        for tag in output.splitlines()
+        if tag and RELEASE_TAG_RE.fullmatch(tag) and resolve_tag(repo_dir, tag) != commit
+    ]
+    if not candidates:
+        return None
+    return min(
+        candidates,
+        key=lambda tag: int(git(repo_dir, "rev-list", "--count", f"{commit}..{tag}")),
+    )
 
 
 def should_run_boundary_search(head_probe_exit_code: int, commit_window: list[str]) -> bool:

@@ -28,6 +28,16 @@ class DownstreamConfig:
     default_branch: str
     dependency_name: str = "mathlib"
     enabled: bool = True
+    # Which upstream commit the regression pipeline advances this downstream
+    # toward.  "next-release" (default): target the next semver release tag
+    # (including prereleases, e.g. v4.32.0 or v4.32.0-rc1) that is a descendant
+    # of the current pin, so the downstream steps through releases and never
+    # jumps over one in a single bump; once the pin is at/past the newest tag,
+    # fall back to the upstream default-branch tip (track master until a new tag
+    # lands, which is also where actively-bumped downstreams already sit).
+    # "master": always target the tip, the older behavior that may advance past
+    # a release tag without stopping at it.
+    target_mode: str = "next-release"
     bumping_branch: str | None = None
     skip_already_good: bool = True
     skip_known_bad_bisect: bool = True
@@ -63,6 +73,14 @@ class DownstreamConfig:
     # — currently Robo, which depends on a populated `/usr/share/zoneinfo`
     # database for `Std.Time` lookups during `MakeGame` elaboration.
     runs_on: list[str] = field(default_factory=lambda: ["self-hosted", "pr"])
+
+    def __post_init__(self) -> None:
+        valid_target_modes = ("master", "next-release")
+        if self.target_mode not in valid_target_modes:
+            raise ValueError(
+                f"{self.name}: invalid target_mode {self.target_mode!r} "
+                f"(expected one of {valid_target_modes})"
+            )
 
 
 @dataclass(frozen=True)

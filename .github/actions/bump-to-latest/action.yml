@@ -53,6 +53,15 @@ inputs:
                                      (null when no active regression)
         last-good-release          — the latest semver release tag (e.g. v4.13.0)
                                      reachable from the last-known-good commit
+  branch:
+    required: false
+    default: 'hopscotch/lkg-bump'
+    description: >
+      Bump-PR branch the Step 1.5 probe checks for an already-applied bump.
+      Must match the `branch` passed to open-bump-pr; otherwise the probe
+      watches the wrong branch and the bump rebuilds on every run. Unused for
+      query-type=first-known-bad (the probe is disabled there). Defaults to
+      open-bump-pr's own default.
   apply-fixes:
     required: false
     default: 'true'
@@ -83,7 +92,7 @@ inputs:
 
 outputs:
   rev:
-    description: 'The human-readable ref passed to hopscotch (tag name for last-good-release, SHA otherwise)'
+    description: 'The human-readable ref passed to hopscotch (a tag name for last-good-release, or for a last-known-good bump that lands exactly on a release tag; a SHA otherwise)'
     value: ${{ steps.resolve-outputs.outputs.rev }}
   commit:
     description: 'The resolved commit SHA (always a SHA)'
@@ -96,10 +105,11 @@ outputs:
     value: ${{ steps.resolve-outputs.outputs.updated }}
   skipped:
     description: >
-      "true" if no bump was performed — either because the project's manifest
-      is already at the target commit, or because an open bump PR's branch
-      already pins the dependency at it (Step 1.5 probe). When "true", the
-      working tree is unmodified.
+      "true" if no bump was performed — because the project's manifest is
+      already at the target commit, because an open bump PR's branch already
+      pins the dependency at it (Step 1.5 probe), or (query-type=last-good-release
+      only) because the latest release tag is behind or diverged from the
+      current pin. When "true", the working tree is unmodified.
     value: ${{ steps.resolve-outputs.outputs.skipped }}
   build-failed:
     description: '"true" if hopscotch ran but the build failed'
@@ -140,6 +150,32 @@ runs:
       run: bash "${{ github.action_path }}/../../scripts/fetch-latest.sh"
 
     # ------------------------------------------------------------------
+    # Step 1.2: When the target commit is exactly a release tag, relabel the
+    # rev to the tag name. hopscotch then pins the tag (manifest inputRev =
+    # the tag, rev = the resolved SHA, so it stays reproducible) and the PR
+    # shows the release name. Detected for free from the snapshot: the target
+    # lands on the release exactly when it equals last_good_release_commit.
+    # A last-good-release bump already carries a tag rev, so it is left as-is.
+    # ------------------------------------------------------------------
+    - name: Relabel target as a release tag when it lands on one
+      id: relabel
+      shell: bash
+      env:
+        RAW_REV: ${{ steps.fetch-snapshot.outputs.rev }}
+        RAW_COMMIT: ${{ steps.fetch-snapshot.outputs.commit }}
+        RELEASE_TAG: ${{ steps.fetch-snapshot.outputs.release_tag }}
+        RELEASE_COMMIT: ${{ steps.fetch-snapshot.outputs.release_commit }}
+      run: |
+        set -euo pipefail
+        EFF_REV="$RAW_REV"
+        if [ "$RAW_REV" = "$RAW_COMMIT" ] && [ -n "$RELEASE_TAG" ] \
+            && [ "$RAW_COMMIT" = "$RELEASE_COMMIT" ]; then
+          echo "Target ${RAW_COMMIT} is release ${RELEASE_TAG}; pinning the tag name."
+          EFF_REV="$RELEASE_TAG"
+        fi
+        echo "rev=$EFF_REV" >> "$GITHUB_OUTPUT"
+
+    # ------------------------------------------------------------------
     # Step 1.5: If an open PR on the LKG bump branch already pins the
     # dependency at the target, short-circuit the bump (Compare pins
     # below). Avoids redundant lake builds on sub-daily reruns while a
@@ -162,8 +198,9 @@ runs:
       shell: bash
       env:
         GH_TOKEN: ${{ github.token }}
-        # Must match open-bump-pr's default `branch`.
-        REF: 'hopscotch/lkg-bump'
+        # Bump-PR branch to probe. Override via the `branch` input to keep it
+        # in sync with open-bump-pr (e.g. a release-tag bump on `hopscotch/tag-bump`).
+        REF: ${{ inputs.branch }}
         TARGET_COMMIT: ${{ steps.fetch-snapshot.outputs.commit }}
         DEPENDENCY_NAME: ${{ inputs.dependency-name }}
         PROJECT_DIR: ${{ inputs.project-dir }}
@@ -297,7 +334,7 @@ runs:
       id: compare
       shell: bash
       env:
-        TARGET_REV: ${{ steps.fetch-snapshot.outputs.rev }}
+        TARGET_REV: ${{ steps.relabel.outputs.rev }}
         TARGET_COMMIT: ${{ steps.fetch-snapshot.outputs.commit }}
         CURRENT_PIN: ${{ steps.read-manifest.outputs.current_pin }}
         REF_MATCH: ${{ steps.probe-ref.outputs.match }}
@@ -350,12 +387,21 @@ runs:
     # recorded in the snapshot. Bumping to the snapshot's target in that
     # case would rewind the pin to an older upstream commit, which is never
     # what we want. Ask the upstream repo's compare API how the target
-    # relates to the current pin and hard-fail unless it moves forward:
+    # relates to the current pin and refuse unless it moves forward:
     #
     #   status=ahead     → target is a descendant of the pin (forward) — OK
     #   status=identical → same commit (compare step would have skipped)
-    #   status=behind    → target is an ancestor of the pin (backward) — FAIL
-    #   status=diverged  → neither is an ancestor of the other — FAIL
+    #   status=behind    → target is an ancestor of the pin (backward)
+    #   status=diverged  → neither is an ancestor of the other
+    #
+    # How a non-forward target (behind/diverged) is handled depends on the
+    # query-type, because the *meaning* differs:
+    #
+    #   * last-known-good / first-known-bad → HARD FAIL. Snapshot older than
+    #     the project's pin is a genuine anomaly worth surfacing.
+    #   * last-good-release → SKIP (skipped=true, exit 0). A release tag
+    #     behind the pin means the project is already past the latest release.
+    #     This is the normal state once a latest-commit bump has been merged.
     #
     # A failed or inconclusive API call is a warning, not a hard stop: the
     # guardrail is a safety net, and a transient API error shouldn't block
@@ -363,6 +409,7 @@ runs:
     # caught by hopscotch itself further down).
     # ------------------------------------------------------------------
     - name: Guard against a backwards pin move
+      id: guard
       if: steps.compare.outputs.skipped != 'true'
       shell: bash
       env:
@@ -370,7 +417,8 @@ runs:
         UPSTREAM: ${{ steps.resolve-upstream.outputs.effective }}
         CURRENT_PIN: ${{ steps.read-manifest.outputs.current_pin }}
         TARGET_COMMIT: ${{ steps.fetch-snapshot.outputs.commit }}
-        TARGET_REV: ${{ steps.fetch-snapshot.outputs.rev }}
+        TARGET_REV: ${{ steps.relabel.outputs.rev }}
+        QUERY_TYPE: ${{ inputs.query-type }}
       run: |
         set -euo pipefail
 
@@ -394,11 +442,21 @@ runs:
             echo "Target is '${status}' relative to the current pin — safe to proceed."
             ;;
           behind)
+            if [ "$QUERY_TYPE" = "last-good-release" ]; then
+              echo "Latest release tag ${TARGET_REV} (${TARGET_COMMIT}) is behind the current pin ${CURRENT_PIN} in ${UPSTREAM} — the project is already past it. Nothing to do."
+              echo "skipped=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
             echo "::error::Refusing to bump: target ${TARGET_REV} (${TARGET_COMMIT}) is BEHIND the current pin ${CURRENT_PIN} in ${UPSTREAM}."
             echo "::error::The published snapshot is older than this project's current dependency pin; bumping would move the pin backwards. No change has been made."
             exit 1
             ;;
           diverged)
+            if [ "$QUERY_TYPE" = "last-good-release" ]; then
+              echo "::warning::Latest release tag ${TARGET_REV} (${TARGET_COMMIT}) has DIVERGED from the current pin ${CURRENT_PIN} in ${UPSTREAM} (neither is an ancestor of the other) — not a forward move. Nothing to do."
+              echo "skipped=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
             echo "::error::Refusing to bump: target ${TARGET_REV} (${TARGET_COMMIT}) and the current pin ${CURRENT_PIN} have DIVERGED in ${UPSTREAM} (neither is an ancestor of the other). No change has been made."
             exit 1
             ;;
@@ -415,11 +473,12 @@ runs:
     # ------------------------------------------------------------------
     - name: Fetch commit descriptions
       id: fetch-descriptions
-      if: steps.compare.outputs.skipped != 'true' && inputs.generate-description != 'false'
+      if: steps.compare.outputs.skipped != 'true' && steps.guard.outputs.skipped != 'true' && inputs.generate-description != 'false'
       shell: bash
       env:
         GH_TOKEN: ${{ github.token }}
-        TARGET_COMMIT: ${{ steps.fetch-snapshot.outputs.rev }}
+        TARGET_COMMIT: ${{ steps.relabel.outputs.rev }}
+        TARGET_SHA: ${{ steps.fetch-snapshot.outputs.commit }}
         CURRENT_PIN: ${{ steps.read-manifest.outputs.current_pin }}
         DEPENDENCY_NAME: ${{ inputs.dependency-name }}
         DEPENDENCY_REPO: ${{ steps.resolve-upstream.outputs.effective }}
@@ -449,25 +508,37 @@ runs:
         PREV_SUBJECT=$(printf '%s' "$PREV_INFO" | cut -f1)
         PREV_DATE=$(printf '%s' "$PREV_INFO" | cut -f2)
 
-        TARGET_SHORT="${TARGET_COMMIT:0:7}"
+        # For last-good-release, show the tag name in full (truncating
+        # "v4.32.0-rc1" to 7 chars would drop the prerelease). Otherwise
+        # abbreviate the SHA to 7 chars.
+        if [ -n "$TARGET_SHA" ] && [ "$TARGET_COMMIT" != "$TARGET_SHA" ]; then
+          TARGET_LABEL="$TARGET_COMMIT"
+        else
+          TARGET_LABEL="${TARGET_COMMIT:0:7}"
+        fi
         PREV_SHORT="${CURRENT_PIN:0:7}"
-        TARGET_URL="https://github.com/${DEPENDENCY_REPO}/commit/${TARGET_COMMIT}"
+        # For last-good-release, link to the resolved SHA (not the tag).
+        TARGET_URL="https://github.com/${DEPENDENCY_REPO}/commit/${TARGET_SHA:-$TARGET_COMMIT}"
         PREV_URL="https://github.com/${DEPENDENCY_REPO}/commit/${CURRENT_PIN}"
 
         TARGET_SUFFIX=$(suffix "$TARGET_SUBJECT" "$TARGET_DATE")
         PREV_SUFFIX=$(suffix "$PREV_SUBJECT" "$PREV_DATE")
 
-        PR_TITLE="Bump \`${DEPENDENCY_NAME}\` dependency to ${TARGET_SHORT}"
-        COMMIT_MSG="chore: bump ${DEPENDENCY_NAME} to ${TARGET_SHORT}${TARGET_SUFFIX}"
+        PR_TITLE="Bump \`${DEPENDENCY_NAME}\` dependency to ${TARGET_LABEL}"
+        COMMIT_MSG="chore: bump ${DEPENDENCY_NAME} to ${TARGET_LABEL}${TARGET_SUFFIX}"
 
         {
           echo "pr_title=${PR_TITLE}"
           echo "commit_message=${COMMIT_MSG}"
           echo "bump_description<<BUMP_EOF"
           printf 'Bump `%s` dependency to [%s](%s)%s\n' \
-            "$DEPENDENCY_NAME" "$TARGET_SHORT" "$TARGET_URL" "$TARGET_SUFFIX"
+            "$DEPENDENCY_NAME" "$TARGET_LABEL" "$TARGET_URL" "$TARGET_SUFFIX"
           printf 'Previously at: [%s](%s)%s\n' \
             "$PREV_SHORT" "$PREV_URL" "$PREV_SUFFIX"
+          # When the target is a tag (rev != SHA), note it pins a named release.
+          if [ "$TARGET_COMMIT" != "$TARGET_SHA" ]; then
+            printf '\nThis pins the named release `%s`.\n' "$TARGET_LABEL"
+          fi
           echo "BUMP_EOF"
         } >> "$GITHUB_OUTPUT"
 
@@ -476,7 +547,7 @@ runs:
     # ------------------------------------------------------------------
 
     - name: Install Lean (elan)
-      if: steps.compare.outputs.skipped != 'true'
+      if: steps.compare.outputs.skipped != 'true' && steps.guard.outputs.skipped != 'true'
       shell: bash
       run: |
         curl https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh \
@@ -484,7 +555,7 @@ runs:
         echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
 
     - name: Download hopscotch binary
-      if: steps.compare.outputs.skipped != 'true'
+      if: steps.compare.outputs.skipped != 'true' && steps.guard.outputs.skipped != 'true'
       shell: bash
       env:
         HOPSCOTCH_VERSION: ${{ inputs.hopscotch-version }}
@@ -499,7 +570,7 @@ runs:
         echo "$TOOL_DIR" >> "$GITHUB_PATH"
 
     - name: Clean any stale hopscotch session
-      if: steps.compare.outputs.skipped != 'true'
+      if: steps.compare.outputs.skipped != 'true' && steps.guard.outputs.skipped != 'true'
       shell: bash
       env:
         PROJECT_DIR: ${{ inputs.project-dir }}
@@ -528,12 +599,12 @@ runs:
     # ------------------------------------------------------------------
     - name: Run hopscotch dep
       id: run-hopscotch
-      if: steps.compare.outputs.skipped != 'true'
+      if: steps.compare.outputs.skipped != 'true' && steps.guard.outputs.skipped != 'true'
       shell: bash
       env:
         DEPENDENCY_NAME: ${{ inputs.dependency-name }}
         CURRENT_PIN: ${{ steps.read-manifest.outputs.current_pin }}
-        TARGET_COMMIT: ${{ steps.fetch-snapshot.outputs.rev }}
+        TARGET_COMMIT: ${{ steps.relabel.outputs.rev }}
         PROJECT_DIR: ${{ inputs.project-dir }}
         GITHUB_TOKEN: ${{ github.token }}
         HOPSCOTCH_SKIP_BUILD: ${{ inputs.skip-build }}
@@ -624,6 +695,7 @@ runs:
       id: fetch-fixes
       if: >-
         steps.compare.outputs.skipped != 'true'
+        && steps.guard.outputs.skipped != 'true'
         && steps.run-hopscotch.outputs.updated == 'true'
         && inputs.query-type == 'first-known-bad'
         && inputs.apply-fixes == 'true'
@@ -636,6 +708,7 @@ runs:
       id: apply-fixes
       if: >-
         steps.compare.outputs.skipped != 'true'
+        && steps.guard.outputs.skipped != 'true'
         && steps.run-hopscotch.outputs.updated == 'true'
         && inputs.apply-fixes == 'true'
       shell: bash
@@ -715,16 +788,23 @@ runs:
       if: always()
       shell: bash
       env:
-        TARGET_REV: ${{ steps.fetch-snapshot.outputs.rev }}
+        TARGET_REV: ${{ steps.relabel.outputs.rev }}
         TARGET_COMMIT: ${{ steps.fetch-snapshot.outputs.commit }}
         CURRENT_PIN: ${{ steps.read-manifest.outputs.current_pin }}
         SKIPPED: ${{ steps.compare.outputs.skipped }}
+        GUARD_SKIPPED: ${{ steps.guard.outputs.skipped }}
         UPDATED: ${{ steps.run-hopscotch.outputs.updated }}
         BUILD_FAILED: ${{ steps.run-hopscotch.outputs.build_failed }}
       run: |
+        # Combine compare and guard skips: skip if either step says skip.
+        if [ "${SKIPPED:-}" = "true" ] || [ "${GUARD_SKIPPED:-}" = "true" ]; then
+          SKIPPED=true
+        else
+          SKIPPED=false
+        fi
         echo "rev=${TARGET_REV:-}"                 >> "$GITHUB_OUTPUT"
         echo "commit=${TARGET_COMMIT:-}"           >> "$GITHUB_OUTPUT"
         echo "current_pin=${CURRENT_PIN:-}"        >> "$GITHUB_OUTPUT"
-        echo "skipped=${SKIPPED:-false}"           >> "$GITHUB_OUTPUT"
+        echo "skipped=${SKIPPED}"                  >> "$GITHUB_OUTPUT"
         echo "updated=${UPDATED:-false}"           >> "$GITHUB_OUTPUT"
         echo "build_failed=${BUILD_FAILED:-false}" >> "$GITHUB_OUTPUT"
