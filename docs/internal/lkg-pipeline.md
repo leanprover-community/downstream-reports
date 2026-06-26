@@ -230,15 +230,15 @@ field.
 verbatim from hopscotch's `results.json`, where the fields landed in schema v3;
 see hopscotch `docs/results.schema.json`):
 
-- `proposed_fixes` — mechanical import rewrites that repair the failure
-  boundary, recorded only on a stopped (failing) run, i.e. at the FKB a bisect
-  found. Each is hopscotch's `ProposedFix` object (`{fixId, oldModule,
-  newModules, partialFix, note}`); an empty `newModules` means "remove the
-  import". The `bump-to-latest` action applies these to the FKB fix PR via
-  `hopscotch fix apply --from` (see `docs/actions.md`).
-- `deprecated_imports` — advisories: imports that build today but route through
+- `proposed_fixes` — mechanical fixes that repair the failure boundary,
+  recorded only on a stopped (failing) run, i.e. at the FKB a bisect found.
+  Each is hopscotch's `ProposedFix` object (`{fixId, oldModule, newModules,
+  partialFix, note}`); an empty `newModules` means the reference is removed
+  rather than rewritten. The `bump-to-latest` action applies these to the FKB
+  fix PR via `hopscotch fix apply --from` (see `docs/actions.md`).
+- `deprecated_imports` — advisories: code that builds today but routes through
   a live `deprecated_module` shim, recorded on any conclusion (including
-  passing runs). Not applied by default.
+  passing runs).
 - `detection_notes` — strings explaining a culprit that has no available fix
   (e.g. a module deleted with no replacement shim).
 

@@ -66,29 +66,29 @@ inputs:
     required: false
     default: 'true'
     description: >
-      After the bump, run `hopscotch fix apply` so the PR carries the import
-      repairs hopscotch recorded, not just the rev bump. By default this applies
-      only the failure-boundary `proposedFixes` — for an FKB bump, the repair for
-      the boundary, overlaid from the regression probe's published wide-range
-      bisection (an LKG bump is green, so it has none and this is a no-op). Runs
-      on any query-type. Set `apply-advisories` to also migrate deprecated-import
-      advisories. Best-effort: if no fixes were recorded, the installed hopscotch
-      lacks the `fix` subcommand, or the apply fails, the bump PR opens with the
-      rev bump alone. The applied rewrites are validated by the PR's own CI.
-  apply-advisories:
+      After the bump, run `hopscotch fix apply` so the PR carries the fixes
+      hopscotch recorded for the bump, not just the rev bump. Applies everything
+      hopscotch proposes — the failure-boundary fixes (for an FKB bump, overlaid
+      from the regression probe's published wide-range bisection) and the
+      deprecation advisories. Set `no-advisories` to restrict it to the
+      boundary fixes. Runs on any query-type. Best-effort: if no fixes were
+      recorded, the installed hopscotch lacks the `fix` subcommand, or the apply
+      fails, the bump PR opens with the rev bump alone. The applied changes are
+      validated by the PR's own CI.
+  no-advisories:
     required: false
     default: 'false'
     description: >
-      Opt-in hygiene pass: also migrate deprecated-but-working imports — ones
-      that route through a live `deprecated_module` shim and break at the
-      upstream cleanup. Off by default because these imports build today, so the
-      rewrites are NOT covered by an LKG bump's green build and would undercut an
-      LKG PR's "mergeable as-is" guarantee; enable it for an explicit hygiene
-      pass, ideally where the resulting PR's CI runs (a GitHub App / PAT token,
-      not the default `GITHUB_TOKEN`). Advisories are read from the bump's own
-      results.json (detected at the commit just bumped to), so they are complete
-      only when that bump built; under skip-build only the tree-resolved subset
-      is found. No effect when `apply-fixes` is false.
+      Pass `--no-advisories` to `hopscotch fix apply`, restricting it to the
+      failure-boundary fixes and skipping the deprecation advisories — changes
+      that build today but break at the upstream cleanup (mirrors hopscotch's own
+      flag, which applies them by default). Set this for an LKG bump you want to
+      keep "mergeable as-is": advisory changes are not covered by the bump's
+      green build, so suppressing them preserves that property. (Advisories are
+      read from the bump's own results.json, detected at the commit just bumped
+      to, so they are complete only when that bump built; under skip-build only
+      the statically-resolved subset is found.) No effect when `apply-fixes` is
+      false.
 
 outputs:
   rev:
@@ -128,10 +128,10 @@ outputs:
     value: ${{ steps.fetch-descriptions.outputs.commit_message }}
   fix-summary:
     description: >
-      hopscotch's own `fix apply` output, verbatim, when it rewrote imports
-      after the bump — empty when nothing was applied, the step was skipped, or
-      no fixes were recorded. Surface this in a PR body to describe the applied
-      migrations using the tool's own words rather than a synthesized count.
+      hopscotch's own `fix apply` output, verbatim, when it changed files after
+      the bump — empty when nothing was applied, the step was skipped, or no
+      fixes were recorded. Surface this in a PR body to describe the applied
+      fixes using the tool's own words rather than a synthesized count.
     value: ${{ steps.apply-fixes.outputs.fix_summary }}
 
 runs:
@@ -675,20 +675,21 @@ runs:
           exit "$EXIT_CODE"
         fi
     # ------------------------------------------------------------------
-    # Steps 8–9: apply the import fixes hopscotch recorded (when apply-fixes).
+    # Steps 8–9: apply the fixes hopscotch recorded (when apply-fixes).
     # Runs `hopscotch fix apply`, which — like the tool's own default —
     # applies both kinds, unless no-advisories restricts it to the first:
-    #   * proposed_fixes (the failure-boundary repairs). For an FKB bump these
+    #   * proposed_fixes (the failure-boundary fixes). For an FKB bump these
     #     come from the regression probe's full LKG→HEAD bisection (robust,
     #     offline) — fetched here and overlaid onto the bump's own results.json
     #     rather than trusting this narrow re-bump's own detection.
-    #   * advisories (deprecated-but-working imports). Read straight from the
-    #     bump's own results.json (detected at the commit just bumped to), so no
-    #     fetch is needed; suppressed by no-advisories.
+    #   * advisories (changes that build today but break at the upstream
+    #     cleanup). Read straight from the bump's own results.json (detected at
+    #     the commit just bumped to), so no fetch is needed; suppressed by
+    #     no-advisories.
     #
     # The whole pass is best-effort: any miss (nothing recorded, a hopscotch
     # without the `fix` subcommand, a failed apply) leaves the rev-bumped tree
-    # untouched, so the bump PR still opens — just without the rewrites.  The
+    # untouched, so the bump PR still opens — just without the fixes.  The
     # PR's CI is what validates them.
     # ------------------------------------------------------------------
     - name: Fetch published fixes
@@ -715,37 +716,36 @@ runs:
       env:
         PROJECT_DIR: ${{ inputs.project-dir }}
         # Empty when the fetch step was skipped (non-FKB bump): only an FKB bump
-        # overlays published proposedFixes; otherwise the scaffold is used as-is.
+        # overlays the published boundary fixes; otherwise the scaffold is used as-is.
         PUBLISHED_FIXES: ${{ steps.fetch-fixes.outputs.proposed_fixes_file }}
-        APPLY_ADVISORIES: ${{ inputs.apply-advisories }}
+        NO_ADVISORIES: ${{ inputs.no-advisories }}
       run: |
         set +e
         SCAFFOLD="$RUNNER_TEMP/bump-results.json"
         MERGED="$RUNNER_TEMP/hopscotch-fix-input.json"
         LOG="$RUNNER_TEMP/hopscotch-fix-apply.log"
-        # hopscotch's own one-line apply summary, surfaced verbatim to the PR
-        # body.  We never synthesize a count or sentence — the tool reports what
-        # it did.  Empty unless hopscotch actually rewrote files.
+        # hopscotch's own apply summary, surfaced verbatim to the PR body.  We
+        # never synthesize a count or sentence — the tool reports what it did.
+        # Empty unless hopscotch actually changed files.
         FIX_SUMMARY=""
 
-        # hopscotch's `fix apply` migrates deprecated-import advisories by
-        # default; we keep them OFF unless the caller opts in, so a default bump
-        # applies only the failure-boundary proposedFixes.  (Those apply
-        # regardless of this flag.)
+        # hopscotch's `fix apply` applies the deprecation advisories by default;
+        # pass --no-advisories only when the caller opts out via no-advisories.
+        # (The failure-boundary fixes apply regardless of this flag.)
         FLAGS=()
-        if [ "$APPLY_ADVISORIES" != "true" ]; then
+        if [ "$NO_ADVISORIES" = "true" ]; then
           FLAGS+=(--no-advisories)
         fi
 
         if ! command -v hopscotch >/dev/null 2>&1; then
-          echo "::warning::hopscotch not on PATH; opening the bump PR without import rewrites"
+          echo "::warning::hopscotch not on PATH; opening the bump PR without applying fixes"
         elif [ ! -f "$SCAFFOLD" ]; then
           echo "::warning::no results.json scaffold from the bump; skipping fix apply"
         else
           # The scaffold is the bump's own results.json — it carries every field
           # `hopscotch fix --from` requires for the installed binary, plus the
           # advisories detected at the bumped-to commit.  For an FKB bump, overlay
-          # the published (wide-range) proposed fixes onto it; otherwise use it
+          # the published (wide-range) boundary fixes onto it; otherwise use it
           # as-is (advisories come from the scaffold).
           if [ -n "${PUBLISHED_FIXES:-}" ] && [ -s "$PUBLISHED_FIXES" ] \
               && [ "$(jq 'length' "$PUBLISHED_FIXES" 2>/dev/null || echo 0)" -gt 0 ]; then
@@ -759,18 +759,18 @@ runs:
 
           if [ -n "$MERGED" ] && [ -f "$MERGED" ]; then
             # Let hopscotch decide what applies and report it.  Capture its
-            # output verbatim.  Whether it actually rewrote anything is decided
+            # output verbatim.  Whether it actually changed anything is decided
             # by inspecting the working tree before/after — NOT by parsing the
             # tool's prose: keying the merge-safety message off an undocumented,
             # version-specific output string is brittle.  The downstream `.lake`
             # (where `fix apply` writes its backups) is gitignored, so a porcelain
-            # diff isolates exactly the import rewrites on top of the rev bump.
+            # diff isolates exactly the changes `fix apply` made on top of the rev bump.
             TREE_BEFORE=$(git -C "$PROJECT_DIR" status --porcelain 2>/dev/null | sort)
             hopscotch fix apply --from "$MERGED" --project-dir "$PROJECT_DIR" "${FLAGS[@]}" 2>&1 | tee "$LOG"
             rc=${PIPESTATUS[0]}
             TREE_AFTER=$(git -C "$PROJECT_DIR" status --porcelain 2>/dev/null | sort)
             if [ "$rc" -ne 0 ]; then
-              echo "::warning::hopscotch fix apply failed; opening the bump PR without import rewrites"
+              echo "::warning::hopscotch fix apply failed; opening the bump PR without applying fixes"
             elif [ "$TREE_BEFORE" = "$TREE_AFTER" ]; then
               # Nothing changed on top of the bump — no fixes to surface.
               echo "hopscotch fix apply made no changes to the working tree."

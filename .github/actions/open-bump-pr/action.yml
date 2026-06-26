@@ -48,9 +48,9 @@ inputs:
     description: >
       hopscotch's own `fix apply` output (the `fix-summary` output of
       bump-to-latest). When non-empty, it is rendered verbatim in the body and
-      the build adjusts the "mergeable as-is" framing — automated import
-      rewrites were applied that the bump's green build did not verify. Leave
-      empty when no fixes were applied. Ignored when `body` is set.
+      the build adjusts the "mergeable as-is" framing — `hopscotch fix` applied
+      changes that the bump's green build did not verify. Leave empty when no
+      fixes were applied. Ignored when `body` is set.
   token:
     required: false
     default: ${{ github.token }}
@@ -240,10 +240,10 @@ runs:
             fi
             printf -- '---\n\n'
             if [ -n "${FIX_SUMMARY:-}" ]; then
-              # Advisory rewrites were applied on top of the verified bump; the
+              # `hopscotch fix` changed files on top of the verified bump; the
               # green build did NOT cover them, so the as-is claim no longer holds.
               printf 'This is an automated dependency bump to the latest commit this project is known to build against (its **last-known-good** commit). `lake build` succeeded against the new commit before this PR was opened.\n\n'
-              printf 'On top of the bump, `hopscotch fix` applied the following deprecated-import migrations — these were **not** covered by that build, so run your CI on this PR before merging:\n\n'
+              printf 'On top of the bump, `hopscotch fix` applied the following changes — these were **not** covered by that build, so run your CI on this PR before merging:\n\n'
               printf '%s' "$FIX_SUMMARY" | bash "${{ github.action_path }}/../../scripts/md-fenced-block.sh"
               printf '\n'
             else

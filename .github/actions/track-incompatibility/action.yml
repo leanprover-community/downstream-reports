@@ -848,7 +848,7 @@ runs:
         DEP_NAME: ${{ inputs.dependency-name }}
         FKB_COMMIT: ${{ steps.fkb.outputs.commit }}
         CULPRIT_LOG_ARTIFACT_URL: ${{ steps.run.outputs.culprit_log_artifact_url }}
-        # hopscotch's own `fix apply` summary (verbatim) when it rewrote imports;
+        # hopscotch's own `fix apply` summary (verbatim) when it changed files;
         # empty otherwise.  Surfaced as-is — never synthesized here.
         FIX_SUMMARY: ${{ steps.bump.outputs.fix-summary }}
         # Used to decide whether to surface the "CI does not run" warning:
@@ -879,7 +879,7 @@ runs:
           printf 'This PR bumps `%s` to an identified incompatible (first-known-bad) commit (`%s`) so you can reproduce and fix the incompatibility locally by checking out this branch.\n\n' \
             "$DEP_NAME" "$FKB_SHORT"
           if [ -n "${FIX_SUMMARY:-}" ]; then
-            printf 'It also applies the automated import fixes `hopscotch fix` proposed for this boundary. Review them — a migration can be partial (e.g. when the upstream PR also renamed declarations) — and rely on this branch'"'"'s CI to validate the repair:\n\n'
+            printf 'It also applies the fixes `hopscotch fix` recommends here. Review them — a fix can be partial (e.g. when the upstream PR also renamed declarations) — and rely on this branch'"'"'s CI to validate the result:\n\n'
             printf '%s' "$FIX_SUMMARY" | bash "${{ github.action_path }}/../../scripts/md-fenced-block.sh"
             printf '\n'
           fi
