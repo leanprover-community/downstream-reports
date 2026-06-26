@@ -158,7 +158,7 @@ class TestBuildRunsSnapshotSchema:
         """Scenario: snapshot schema_version matches the module constant."""
         snap = build_runs_snapshot({}, _INVENTORY, _UPSTREAM)
         assert snap["schema_version"] == SCHEMA_VERSION
-        assert snap["schema_version"] == 2
+        assert snap["schema_version"] == 1
 
     def test_upstream_reflects_argument(self) -> None:
         """Scenario: upstream field echoes the caller-supplied value."""

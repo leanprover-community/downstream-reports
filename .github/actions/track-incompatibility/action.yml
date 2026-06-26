@@ -112,6 +112,21 @@ inputs:
     description: >
       Name of the dependency in the lakefile.  Forwarded to bump-to-latest
       and used to compute the default branch prefix.
+  apply-fixes:
+    required: false
+    default: 'false'
+    description: >
+      Forwarded to bump-to-latest: when 'true', run `hopscotch fix apply` on the
+      first-known-bad bump so the fix PR carries the fixes hopscotch recommends
+      (overlaid from the published wide-range proposals) plus deprecation
+      advisories, not just the rev bump.  Off by default during rollout — opt a
+      downstream in once its fixes show up in the runs snapshot.
+  no-advisories:
+    required: false
+    default: 'false'
+    description: >
+      Forwarded to bump-to-latest: with apply-fixes on, restrict it to the
+      failure-boundary fixes and skip the deprecation advisories.
   base:
     required: false
     default: ''
@@ -786,6 +801,8 @@ runs:
         project-dir:     ${{ inputs.project-dir }}
         query-type:      first-known-bad
         skip-build:      'true'
+        apply-fixes:     ${{ inputs.apply-fixes }}
+        no-advisories:   ${{ inputs.no-advisories }}
 
     # ------------------------------------------------------------------
     # Step 14: Commit the lakefile changes and push the fix branch.

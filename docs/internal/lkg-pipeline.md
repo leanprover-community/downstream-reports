@@ -175,11 +175,11 @@ Schema evolution: new optional fields may be added freely without a version
 bump. `schema_version` is incremented only for breaking changes (field removal
 or rename).
 
-## Runs snapshot schema (v2)
+## Runs snapshot schema (v1)
 
 ```json
 {
-  "schema_version": 2,
+  "schema_version": 1,
   "exported_at": "2026-04-20T06:05:00Z",
   "upstream": "leanprover-community/mathlib4",
   "source_run": {
@@ -226,9 +226,10 @@ best-effort (null when the underlying DB rows are missing).
 for the `result-<name>` artifact uploaded by the probe job, not a stored
 field.
 
-**v2 added the automated-fix fields** (our runs-snapshot version; carried
-verbatim from hopscotch's `results.json`, where the fields landed in schema v3;
-see hopscotch `docs/results.schema.json`):
+**The automated-fix fields** (added without a `schema_version` bump — they are
+optional and additive, per the evolution rule above; carried verbatim from
+hopscotch's `results.json`, where the fields landed in schema v3; see hopscotch
+`docs/results.schema.json`):
 
 - `proposed_fixes` — mechanical fixes that repair the failure boundary,
   recorded only on a stopped (failing) run, i.e. at the FKB a bisect found.
@@ -243,9 +244,8 @@ see hopscotch `docs/results.schema.json`):
   (e.g. a module deleted with no replacement shim).
 
 All three default to `[]` (empty when the probe binary predates hopscotch
-schema v3, or no detection fired). They are additive, so a `schema_version >= 1`
-consumer that ignores unknown keys is unaffected; the bump documents their
-availability.
+schema v3, or no detection fired). Being additive, they leave `schema_version`
+at 1: a consumer that ignores unknown keys reads the extended snapshot unchanged.
 
 ---
 

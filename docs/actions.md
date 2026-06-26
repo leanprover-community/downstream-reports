@@ -440,6 +440,8 @@ side effects without removing the job.
 | `branch-prefix` | no | `bump-<dependency-name>/fix` | Prefix for the fix-PR branch. Final branch: `<prefix>-<fkb-short7>` (e.g. `bump-mathlib/fix-abc1234`). Stable per FKB SHA. |
 | `project-dir` | no | `.` | Path to the downstream project root. Forwarded to `bump-to-latest`. |
 | `dependency-name` | no | `mathlib` | Dependency name in the lakefile. Forwarded to `bump-to-latest`. |
+| `apply-fixes` | no | `false` | Forwarded to `bump-to-latest`: when `true`, run `hopscotch fix apply` on the FKB bump so the fix PR carries hopscotch's fixes (plus advisories), not just the rev bump. Off by default during rollout — opt a downstream in once its fixes show up in the runs snapshot. |
+| `no-advisories` | no | `false` | Forwarded to `bump-to-latest`: with `apply-fixes` on, restrict it to the failure-boundary fixes (skip deprecation advisories). |
 | `base` | no | repo default | Base branch for the fix PR. |
 | `git-user-name` | no | `github-actions[bot]` | `git user.name` for the bump commit. |
 | `git-user-email` | no | `41898282+github-actions[bot]@users.noreply.github.com` | `git user.email` for the bump commit. |

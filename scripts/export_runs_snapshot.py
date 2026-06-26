@@ -39,10 +39,12 @@ from scripts.storage import (
     create_backend,
 )
 
-# v2 added the per-downstream automated-fix fields (proposed_fixes,
-# deprecated_imports, detection_notes).  The additions are backward-compatible
-# (older consumers ignore unknown keys); the bump documents their availability.
-SCHEMA_VERSION = 2
+# Stays at 1 across the automated-fix additions (proposed_fixes,
+# deprecated_imports, detection_notes): they are optional and additive, and the
+# evolution rule (see docs/internal/lkg-pipeline.md) reserves a version bump for
+# breaking changes (field removal/rename) — a consumer that ignores unknown keys
+# reads the extended snapshot unchanged.
+SCHEMA_VERSION = 1
 
 # GitHub base URL used when constructing source run URLs from a run ID.
 _GITHUB_BASE = "https://github.com"
