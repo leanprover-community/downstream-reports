@@ -212,7 +212,7 @@ class TestBuildSkipResult:
 
 
 class TestBuildResultFromToolFixes:
-    """Automated-fix detection carried out of hopscotch's results.json (schema v2+)."""
+    """Automated-fix detection carried out of hopscotch's results.json (schema v3+)."""
 
     _CONFIG = DownstreamConfig(
         name="physlib",
@@ -223,7 +223,8 @@ class TestBuildResultFromToolFixes:
         "fixId": "module-deprecation",
         "oldModule": "Mathlib.Topology.Algebra.Module.LinearMap",
         "newModules": ["Mathlib.Topology.Algebra.Module.ContinuousLinearMap.Basic"],
-        "shimHasDeclarations": False,
+        "partialFix": False,
+        "note": "",
     }
 
     def _build(self, returncode: int, state: dict):

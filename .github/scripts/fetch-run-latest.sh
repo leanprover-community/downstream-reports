@@ -20,7 +20,7 @@
 #   proposed_fixes_count, proposed_fixes_file,
 #   deprecated_imports_count, deprecated_imports_file
 #
-# The automated-fix arrays (hopscotch results.json schema v2+) are written
+# The automated-fix arrays (hopscotch results.json schema v3+) are written
 # verbatim to JSON files under RUNNER_TEMP — they are arrays, not scalars, so
 # they go to files rather than GITHUB_OUTPUT.  `bump-to-latest` overlays
 # proposed_fixes onto a results.json scaffold and runs `hopscotch fix apply`.

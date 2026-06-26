@@ -144,7 +144,7 @@ CREATE TABLE run_result (
     head_probe_outcome       TEXT,
     head_probe_failure_stage TEXT,
     head_probe_summary       TEXT,
-    -- Hopscotch automated-fix detection (results.json schema v2+), stored as
+    -- Hopscotch automated-fix detection (results.json schema v3+), stored as
     -- JSON text.  proposed_fixes/deprecated_imports hold hopscotch's verbatim
     -- ProposedFix objects; detection_notes is a JSON array of strings.
     proposed_fixes           TEXT    NOT NULL DEFAULT '[]',

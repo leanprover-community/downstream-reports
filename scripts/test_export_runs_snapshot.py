@@ -247,7 +247,8 @@ class TestBuildRunsSnapshotEntry:
             "fixId": "module-deprecation",
             "oldModule": "Mathlib.Data.Real.Sqrt",
             "newModules": ["Mathlib.Analysis.SpecialFunctions.Sqrt"],
-            "shimHasDeclarations": False,
+            "partialFix": False,
+            "note": "",
         }
         run = _make_run(
             proposed_fixes=[fix],
@@ -697,7 +698,8 @@ class TestLoadLatestRunPerDownstream:
             "fixId": "module-deprecation",
             "oldModule": "Mathlib.Topology.Algebra.Module.LinearMap",
             "newModules": ["Mathlib.Topology.Algebra.Module.ContinuousLinearMap.Basic"],
-            "shimHasDeclarations": False,
+            "partialFix": False,
+            "note": "",
         }
         self._seed_run(
             engine,

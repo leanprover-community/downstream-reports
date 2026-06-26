@@ -178,10 +178,11 @@ class RunResultRecord:
     # itself (`culprit_log_text` above) is held only in memory for the in-process
     # markdown report and Zulip alert payload — never written to SQL.
     culprit_log_artifact_url: str | None = None
-    # Hopscotch automated-fix detection (results.json schema v2+), stored verbatim
-    # as JSON in three TEXT columns.  proposed_fixes/deprecated_imports hold
-    # hopscotch's own ProposedFix objects (see models.ValidationResult); detection_notes
-    # is a list of strings.  Empty lists when the probe binary predates schema v2.
+    # Hopscotch automated-fix detection (results.json; fields landed in schema v3),
+    # stored verbatim as JSON in three TEXT columns.  proposed_fixes/deprecated_imports
+    # hold hopscotch's own ProposedFix objects (see models.ValidationResult);
+    # detection_notes is a list of strings.  Empty lists when the probe binary
+    # predates schema v3.
     proposed_fixes: list[dict[str, Any]] = field(default_factory=list)
     deprecated_imports: list[dict[str, Any]] = field(default_factory=list)
     detection_notes: list[str] = field(default_factory=list)
@@ -491,7 +492,7 @@ try:
         Column("bump_commits", Integer),
         Column("search_base_not_ancestor", Boolean, nullable=False, server_default="false"),
         Column("culprit_log_artifact_url", String),
-        # Hopscotch automated-fix detection, stored as JSON text (schema v2+).
+        # Hopscotch automated-fix detection, stored as JSON text (schema v3+).
         # server_default '[]' keeps a manual ALTER on the production table
         # backfill-free, and lets create_all populate fresh DBs.  Read back
         # through json.loads (None/'' tolerated as []).
@@ -562,7 +563,7 @@ def _loads_json_list(value: Any) -> list:
     """Decode a JSON-array TEXT column, tolerating NULL/empty as ``[]``.
 
     Used for the ``run_result`` automated-fix columns, which a row written
-    before the columns existed (or by a tool predating schema v2) leaves NULL.
+    before the columns existed (or by a tool predating schema v3) leaves NULL.
     """
     if not value:
         return []

@@ -207,7 +207,8 @@ or rename).
           "fixId": "module-deprecation",
           "oldModule": "Mathlib.Topology.Algebra.Module.LinearMap",
           "newModules": ["Mathlib.Topology.Algebra.Module.ContinuousLinearMap.Basic"],
-          "shimHasDeclarations": false
+          "partialFix": false,
+          "note": ""
         }
       ],
       "deprecated_imports": [],
@@ -225,13 +226,14 @@ best-effort (null when the underlying DB rows are missing).
 for the `result-<name>` artifact uploaded by the probe job, not a stored
 field.
 
-**v2 added the automated-fix fields** (carried verbatim from hopscotch's
-`results.json` schema v2; see hopscotch `docs/results.schema.json`):
+**v2 added the automated-fix fields** (our runs-snapshot version; carried
+verbatim from hopscotch's `results.json`, where the fields landed in schema v3;
+see hopscotch `docs/results.schema.json`):
 
 - `proposed_fixes` — mechanical import rewrites that repair the failure
   boundary, recorded only on a stopped (failing) run, i.e. at the FKB a bisect
   found. Each is hopscotch's `ProposedFix` object (`{fixId, oldModule,
-  newModules, shimHasDeclarations}`); an empty `newModules` means "remove the
+  newModules, partialFix, note}`); an empty `newModules` means "remove the
   import". The `bump-to-latest` action applies these to the FKB fix PR via
   `hopscotch fix apply --from` (see `docs/actions.md`).
 - `deprecated_imports` — advisories: imports that build today but route through
@@ -241,7 +243,7 @@ field.
   (e.g. a module deleted with no replacement shim).
 
 All three default to `[]` (empty when the probe binary predates hopscotch
-schema v2, or no detection fired). They are additive, so a `schema_version >= 1`
+schema v3, or no detection fired). They are additive, so a `schema_version >= 1`
 consumer that ignores unknown keys is unaffected; the bump documents their
 availability.
 

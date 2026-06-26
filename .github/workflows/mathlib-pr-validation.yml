@@ -134,7 +134,7 @@ jobs:
 
       - name: Build / fetch lakedit
         env:
-          HOPSCOTCH_REF: ${{ vars.HOPSCOTCH_REF || 'v1.5.0' }}
+          HOPSCOTCH_REF: ${{ vars.HOPSCOTCH_REF || 'v2.0.0' }}
           TOOL_BIN: ${{ runner.temp }}/tool-bin
         run: bash scripts/pr_validation/install_lakedit.sh
 
