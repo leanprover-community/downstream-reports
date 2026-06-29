@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import re
 import shutil
 import subprocess
 import tomllib
@@ -11,7 +10,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from scripts.models import CommitDetail, DownstreamConfig
+from scripts.models import RELEASE_TAG_RE, CommitDetail, DownstreamConfig
 
 
 def run(
@@ -188,6 +187,9 @@ def build_commit_window(
     return commits, truncated
 
 
+# Coarse git-CLI filter for `git tag --list` (matches any v-prefixed tag,
+# including patched re-tags).  `next_release_tag_after` narrows the result with
+# the precise `models.RELEASE_TAG_RE`.
 RELEASE_TAG_GLOB = "v[0-9]*"
 
 
@@ -207,11 +209,6 @@ def latest_reachable_tag(
 def resolve_tag(repo_dir: Path, tag: str) -> str:
     """Return the commit SHA for `tag`."""
     return git(repo_dir, "rev-list", "-n", "1", tag)
-
-
-# Semver release tags, including prereleases (e.g. v4.32.0 and v4.32.0-rc1);
-# excludes non-release tags like master-2026-04-15 or nightly-*.
-RELEASE_TAG_RE = re.compile(r"^v\d+\.\d+\.\d+(-rc\d+)?$")
 
 
 def next_release_tag_after(repo_dir: Path, commit: str) -> str | None:

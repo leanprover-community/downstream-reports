@@ -949,17 +949,21 @@ class TestFetchReleaseTagsApi:
 
         assert result["physlib"] == (None, None)
 
-    def test_skips_non_semver_tags(self) -> None:
-        """Scenario: non-semver tags are filtered out; only vX.Y.Z tags are checked."""
+    def test_skips_non_release_tags(self) -> None:
+        """Scenario: non-release tags — daily tags and patched re-tags — are
+        filtered out; only clean vX.Y.Z[-rcN] tags are checked."""
         import scripts.aggregate_results as agg
 
         tags_page = [
             self._make_tag("nightly-2026-04-01", "sha_nightly"),
+            self._make_tag("v4.15.0-patch1", "sha_patch"),
             self._make_tag("v4.13.0", "sha_413"),
         ]
+        # Only v4.13.0 should be compared: the daily tag isn't version-shaped and
+        # the patched re-tag isn't a release, so neither consumes a compare call.
         responses = [
             tags_page,
-            {"status": "ahead"},  # v4.13.0 reachable (nightly skipped, no compare for it)
+            {"status": "ahead"},  # v4.13.0 reachable
         ]
         with self._mock_urlopen(responses):
             result = agg.fetch_release_tags_api("owner/repo", {"physlib": "lkg_sha"}, None)
