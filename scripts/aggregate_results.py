@@ -32,8 +32,7 @@ from pathlib import Path
 from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from scripts.git_ops import RELEASE_TAG_RE
-from scripts.models import Outcome, utc_now
+from scripts.models import RELEASE_TAG_RE, Outcome, utc_now
 from scripts.storage import (
     DownstreamStatusRecord,
     RunResultRecord,

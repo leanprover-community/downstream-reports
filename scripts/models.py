@@ -4,11 +4,21 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import re
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
 from typing import Any
+
+
+# The canonical mathlib release-tag shape, shared by the select/probe,
+# aggregation, and site-rendering paths.  Matches a final (v4.32.0) or release
+# candidate (v4.32.0-rc1); excludes daily/nightly tags (master-2026-04-15,
+# nightly-*) and patched re-tags (v4.14.0-patch1, v4.32.0-rc1-patch1) — the
+# trailing anchor is what rejects the patched re-tags.  Groups 1-3 are
+# major/minor/patch for callers that sort by version.
+RELEASE_TAG_RE = re.compile(r"^v(\d+)\.(\d+)\.(\d+)(?:-rc\d+)?$")
 
 
 class Outcome(str, Enum):

@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from scripts.git_ops import RELEASE_TAG_RE
+from scripts.models import RELEASE_TAG_RE
 
 UPSTREAM_REPO = "leanprover-community/mathlib4"
 THIS_REPO = "leanprover-community/downstream-reports"
@@ -177,7 +177,7 @@ def _prefer_release_tag(current: str | None, candidate: str) -> str:
     When a commit carries both a release tag and a co-located daily tag
     (master-YYYY-MM-DD, nightly-*), the release name wins so a release-stepped
     target renders as e.g. "v4.32.0".  "Release-shaped" is the shared
-    ``git_ops.RELEASE_TAG_RE`` (final or -rc; not a patched re-tag).
+    ``models.RELEASE_TAG_RE`` (final or -rc; not a patched re-tag).
     """
     if current is None:
         return candidate
