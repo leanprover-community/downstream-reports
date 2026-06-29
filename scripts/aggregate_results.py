@@ -86,7 +86,11 @@ def fetch_commit_distances(
     return cache
 
 
-_SEMVER_RE = re.compile(r"^v(\d+)\.(\d+)\.(\d+)")
+# A release tag is a final (v4.14.0) or release candidate (v4.32.0-rc1).  The
+# trailing anchor excludes patched re-tags (v4.14.0-patch1, v4.32.0-rc1-patch1)
+# and any other suffix — those are not releases for `last_good_release`.  Mirrors
+# git_ops.RELEASE_TAG_RE; the capture groups feed the newest-first version sort.
+_SEMVER_RE = re.compile(r"^v(\d+)\.(\d+)\.(\d+)(?:-rc\d+)?$")
 
 
 def _fetch_semver_tags_api(
