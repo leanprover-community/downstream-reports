@@ -23,7 +23,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import re
 import sys
 import urllib.error
 import urllib.request
@@ -33,6 +32,7 @@ from pathlib import Path
 from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from scripts.git_ops import RELEASE_TAG_RE
 from scripts.models import Outcome, utc_now
 from scripts.storage import (
     DownstreamStatusRecord,
@@ -86,13 +86,6 @@ def fetch_commit_distances(
     return cache
 
 
-# A release tag is a final (v4.14.0) or release candidate (v4.32.0-rc1).  The
-# trailing anchor excludes patched re-tags (v4.14.0-patch1, v4.32.0-rc1-patch1)
-# and any other suffix — those are not releases for `last_good_release`.  Mirrors
-# git_ops.RELEASE_TAG_RE; the capture groups feed the newest-first version sort.
-_SEMVER_RE = re.compile(r"^v(\d+)\.(\d+)\.(\d+)(?:-rc\d+)?$")
-
-
 def _fetch_semver_tags_api(
     repo: str,
     headers: dict[str, str],
@@ -112,7 +105,7 @@ def _fetch_semver_tags_api(
         for tag in page_tags:
             name: str = tag.get("name", "")
             sha: str = (tag.get("commit") or {}).get("sha", "")
-            m = _SEMVER_RE.match(name)
+            m = RELEASE_TAG_RE.match(name)
             if m and sha:
                 result.append(((int(m.group(1)), int(m.group(2)), int(m.group(3))), name, sha))
         if len(page_tags) < 100:

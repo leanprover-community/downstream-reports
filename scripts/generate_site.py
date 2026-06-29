@@ -17,7 +17,6 @@ import html as _html
 import json
 import math
 import os
-import re
 import subprocess
 import sys
 import urllib.request
@@ -27,6 +26,7 @@ from pathlib import Path
 from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from scripts.git_ops import RELEASE_TAG_RE
 
 UPSTREAM_REPO = "leanprover-community/mathlib4"
 THIS_REPO = "leanprover-community/downstream-reports"
@@ -171,17 +171,17 @@ def fetch_commit_titles(
     return cache
 
 
-# A release tag looks like v4.32.0 or v4.32.0-rc1.  When a commit carries both
-# a release tag and a co-located daily tag (master-YYYY-MM-DD, nightly-*), prefer
-# the release name so a release-stepped target renders as e.g. "v4.32.0".
-_RELEASE_TAG_RE = re.compile(r"^v\d+\.\d+\.\d+(-rc\d+)?$")
-
-
 def _prefer_release_tag(current: str | None, candidate: str) -> str:
-    """Pick the tag to keep for a SHA, preferring a release-shaped name."""
+    """Pick the tag to keep for a SHA, preferring a release-shaped name.
+
+    When a commit carries both a release tag and a co-located daily tag
+    (master-YYYY-MM-DD, nightly-*), the release name wins so a release-stepped
+    target renders as e.g. "v4.32.0".  "Release-shaped" is the shared
+    ``git_ops.RELEASE_TAG_RE`` (final or -rc; not a patched re-tag).
+    """
     if current is None:
         return candidate
-    if _RELEASE_TAG_RE.match(candidate) and not _RELEASE_TAG_RE.match(current):
+    if RELEASE_TAG_RE.match(candidate) and not RELEASE_TAG_RE.match(current):
         return candidate
     return current
 

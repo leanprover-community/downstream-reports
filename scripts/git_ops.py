@@ -209,9 +209,13 @@ def resolve_tag(repo_dir: Path, tag: str) -> str:
     return git(repo_dir, "rev-list", "-n", "1", tag)
 
 
-# Semver release tags, including prereleases (e.g. v4.32.0 and v4.32.0-rc1);
-# excludes non-release tags like master-2026-04-15 or nightly-*.
-RELEASE_TAG_RE = re.compile(r"^v\d+\.\d+\.\d+(-rc\d+)?$")
+# The canonical release-tag shape, shared by the select/probe, aggregation, and
+# site-rendering paths.  A final (v4.32.0) or release candidate (v4.32.0-rc1);
+# excludes daily/nightly tags (master-2026-04-15, nightly-*) and patched re-tags
+# (v4.14.0-patch1, v4.32.0-rc1-patch1).  Groups 1-3 are major/minor/patch for
+# callers that sort by version (aggregate_results._fetch_semver_tags_api); the
+# trailing anchor is what rejects the patched re-tags.
+RELEASE_TAG_RE = re.compile(r"^v(\d+)\.(\d+)\.(\d+)(?:-rc\d+)?$")
 
 
 def next_release_tag_after(repo_dir: Path, commit: str) -> str | None:
