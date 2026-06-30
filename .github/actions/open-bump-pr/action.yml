@@ -242,15 +242,15 @@ runs:
             if [ -n "${FIX_SUMMARY:-}" ]; then
               # `hopscotch fix` changed files on top of the verified bump that the
               # green build did not cover, so this branch drops the "mergeable
-              # as-is" framing and asks for CI.
+              # as-is" framing (the shared trailer below still asks for CI).
               printf 'This is an automated dependency bump to the latest commit this project is known to build against (its **last-known-good** commit). `lake build` succeeded against the new commit before this PR was opened.\n\n'
-              printf 'On top of the bump, `hopscotch fix` applied the following changes — these were **not** covered by that build, so run your CI on this PR before merging:\n\n'
+              printf 'On top of the bump, `hopscotch fix` applied the following changes, which that build did **not** cover:\n\n'
               printf '%s' "$FIX_SUMMARY" | bash "${{ github.action_path }}/../../scripts/md-fenced-block.sh"
               printf '\n'
             else
               printf 'This is an automated dependency bump to the latest commit this project is known to build against (its **last-known-good** commit). `lake build` was run against the new commit before this PR was opened and succeeded, so it should be mergeable as-is.\n\n'
-              printf 'Only `lake build` is checked, though — if your own CI does more (linting, failing on warnings, downstream tests, …), run it on this PR before merging.\n\n'
             fi
+            printf 'Only `lake build` is checked, though — if your own CI does more (linting, failing on warnings, downstream tests, …), run it on this PR before merging.\n\n'
             if [ "$TOKEN" = "$DEFAULT_TOKEN" ]; then
               printf '> [!WARNING]\n'
               printf '> This PR was opened by the default `github-actions[bot]` identity, so **your repository'"'"'s own CI does not run on it** — GitHub suppresses workflow triggers (`push` / `pull_request`) for events caused by the built-in `GITHUB_TOKEN`.\n'

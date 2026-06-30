@@ -17,7 +17,7 @@
 #   reported_at, target_commit, downstream_commit, outcome, episode_state,
 #   first_known_bad_commit, last_known_good_commit,
 #   downstream_name, repo,
-#   proposed_fixes_count, proposed_fixes_file
+#   proposed_fixes_file
 #
 # proposed_fixes (hopscotch results.json `proposed_fixes`, schema v3+) is an
 # array, not a scalar, so it is written verbatim to a JSON file under
@@ -69,7 +69,6 @@ emit_empty() {
     echo "last_known_good_commit="
     echo "downstream_name="
     echo "repo="
-    echo "proposed_fixes_count=0"
     echo "proposed_fixes_file=$PROPOSED_FIXES_FILE"
   } >> "$GITHUB_OUTPUT"
 }
@@ -177,6 +176,5 @@ echo "Proposed fixes:       ${PROPOSED_FIXES_COUNT:-0}"
   echo "last_known_good_commit=$LKG_COMMIT"
   echo "downstream_name=$DS_NAME"
   echo "repo=$REPO"
-  echo "proposed_fixes_count=${PROPOSED_FIXES_COUNT:-0}"
   echo "proposed_fixes_file=$PROPOSED_FIXES_FILE"
 } >> "$GITHUB_OUTPUT"

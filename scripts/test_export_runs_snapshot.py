@@ -110,6 +110,19 @@ _INVENTORY_JSON = {
 }
 
 
+# A representative hopscotch fix, the default fixture for runs that carry one so
+# the full-field snapshot / round-trip tests exercise proposed_fixes.
+_SAMPLE_PROPOSED_FIXES = [
+    {
+        "fixId": "module-deprecation",
+        "oldModule": "Mathlib.Data.Real.Sqrt",
+        "newModules": ["Mathlib.Analysis.SpecialFunctions.Sqrt"],
+        "partialFix": False,
+        "note": "",
+    }
+]
+
+
 def _make_run(
     run_id: str = "1",
     run_url: str = "https://example.com/runs/1",
@@ -138,7 +151,7 @@ def _make_run(
         job_id=job_id,
         job_url=job_url,
         culprit_log_artifact_url=culprit_log_artifact_url,
-        proposed_fixes=proposed_fixes or [],
+        proposed_fixes=_SAMPLE_PROPOSED_FIXES if proposed_fixes is None else proposed_fixes,
     )
 
 
@@ -234,20 +247,8 @@ class TestBuildRunsSnapshotEntry:
         assert entry["episode_state"] == "failing"
         assert entry["first_known_bad_commit"] == "bad_xyz"
         assert entry["last_known_good_commit"] == "good_uvw"
-
-    def test_proposed_fixes_propagate_verbatim(self) -> None:
-        """Scenario: the proposed_fixes array carries through to the snapshot entry unchanged."""
-        fix = {
-            "fixId": "module-deprecation",
-            "oldModule": "Mathlib.Data.Real.Sqrt",
-            "newModules": ["Mathlib.Analysis.SpecialFunctions.Sqrt"],
-            "partialFix": False,
-            "note": "",
-        }
-        run = _make_run(proposed_fixes=[fix])
-        snap = build_runs_snapshot({"physlib": run}, _INVENTORY, _UPSTREAM)
-        entry = snap["downstreams"]["physlib"]
-        assert entry["proposed_fixes"] == [fix]
+        # proposed_fixes carries through verbatim.
+        assert entry["proposed_fixes"] == _SAMPLE_PROPOSED_FIXES
 
     def test_run_without_job_metadata_produces_null_job_fields(self) -> None:
         """Scenario: LatestRunRecord with no job_id/job_url renders null job fields."""
@@ -522,7 +523,7 @@ class TestLoadLatestRunPerDownstream:
             head_probe_failure_stage=None,
             culprit_log_text=None,
             culprit_log_artifact_url=culprit_log_artifact_url,
-            proposed_fixes=proposed_fixes or [],
+            proposed_fixes=_SAMPLE_PROPOSED_FIXES if proposed_fixes is None else proposed_fixes,
         )
         validate_jobs: list[ValidateJobRecord] | None = None
         if job_id or job_url:
@@ -571,6 +572,8 @@ class TestLoadLatestRunPerDownstream:
         assert rec.outcome == "failed"
         assert rec.first_known_bad == "bad_xyz"
         assert rec.downstream_commit == "ds_head"
+        # proposed_fixes survives the JSON round-trip through SQL.
+        assert rec.proposed_fixes == _SAMPLE_PROPOSED_FIXES
 
     def test_returns_latest_run_when_multiple(self) -> None:
         """Scenario: when multiple runs exist, the newest wins per downstream."""
@@ -665,39 +668,6 @@ class TestLoadLatestRunPerDownstream:
         # LatestRunRecord has no culprit_log_text field — the log lives only in
         # the artifact, never in the database or the snapshot.
         assert not hasattr(rec, "culprit_log_text")
-
-    def test_proposed_fixes_round_trip_through_sql(self) -> None:
-        """Scenario: proposed_fixes survives save/load as JSON.
-
-        The column stores hopscotch's verbatim objects so the bump actions can
-        hand them straight to `hopscotch fix apply --from`.
-        """
-        from scripts.storage import load_latest_run_per_downstream
-
-        engine, _ = self._engine()
-        when = datetime(2026, 4, 20, 6, 0, 0, tzinfo=timezone.utc)
-        fix = {
-            "fixId": "module-deprecation",
-            "oldModule": "Mathlib.Topology.Algebra.Module.LinearMap",
-            "newModules": ["Mathlib.Topology.Algebra.Module.ContinuousLinearMap.Basic"],
-            "partialFix": False,
-            "note": "",
-        }
-        self._seed_run(engine, "with-fixes", when, proposed_fixes=[fix])
-
-        rec = load_latest_run_per_downstream(engine, "regression", _UPSTREAM)["physlib"]
-        assert rec.proposed_fixes == [fix]
-
-    def test_proposed_fixes_default_to_empty_list(self) -> None:
-        """Scenario: a run with no fix data reads back as an empty list, not None."""
-        from scripts.storage import load_latest_run_per_downstream
-
-        engine, _ = self._engine()
-        when = datetime(2026, 4, 20, 6, 0, 0, tzinfo=timezone.utc)
-        self._seed_run(engine, "no-fixes", when)
-
-        rec = load_latest_run_per_downstream(engine, "regression", _UPSTREAM)["physlib"]
-        assert rec.proposed_fixes == []
 
     def test_multiple_downstreams_each_get_latest(self) -> None:
         """Scenario: per-downstream latest is computed independently."""

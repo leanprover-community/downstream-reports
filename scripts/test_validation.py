@@ -242,9 +242,9 @@ class TestBuildResultFromToolFixes:
             tool_summary="summary",
         )
 
-    def test_proposed_fixes_carried_from_stopped_run(self) -> None:
-        """Scenario: a stopped bisect carries proposedFixes verbatim; other results.json keys are ignored."""
-        result = self._build(
+    def test_proposed_fixes_carried_verbatim_else_empty(self) -> None:
+        """Scenario: proposedFixes is carried verbatim (other results.json keys ignored); absent → []."""
+        carried = self._build(
             1,
             {
                 "firstFailingCommit": "b",
@@ -256,13 +256,12 @@ class TestBuildResultFromToolFixes:
                 "detectionNotes": ["module-deprecation: note"],
             },
         )
-        assert result.outcome == Outcome.FAILED
-        assert result.proposed_fixes == [self._FIX]
+        assert carried.outcome == Outcome.FAILED
+        assert carried.proposed_fixes == [self._FIX]
 
-    def test_missing_field_defaults_to_empty_list(self) -> None:
-        """Scenario: a results.json with no proposedFixes yields an empty list."""
-        result = self._build(1, {"firstFailingCommit": "b", "failureStage": "lake build"})
-        assert result.proposed_fixes == []
+        # No proposedFixes in results.json → empty list.
+        absent = self._build(1, {"firstFailingCommit": "b", "failureStage": "lake build"})
+        assert absent.proposed_fixes == []
 
 
 class TestCommitPlanArtifact:
