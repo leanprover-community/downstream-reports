@@ -761,14 +761,23 @@ runs:
 
           if [ -n "$MERGED" ] && [ -f "$MERGED" ]; then
             # Let hopscotch apply what it will and capture its output verbatim.
-            # A working-tree diff decides whether anything changed: the downstream
-            # `.lake` (where `fix apply` writes its backups) is gitignored, so the
-            # porcelain diff isolates exactly the changes `fix apply` made on top
-            # of the rev bump — the signal that drives the merge-safety message.
-            TREE_BEFORE=$(git -C "$PROJECT_DIR" status --porcelain 2>/dev/null | sort)
+            # Whether it changed anything is decided by fingerprinting the
+            # working tree before/after — `git status --porcelain` for the file
+            # set (new/removed/untracked) AND `git diff HEAD` for content, so a
+            # fix that re-edits a file the rev bump already modified (e.g. the
+            # lakefile/manifest) is still detected, not just disjoint new files.
+            # The downstream `.lake` (where `fix apply` writes its backups) is
+            # gitignored, so this isolates the fixes on top of the rev bump — the
+            # signal that drives the merge-safety message.
+            tree_fingerprint() {
+              { git -C "$PROJECT_DIR" status --porcelain 2>/dev/null
+                git -C "$PROJECT_DIR" diff HEAD 2>/dev/null
+              } | sha256sum
+            }
+            TREE_BEFORE=$(tree_fingerprint)
             hopscotch fix apply --from "$MERGED" --project-dir "$PROJECT_DIR" "${FLAGS[@]}" 2>&1 | tee "$LOG"
             rc=${PIPESTATUS[0]}
-            TREE_AFTER=$(git -C "$PROJECT_DIR" status --porcelain 2>/dev/null | sort)
+            TREE_AFTER=$(tree_fingerprint)
             if [ "$rc" -ne 0 ]; then
               echo "::warning::hopscotch fix apply failed; opening the bump PR without applying fixes"
             elif [ "$TREE_BEFORE" = "$TREE_AFTER" ]; then
