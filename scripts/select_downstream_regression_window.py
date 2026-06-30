@@ -222,6 +222,11 @@ def main() -> int:
         skip_known_bad_bisect=config.skip_known_bad_bisect,
         revalidate_boundary=config.revalidate_boundary,
         nuke_lakedir=config.nuke_lakedir,
+        run_test=config.run_test,
+        run_lint=config.run_lint,
+        build_args=config.build_args,
+        test_args=config.test_args,
+        lint_args=config.lint_args,
     )
 
     # Embed prior episode state so the probe step can apply skip heuristics

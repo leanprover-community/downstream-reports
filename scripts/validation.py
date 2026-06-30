@@ -253,6 +253,11 @@ def invoke_tool(
             str(results_json_path),
             *(["--git-url", git_url] if git_url else []),
             *(["--quiet"] if quiet else []),
+            *(["--test"] if config.run_test else []),
+            *(["--lint"] if config.run_lint else []),
+            *(["--build-args", " ".join(config.build_args)] if config.build_args else []),
+            *(["--test-args", " ".join(config.test_args)] if config.test_args else []),
+            *(["--lint-args", " ".join(config.lint_args)] if config.lint_args else []),
         ]
     )
 

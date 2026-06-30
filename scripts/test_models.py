@@ -210,6 +210,55 @@ class TestNukeLakedirFlag:
         )
 
 
+class TestVerifyStepsAndBuildArgs:
+    """Inventory propagation of the verify-step and build-argument knobs."""
+
+    def test_defaults_are_off_and_empty(self) -> None:
+        """``run_test``/``run_lint`` default off and the ``*_args`` default empty.
+
+        Most downstreams have no test/lint driver wired up, and hopscotch
+        aborts a run whose enabled verify step has no driver — so the
+        extra steps and arguments must be strict opt-ins, not defaults.
+        """
+        config = DownstreamConfig(name="foo", repo="owner/foo", default_branch="main")
+        assert not config.run_test and not config.run_lint
+        assert config.build_args == [] and config.test_args == [] and config.lint_args == []
+
+    def test_inventory_settings_propagate(self, tmp_path: Path) -> None:
+        """Inventory verify-step / build-argument settings reach DownstreamConfig.
+
+        The probe step keys on these to pass hopscotch's --test / --lint
+        / --build-args / --test-args / --lint-args; if loading silently
+        dropped them, the downstream would quietly revert to a plain
+        ``lake build`` with no extra arguments.
+        """
+        inventory = {
+            "schema_version": 1,
+            "downstreams": [
+                {
+                    "name": "withTests",
+                    "repo": "owner/withTests",
+                    "default_branch": "main",
+                    "enabled": True,
+                    "run_test": True,
+                    "run_lint": True,
+                    "build_args": ["-Kenv=dev"],
+                    "test_args": ["--verbose"],
+                    "lint_args": ["--update"],
+                },
+            ],
+        }
+        path = tmp_path / "inventory.json"
+        path.write_text(json.dumps(inventory))
+
+        loaded = load_inventory(path)["withTests"]
+
+        assert loaded.run_test and loaded.run_lint
+        assert loaded.build_args == ["-Kenv=dev"]
+        assert loaded.test_args == ["--verbose"]
+        assert loaded.lint_args == ["--update"]
+
+
 class TestTargetMode:
     """The ``target_mode`` field (master vs next-release)."""
 

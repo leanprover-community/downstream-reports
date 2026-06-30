@@ -347,6 +347,11 @@ def main() -> int:
         repo=selection.repo,
         default_branch=selection.default_branch,
         dependency_name=selection.dependency_name,
+        run_test=selection.run_test,
+        run_lint=selection.run_lint,
+        build_args=selection.build_args,
+        test_args=selection.test_args,
+        lint_args=selection.lint_args,
     )
 
     # Reconstruct prior episode state from the fields the select step embedded.
