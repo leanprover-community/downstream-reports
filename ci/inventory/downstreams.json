@@ -229,6 +229,14 @@
       "watch_manifest": true
     },
     {
+      "name": "Statlib",
+      "repo": "stat-lib/statlib",
+      "default_branch": "main",
+      "dependency_name": "mathlib",
+      "enabled": true,
+      "watch_manifest": true
+    },
+    {
       "name": "TauCeti",
       "repo": "FormalFrontier/TauCeti",
       "default_branch": "main",
