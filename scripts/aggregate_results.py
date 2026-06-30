@@ -195,6 +195,8 @@ class ValidationResult:
     head_probe_failure_stage: str | None = None
     pinned_commit: str | None = None
     search_base_not_ancestor: bool = False
+    # Hopscotch fixes for the boundary, carried verbatim (see models.py).
+    proposed_fixes: list[dict[str, Any]] = field(default_factory=list)
 
     @classmethod
     def from_json(cls, payload: dict[str, Any]) -> "ValidationResult":
@@ -219,6 +221,7 @@ class ValidationResult:
             head_probe_failure_stage=payload.get("head_probe_failure_stage"),
             pinned_commit=payload.get("pinned_commit"),
             search_base_not_ancestor=payload.get("search_base_not_ancestor", False),
+            proposed_fixes=payload.get("proposed_fixes") or [],
         )
 
 
@@ -853,6 +856,7 @@ def main() -> int:
             culprit_log_artifact_url=culprit_artifact_urls.get(result.downstream),
             pinned_commit=result.pinned_commit,
             search_base_not_ancestor=result.search_base_not_ancestor,
+            proposed_fixes=result.proposed_fixes,
         )
         result_records.append(record)
         tested_details_per_record.append(

@@ -329,11 +329,13 @@ taken from the snapshot's top-level `upstream` field — no configuration needed
 | `downstream` | no | `${{ github.repository }}` | Downstream name key or repo slug (`owner/repo`). Auto-detected by presence of `/`. Defaults to the repository running this action. |
 | `project-dir` | no | `.` | Path to the downstream project root |
 | `dependency-name` | no | `mathlib` | Name of the dependency in the lakefile |
-| `hopscotch-version` | no | `v1.5.0` | Hopscotch release tag to download |
+| `hopscotch-version` | no | `v2.0.0-beta` | Hopscotch release tag to download. `v2.0.0-beta`+ is required for the `fix` subcommand (used by `apply-fixes`); older tags lack it and the apply step degrades to a rev-bump-only PR. |
 | `skip-build` | no | `false` | Set to `true` to only run `lake update` (pin lakefile + manifest) and skip the build. `build-failed` is always `false`; the bump succeeds (`updated=true`) only when `lake update` succeeds. If `lake update` fails the step fails so callers don't commit a half-baked tree. Used by the FKB fix-PR path. |
 | `generate-description` | no | `true` | Set to `false` to skip GitHub API calls; `pr-title`, `bump-description`, and `commit-message` will be empty |
 | `query-type` | no | `last-known-good` | Which commit to bump to: `last-known-good`, `first-known-bad`, or `last-good-release` (semver tag, e.g. `v4.13.0`) |
 | `branch` | no | `hopscotch/lkg-bump` | Bump-PR branch the Step 1.5 probe checks for an already-applied bump. Must match the `branch` passed to `open-bump-pr`, or the probe watches the wrong branch. Unused for `query-type: first-known-bad`. |
+| `apply-fixes` | no | `false` | After the bump, run `hopscotch fix apply` so the PR carries the fixes hopscotch recorded, not just the rev bump. When enabled, applies everything hopscotch proposes — the failure-boundary fixes (for an FKB bump, overlaid from the regression probe's published wide-range bisection; an LKG bump is green so it has none) and the deprecation advisories; set `no-advisories` to restrict it to the boundary fixes. Runs on any `query-type`. **Best-effort:** if no fixes were recorded, the installed `hopscotch-version` lacks the `fix` subcommand, or the apply fails, the bump proceeds with the rev bump alone (validated by the PR's own CI). Off by default; the fixes publish to the snapshot regardless of this flag, so set it `true` per downstream to apply them. |
+| `no-advisories` | no | `false` | Pass `--no-advisories` to `hopscotch fix apply`, restricting it to the failure-boundary fixes and skipping the deprecation advisories — changes that build today but break at the upstream cleanup (mirrors hopscotch's own flag, which applies them by default). Set this to keep an LKG bump "mergeable as-is": advisory changes aren't covered by the bump's green build. Advisories are read from the bump's **own** `results.json` (commit-specific: detected at the commit bumped to), so they're complete only when that bump built; `skip-build` finds only the statically-resolved subset; partial ones are skipped by hopscotch. No effect when `apply-fixes` is false. |
 
 ### Outputs
 
@@ -348,6 +350,7 @@ taken from the snapshot's top-level `upstream` field — no configuration needed
 | `pr-title` | Suggested PR title (empty when skipped or `generate-description: false`) |
 | `bump-description` | Markdown paragraph describing the bump — new commit + previous pin, with subjects and dates. Pass to `open-bump-pr`'s `message` input. Empty when skipped or `generate-description: false`. |
 | `commit-message` | Suggested git commit message (empty when skipped or `generate-description: false`) |
+| `fix-summary` | hopscotch's own `fix apply` output, verbatim, when it changed files after the bump — empty when nothing was applied, the step was skipped, or no fixes were recorded. Pass to `open-bump-pr`'s `fix-summary` input to describe the applied fixes in the PR body using the tool's own words. |
 
 ---
 
@@ -389,6 +392,7 @@ otherwise trigger PR CI on every tick never lands.
 | `commit-message` | no | `chore: dependency update` | Git commit message |
 | `labels` | no | `''` | Comma-separated labels to apply to the PR |
 | `message` | no | `''` | Content to place in the PR body above the automated footer. Pass the `bump-description` output from `bump-to-latest` here. |
+| `fix-summary` | no | `''` | hopscotch's own `fix apply` output (the `fix-summary` output of `bump-to-latest`). When non-empty it is rendered verbatim in the body and the "mergeable as-is" framing is adjusted — the applied changes were *not* covered by the bump's green build, so CI should run before merge. Ignored when `body` is set. |
 | `token` | no | `GITHUB_TOKEN` | Token used to push the branch and create/update the PR. Pass a GitHub App installation token to have PRs opened by a bot account instead of `github-actions[bot]`. |
 | `git-user-name` | no | `github-actions[bot]` | `git user.name` for the bump commit. |
 | `git-user-email` | no | `41898282+github-actions[bot]@users.noreply.github.com` | `git user.email` for the bump commit. |
@@ -436,6 +440,8 @@ side effects without removing the job.
 | `branch-prefix` | no | `bump-<dependency-name>/fix` | Prefix for the fix-PR branch. Final branch: `<prefix>-<fkb-short7>` (e.g. `bump-mathlib/fix-abc1234`). Stable per FKB SHA. |
 | `project-dir` | no | `.` | Path to the downstream project root. Forwarded to `bump-to-latest`. |
 | `dependency-name` | no | `mathlib` | Dependency name in the lakefile. Forwarded to `bump-to-latest`. |
+| `apply-fixes` | no | `false` | Forwarded to `bump-to-latest`: when `true`, run `hopscotch fix apply` on the FKB bump so the fix PR carries hopscotch's fixes (plus advisories), not just the rev bump. Off by default; set it `true` per downstream to apply them. |
+| `no-advisories` | no | `false` | Forwarded to `bump-to-latest`: with `apply-fixes` on, restrict it to the failure-boundary fixes (skip deprecation advisories). |
 | `base` | no | repo default | Base branch for the fix PR. |
 | `git-user-name` | no | `github-actions[bot]` | `git user.name` for the bump commit. |
 | `git-user-email` | no | `41898282+github-actions[bot]@users.noreply.github.com` | `git user.email` for the bump commit. |

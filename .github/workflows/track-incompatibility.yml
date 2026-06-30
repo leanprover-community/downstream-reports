@@ -116,6 +116,16 @@ on:
         default: 'mathlib'
         required: false
         type: string
+      apply-fixes:
+        description: 'Run `hopscotch fix apply` on the FKB bump so the fix PR carries hopscotch''s fixes, not just the rev bump. Off by default; set true to apply.'
+        default: 'false'
+        required: false
+        type: string
+      no-advisories:
+        description: 'With apply-fixes on, restrict it to the failure-boundary fixes (skip deprecation advisories).'
+        default: 'false'
+        required: false
+        type: string
       base:
         description: 'Base branch for the fix PR.  Defaults to repo default branch.'
         default: ''
@@ -196,6 +206,8 @@ jobs:
           branch-prefix:      ${{ inputs.branch-prefix }}
           project-dir:        ${{ inputs.project-dir }}
           dependency-name:    ${{ inputs.dependency-name }}
+          apply-fixes:        ${{ inputs.apply-fixes }}
+          no-advisories:      ${{ inputs.no-advisories }}
           base:               ${{ inputs.base }}
           git-user-name:      ${{ inputs.git-user-name }}
           git-user-email:     ${{ inputs.git-user-email }}

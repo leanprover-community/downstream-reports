@@ -49,6 +49,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from scripts.models import CommitDetail, DownstreamConfig, Outcome, WindowSelection
 from scripts.validation import (
     append_commit_plan_artifact,
+    build_result_from_tool,
     build_skip_result,
     classify_exit_code,
     commit_plan_artifact_path,
@@ -208,6 +209,59 @@ class TestBuildSkipResult:
 
         # Assert
         assert result.tested_commits == [], "No target ⇒ empty list, not [None] — keeps first_bad_position honest"
+
+
+class TestBuildResultFromToolFixes:
+    """Automated-fix detection carried out of hopscotch's results.json (schema v3+)."""
+
+    _CONFIG = DownstreamConfig(
+        name="physlib",
+        repo="leanprover-community/physlib",
+        default_branch="master",
+    )
+    _FIX = {
+        "fixId": "module-deprecation",
+        "oldModule": "Mathlib.Topology.Algebra.Module.LinearMap",
+        "newModules": ["Mathlib.Topology.Algebra.Module.ContinuousLinearMap.Basic"],
+        "partialFix": False,
+        "note": "",
+    }
+
+    def _build(self, returncode: int, state: dict):
+        return build_result_from_tool(
+            config=self._CONFIG,
+            downstream_commit="ds_abc",
+            upstream_ref="master",
+            target_commit="target_abc",
+            search_mode="bisect",
+            tested_commits=["a", "b"],
+            tested_commit_details=[],
+            truncated=False,
+            tool_run=Mock(returncode=returncode, stdout="", stderr=""),
+            state=state,
+            tool_summary="summary",
+        )
+
+    def test_proposed_fixes_carried_verbatim_else_empty(self) -> None:
+        """Scenario: proposedFixes is carried verbatim (other results.json keys ignored); absent → []."""
+        carried = self._build(
+            1,
+            {
+                "firstFailingCommit": "b",
+                "lastSuccessfulCommit": "a",
+                "failureStage": "lake build",
+                "proposedFixes": [self._FIX],
+                # Other results.json keys the model does not read.
+                "deprecatedImports": [self._FIX],
+                "detectionNotes": ["module-deprecation: note"],
+            },
+        )
+        assert carried.outcome == Outcome.FAILED
+        assert carried.proposed_fixes == [self._FIX]
+
+        # No proposedFixes in results.json → empty list.
+        absent = self._build(1, {"firstFailingCommit": "b", "failureStage": "lake build"})
+        assert absent.proposed_fixes == []
 
 
 class TestCommitPlanArtifact:

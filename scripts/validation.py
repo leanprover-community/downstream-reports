@@ -369,6 +369,9 @@ def build_result_from_tool(
         head_probe_summary=head_probe_summary,
         pinned_commit=pinned_commit,
         search_base_not_ancestor=search_base_not_ancestor,
+        # The boundary fixes hopscotch recorded, verbatim; non-empty only when
+        # the run stopped at a repairable boundary (the FKB).
+        proposed_fixes=state.get("proposedFixes") or [],
     )
 
     if tool_run.returncode == 0:

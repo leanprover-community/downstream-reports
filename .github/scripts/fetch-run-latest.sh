@@ -16,7 +16,14 @@
 #   culprit_log_artifact_name, culprit_log_artifact_url,
 #   reported_at, target_commit, downstream_commit, outcome, episode_state,
 #   first_known_bad_commit, last_known_good_commit,
-#   downstream_name, repo
+#   downstream_name, repo,
+#   proposed_fixes_file
+#
+# proposed_fixes (hopscotch results.json `proposed_fixes`, schema v3+) is an
+# array, not a scalar, so it is written verbatim to a JSON file under
+# RUNNER_TEMP rather than GITHUB_OUTPUT.  `bump-to-latest` overlays it onto a
+# results.json scaffold and runs `hopscotch fix apply`.  The file always
+# contains a valid JSON array (`[]` when absent).
 #
 # The failing-commit log itself is not exposed here — consumers download the
 # `culprit-log-<name>` artifact via `culprit_log_artifact_url` when they need
@@ -32,6 +39,11 @@ set -uo pipefail
 
 SNAPSHOT_URL='https://downstreamreports.z13.web.core.windows.net/runs/latest.json'
 
+# Where the verbatim fixes array is written.  Fixed path under RUNNER_TEMP:
+# bump-to-latest runs against a single downstream per job, so there is no
+# collision.  Always populated with a valid JSON array.
+PROPOSED_FIXES_FILE="${RUNNER_TEMP:-/tmp}/hopscotch-proposed-fixes.json"
+
 # ------------------------------------------------------------------
 # Emit empty outputs.  Used as the failure path so that callers can
 # always read steps.*.outputs.<key> without conditional guards.
@@ -39,6 +51,7 @@ SNAPSHOT_URL='https://downstreamreports.z13.web.core.windows.net/runs/latest.jso
 emit_empty() {
   local reason="${1:-no data}"
   echo "Warning: $reason" >&2
+  printf '[]' > "$PROPOSED_FIXES_FILE"
   {
     echo "run_id="
     echo "run_url="
@@ -56,6 +69,7 @@ emit_empty() {
     echo "last_known_good_commit="
     echo "downstream_name="
     echo "repo="
+    echo "proposed_fixes_file=$PROPOSED_FIXES_FILE"
   } >> "$GITHUB_OUTPUT"
 }
 
@@ -126,6 +140,11 @@ EPISODE_STATE=$(get episode_state)
 FKB_COMMIT=$(get first_known_bad_commit)
 LKG_COMMIT=$(get last_known_good_commit)
 
+# Boundary fixes → file (verbatim; default to [] when the snapshot entry has no
+# proposed_fixes).
+printf '%s' "$ENTRY" | jq -c '.proposed_fixes // []' > "$PROPOSED_FIXES_FILE"
+PROPOSED_FIXES_COUNT=$(jq 'length' "$PROPOSED_FIXES_FILE" 2>/dev/null || echo 0)
+
 echo "Downstream:           $DS_NAME"
 echo "Repo:                 $REPO"
 echo "Latest run:           ${RUN_URL:-<none>}"
@@ -138,6 +157,7 @@ echo "Outcome:              ${OUTCOME:-<none>}"
 echo "Episode state:        ${EPISODE_STATE:-<none>}"
 echo "FKB commit:           ${FKB_COMMIT:-<none>}"
 echo "LKG commit:           ${LKG_COMMIT:-<none>}"
+echo "Proposed fixes:       ${PROPOSED_FIXES_COUNT:-0}"
 
 {
   echo "run_id=$RUN_ID"
@@ -156,4 +176,5 @@ echo "LKG commit:           ${LKG_COMMIT:-<none>}"
   echo "last_known_good_commit=$LKG_COMMIT"
   echo "downstream_name=$DS_NAME"
   echo "repo=$REPO"
+  echo "proposed_fixes_file=$PROPOSED_FIXES_FILE"
 } >> "$GITHUB_OUTPUT"

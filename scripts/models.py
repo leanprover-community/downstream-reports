@@ -217,6 +217,12 @@ class ValidationResult:
     head_probe_summary: str | None = None
     pinned_commit: str | None = None
     search_base_not_ancestor: bool = False
+    # The fixes hopscotch recorded for the boundary, carried verbatim from its
+    # results.json `proposedFixes` so the bump action can overlay them onto its
+    # own run and `hopscotch fix apply`.  Each entry keeps hopscotch's own object
+    # shape and is treated opaquely (fix-type-agnostic).  Empty when none were
+    # recorded.
+    proposed_fixes: list[dict[str, Any]] = field(default_factory=list)
 
     def to_json(self) -> dict[str, Any]:
         """Serialize the result using plain JSON-compatible values."""

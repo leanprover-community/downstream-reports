@@ -201,7 +201,16 @@ or rename).
       "outcome": "failed",
       "episode_state": "failing",
       "first_known_bad_commit": "abc123...",
-      "last_known_good_commit": "0011..."
+      "last_known_good_commit": "0011...",
+      "proposed_fixes": [
+        {
+          "fixId": "module-deprecation",
+          "oldModule": "Mathlib.Topology.Algebra.Module.LinearMap",
+          "newModules": ["Mathlib.Topology.Algebra.Module.ContinuousLinearMap.Basic"],
+          "partialFix": false,
+          "note": ""
+        }
+      ]
     }
   }
 }
@@ -214,6 +223,21 @@ best-effort (null when the underlying DB rows are missing).
 `result_artifact_name` is always `result-<downstream-name>` — it's a convention
 for the `result-<name>` artifact uploaded by the probe job, not a stored
 field.
+
+**`proposed_fixes`** — the fixes hopscotch recorded for the failure boundary,
+carried verbatim from its `results.json` `proposedFixes` (see hopscotch
+`docs/results.schema.json`):
+
+- Populated only on a stopped (failing) run, i.e. at the FKB a bisect found;
+  `[]` otherwise. Each entry is hopscotch's `ProposedFix` object (`{fixId,
+  oldModule, newModules, partialFix, note}`), treated opaquely — the snapshot is
+  fix-type-agnostic. The `bump-to-latest` action applies these to the FKB fix PR
+  via `hopscotch fix apply --from` (see `docs/actions.md`).
+
+It is the only fix data the snapshot carries: the bump applies deprecation
+advisories from its own run, so it has no need for hopscotch's other result
+arrays. The field is optional and additive, so `schema_version` stays 1 (a
+consumer that ignores unknown keys is unaffected).
 
 ---
 

@@ -39,6 +39,8 @@ from scripts.storage import (
     create_backend,
 )
 
+# Bumped only for breaking changes (field removal/rename); optional additive
+# fields don't move it (see the evolution rule in docs/internal/lkg-pipeline.md).
 SCHEMA_VERSION = 1
 
 # GitHub base URL used when constructing source run URLs from a run ID.
@@ -71,6 +73,9 @@ def _entry_from_run(config: DownstreamConfig, run: LatestRunRecord | None) -> di
         "episode_state": None,
         "first_known_bad_commit": None,
         "last_known_good_commit": None,
+        # Hopscotch boundary fixes (verbatim).  The bump actions apply these to
+        # a fix PR via `hopscotch fix apply --from`.
+        "proposed_fixes": [],
     }
     if run is None:
         return base
@@ -88,6 +93,7 @@ def _entry_from_run(config: DownstreamConfig, run: LatestRunRecord | None) -> di
             "episode_state": run.episode_state,
             "first_known_bad_commit": run.first_known_bad,
             "last_known_good_commit": run.last_known_good,
+            "proposed_fixes": run.proposed_fixes,
         }
     )
     return base

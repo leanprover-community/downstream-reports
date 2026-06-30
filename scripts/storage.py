@@ -42,7 +42,7 @@ import os
 import random
 import time
 from contextlib import contextmanager
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Iterator, Protocol, runtime_checkable
 
@@ -116,6 +116,10 @@ class LatestRunRecord:
     # The log text itself is not persisted — consumers fetch the artifact when they
     # need the contents, so the database stays free of arbitrary build output.
     culprit_log_artifact_url: str | None = None
+    # Hopscotch boundary fixes, surfaced in runs/latest.json so the bump actions
+    # can apply `hopscotch fix` to a fix PR.  Verbatim hopscotch shapes (see
+    # RunResultRecord); empty list when none were recorded.
+    proposed_fixes: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass
@@ -172,6 +176,10 @@ class RunResultRecord:
     # itself (`culprit_log_text` above) is held only in memory for the in-process
     # markdown report and Zulip alert payload — never written to SQL.
     culprit_log_artifact_url: str | None = None
+    # Hopscotch boundary fixes (results.json `proposedFixes`), stored verbatim as
+    # JSON text — hopscotch's own ProposedFix objects (see models.ValidationResult),
+    # treated opaquely.  Empty list when none were recorded.
+    proposed_fixes: list[dict[str, Any]] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -478,6 +486,11 @@ try:
         Column("bump_commits", Integer),
         Column("search_base_not_ancestor", Boolean, nullable=False, server_default="false"),
         Column("culprit_log_artifact_url", String),
+        # Hopscotch boundary fixes, stored as JSON text (schema v3+).
+        # server_default '[]' keeps a manual ALTER on the production table
+        # backfill-free, and lets create_all populate fresh DBs.  Read back
+        # through json.loads (None/'' tolerated as []).
+        Column("proposed_fixes", String, nullable=False, server_default="[]"),
     )
 
     _sa_validate_job = Table(
@@ -536,6 +549,21 @@ def _parse_dt(value: str) -> Any:
     """Parse an ISO-8601 timestamp string into a UTC-aware datetime."""
     from datetime import datetime, timezone
     return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(timezone.utc)
+
+
+def _loads_json_list(value: Any) -> list:
+    """Decode a JSON-array TEXT column, treating NULL or empty as ``[]``.
+
+    Used for ``run_result.proposed_fixes``, where a NULL (a row with no recorded
+    fixes) reads back as an empty list.
+    """
+    if not value:
+        return []
+    try:
+        decoded = json.loads(value)
+    except (TypeError, ValueError):
+        return []
+    return decoded if isinstance(decoded, list) else []
 
 
 # ---------------------------------------------------------------------------
@@ -799,6 +827,7 @@ class SqlBackend:
                     "bump_commits": r.bump_commits,
                     "search_base_not_ancestor": r.search_base_not_ancestor,
                     "culprit_log_artifact_url": r.culprit_log_artifact_url,
+                    "proposed_fixes": json.dumps(r.proposed_fixes or []),
                 })
 
             for downstream, s in updated_statuses.items():
@@ -1114,6 +1143,7 @@ def load_latest_run_per_downstream(
             vj.c.job_id,
             vj.c.job_url,
             rr.c.culprit_log_artifact_url,
+            rr.c.proposed_fixes,
         )
         .join(latest_per_ds, rr.c.downstream == latest_per_ds.c.downstream)
         .join(
@@ -1156,6 +1186,7 @@ def load_latest_run_per_downstream(
             job_id=row[10],
             job_url=row[11],
             culprit_log_artifact_url=row[12],
+            proposed_fixes=_loads_json_list(row[13]),
         )
     return result
 

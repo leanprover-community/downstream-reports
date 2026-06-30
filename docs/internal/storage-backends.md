@@ -75,14 +75,24 @@ create_schema(create_engine("postgresql://user:pass@host/dbname"))
 ```
 
 `create_schema` is idempotent — safe to re-run on a database that is already
-provisioned.
+provisioned. It creates *missing tables* but does **not** add columns to tables
+that already exist (`create_all` only emits `CREATE TABLE … IF NOT EXISTS`). New
+columns on an existing production table need a manual `ALTER`. For
+`run_result.proposed_fixes`:
+
+```sql
+ALTER TABLE run_result ADD COLUMN IF NOT EXISTS proposed_fixes TEXT NOT NULL DEFAULT '[]';
+```
+
+The `DEFAULT '[]'` mirrors the SQLAlchemy `server_default`, so the backfill is
+free and existing rows read back as empty lists.
 
 ### Schema
 
 | Table | One row per | Key columns |
 | --- | --- | --- |
 | `run` | workflow run | `run_id`, `workflow`, `mathlib_ref`, `run_url`, `started_at`, `reported_at` |
-| `run_result` | downstream × run | `outcome`, `episode_state`, mathlib target / LKG / FKB commits, `failure_stage`, `search_mode`, head-probe fields, tool `summary` |
+| `run_result` | downstream × run | `outcome`, `episode_state`, mathlib target / LKG / FKB commits, `failure_stage`, `search_mode`, head-probe fields, tool `summary`, hopscotch boundary fixes (`proposed_fixes`) |
 | `downstream_status` | downstream × workflow | `last_known_good`, `first_known_bad` — current episode state, upserted after every run |
 | `validate_job` | downstream × run | CI job timing and conclusion for the validate step |
 | `cache_warmth` | upstream × SHA | `warmed_at` — set when a SHA's olean cache has been confirmed warm; consulted by `plan_cache_warm_jobs.py` to skip already-warm SHAs |
@@ -132,6 +142,9 @@ CREATE TABLE run_result (
     head_probe_outcome       TEXT,
     head_probe_failure_stage TEXT,
     head_probe_summary       TEXT,
+    -- Hopscotch boundary fixes (results.json `proposedFixes`, schema v3+),
+    -- stored as JSON text — hopscotch's verbatim ProposedFix objects.
+    proposed_fixes           TEXT    NOT NULL DEFAULT '[]',
     PRIMARY KEY (run_id, downstream)
 );
 

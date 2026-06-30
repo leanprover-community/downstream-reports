@@ -112,6 +112,21 @@ inputs:
     description: >
       Name of the dependency in the lakefile.  Forwarded to bump-to-latest
       and used to compute the default branch prefix.
+  apply-fixes:
+    required: false
+    default: 'false'
+    description: >
+      Forwarded to bump-to-latest: when 'true', run `hopscotch fix apply` on the
+      first-known-bad bump so the fix PR carries the fixes hopscotch recommends
+      (overlaid from the published wide-range proposals) plus deprecation
+      advisories, not just the rev bump.  Off by default; set it 'true' per
+      downstream to apply them.
+  no-advisories:
+    required: false
+    default: 'false'
+    description: >
+      Forwarded to bump-to-latest: with apply-fixes on, restrict it to the
+      failure-boundary fixes and skip the deprecation advisories.
   base:
     required: false
     default: ''
@@ -786,6 +801,8 @@ runs:
         project-dir:     ${{ inputs.project-dir }}
         query-type:      first-known-bad
         skip-build:      'true'
+        apply-fixes:     ${{ inputs.apply-fixes }}
+        no-advisories:   ${{ inputs.no-advisories }}
 
     # ------------------------------------------------------------------
     # Step 14: Commit the lakefile changes and push the fix branch.
@@ -848,6 +865,9 @@ runs:
         DEP_NAME: ${{ inputs.dependency-name }}
         FKB_COMMIT: ${{ steps.fkb.outputs.commit }}
         CULPRIT_LOG_ARTIFACT_URL: ${{ steps.run.outputs.culprit_log_artifact_url }}
+        # hopscotch's own `fix apply` summary (verbatim) when it changed files;
+        # empty otherwise.  Surfaced as-is — never synthesized here.
+        FIX_SUMMARY: ${{ steps.bump.outputs.fix-summary }}
         # Used to decide whether to surface the "CI does not run" warning:
         # the warning applies only when the PR is opened under the built-in
         # GITHUB_TOKEN. A custom App / PAT token differs from github.token,
@@ -875,6 +895,11 @@ runs:
           printf -- '---\n\n'
           printf 'This PR bumps `%s` to an identified incompatible (first-known-bad) commit (`%s`) so you can reproduce and fix the incompatibility locally by checking out this branch.\n\n' \
             "$DEP_NAME" "$FKB_SHORT"
+          if [ -n "${FIX_SUMMARY:-}" ]; then
+            printf 'It also applies the fixes `hopscotch fix` recommends here. Review them — a fix can be partial (e.g. when the upstream PR also renamed declarations) — and rely on this branch'"'"'s CI to validate the result:\n\n'
+            printf '%s' "$FIX_SUMMARY" | bash "${{ github.action_path }}/../../scripts/md-fenced-block.sh"
+            printf '\n'
+          fi
           if [ "$TOKEN" = "$DEFAULT_TOKEN" ]; then
             printf '> [!WARNING]\n'
             printf '> This PR was opened by the default `github-actions[bot]` identity, so **your repository'"'"'s own CI does not run on the PR as opened** — GitHub suppresses workflow triggers (`push` / `pull_request`) for events caused by the built-in `GITHUB_TOKEN`. Fix commits you push to this branch yourself *will* trigger CI normally.\n'

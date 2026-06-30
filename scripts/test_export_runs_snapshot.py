@@ -110,6 +110,19 @@ _INVENTORY_JSON = {
 }
 
 
+# A representative hopscotch fix, the default fixture for runs that carry one so
+# the full-field snapshot / round-trip tests exercise proposed_fixes.
+_SAMPLE_PROPOSED_FIXES = [
+    {
+        "fixId": "module-deprecation",
+        "oldModule": "Mathlib.Data.Real.Sqrt",
+        "newModules": ["Mathlib.Analysis.SpecialFunctions.Sqrt"],
+        "partialFix": False,
+        "note": "",
+    }
+]
+
+
 def _make_run(
     run_id: str = "1",
     run_url: str = "https://example.com/runs/1",
@@ -123,6 +136,7 @@ def _make_run(
     job_id: str | None = "job_42",
     job_url: str | None = "https://example.com/jobs/42",
     culprit_log_artifact_url: str | None = None,
+    proposed_fixes: list | None = None,
 ) -> LatestRunRecord:
     return LatestRunRecord(
         run_id=run_id,
@@ -137,6 +151,7 @@ def _make_run(
         job_id=job_id,
         job_url=job_url,
         culprit_log_artifact_url=culprit_log_artifact_url,
+        proposed_fixes=_SAMPLE_PROPOSED_FIXES if proposed_fixes is None else proposed_fixes,
     )
 
 
@@ -209,6 +224,7 @@ class TestBuildRunsSnapshotEntry:
         assert entry["episode_state"] is None
         assert entry["first_known_bad_commit"] is None
         assert entry["last_known_good_commit"] is None
+        assert entry["proposed_fixes"] == []
 
     def test_entry_without_run_still_has_result_artifact_name(self) -> None:
         """Scenario: result_artifact_name is derived from downstream name even without runs."""
@@ -231,6 +247,8 @@ class TestBuildRunsSnapshotEntry:
         assert entry["episode_state"] == "failing"
         assert entry["first_known_bad_commit"] == "bad_xyz"
         assert entry["last_known_good_commit"] == "good_uvw"
+        # proposed_fixes carries through verbatim.
+        assert entry["proposed_fixes"] == _SAMPLE_PROPOSED_FIXES
 
     def test_run_without_job_metadata_produces_null_job_fields(self) -> None:
         """Scenario: LatestRunRecord with no job_id/job_url renders null job fields."""
@@ -471,6 +489,7 @@ class TestLoadLatestRunPerDownstream:
         workflow: str = "regression",
         upstream: str = _UPSTREAM,
         culprit_log_artifact_url: str | None = None,
+        proposed_fixes: list | None = None,
     ) -> None:
         from scripts.storage import (
             RunResultRecord,
@@ -504,6 +523,7 @@ class TestLoadLatestRunPerDownstream:
             head_probe_failure_stage=None,
             culprit_log_text=None,
             culprit_log_artifact_url=culprit_log_artifact_url,
+            proposed_fixes=_SAMPLE_PROPOSED_FIXES if proposed_fixes is None else proposed_fixes,
         )
         validate_jobs: list[ValidateJobRecord] | None = None
         if job_id or job_url:
@@ -552,6 +572,8 @@ class TestLoadLatestRunPerDownstream:
         assert rec.outcome == "failed"
         assert rec.first_known_bad == "bad_xyz"
         assert rec.downstream_commit == "ds_head"
+        # proposed_fixes survives the JSON round-trip through SQL.
+        assert rec.proposed_fixes == _SAMPLE_PROPOSED_FIXES
 
     def test_returns_latest_run_when_multiple(self) -> None:
         """Scenario: when multiple runs exist, the newest wins per downstream."""
