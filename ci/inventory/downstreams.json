@@ -6,8 +6,7 @@
       "repo": "marcelolynch/LeanDownstreamPlayground",
       "default_branch": "main",
       "dependency_name": "mathlib",
-      "enabled": true,
-      "build_args": ["--iofail"]
+      "enabled": true
     },
     {
       "name": "physlib",
