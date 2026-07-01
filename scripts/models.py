@@ -71,6 +71,25 @@ class DownstreamConfig:
     # symptom such as "ProofWidgets not up-to-date" that survives across probes
     # and causes bisect to walk into a false culprit.
     nuke_lakedir: bool = False
+    # Optional verify steps hopscotch runs after `lake build` on every probe
+    # (hopscotch's --test / --lint).  `lake build` always runs; when these are
+    # set, `lake test` / `lake lint` must also pass for a commit to count as
+    # good, so the regression search becomes sensitive to test/lint breakage and
+    # not just build breakage.  Both opt-in: enable only for downstreams with a
+    # test/lint driver wired up — hopscotch aborts a run whose enabled step has
+    # no driver.
+    run_test: bool = False
+    run_lint: bool = False
+    # Extra arguments forwarded to each verify step's underlying `lake`
+    # invocation (hopscotch's --build-args / --test-args / --lint-args).  Each
+    # list element is one argument token; they are joined with single spaces on
+    # the command line and hopscotch re-splits on whitespace, so a single token
+    # cannot itself contain a space.  build_args apply to the always-run
+    # `lake build`; test_args / lint_args apply only when run_test / run_lint is
+    # set.  All default empty (no extra arguments).
+    build_args: list[str] = field(default_factory=list)
+    test_args: list[str] = field(default_factory=list)
+    lint_args: list[str] = field(default_factory=list)
     # When True, the manifest-watcher (.github/workflows/manifest-watcher.yml,
     # cron */15) inspects this downstream every 15 min and dispatches a
     # targeted regression-report run when its lake-manifest.json pin moves
@@ -169,6 +188,15 @@ class WindowSelection:
     # probe step can set HOPSCOTCH_DEBUG_NUKE_LAKEDIR=1 without re-reading the
     # inventory file.  See DownstreamConfig.nuke_lakedir.
     nuke_lakedir: bool = False
+    # Per-downstream verify-step and build-argument settings from the inventory,
+    # forwarded so the probe step can pass hopscotch's --test / --lint /
+    # --build-args / --test-args / --lint-args without re-reading the inventory.
+    # See DownstreamConfig.run_test / build_args.
+    run_test: bool = False
+    run_lint: bool = False
+    build_args: list[str] = field(default_factory=list)
+    test_args: list[str] = field(default_factory=list)
+    lint_args: list[str] = field(default_factory=list)
 
     @classmethod
     def from_json(cls, payload: dict[str, Any]) -> "WindowSelection":

@@ -114,6 +114,71 @@ class TestInvokeTool:
             assert "--to" in invoked_command
             assert "--commits-file" not in invoked_command
 
+    def test_verify_and_build_arg_flags_map_from_config(self) -> None:
+        """``run_test``/``run_lint`` and the ``*_args`` lists become hopscotch flags.
+
+        Hopscotch only runs ``lake test`` / ``lake lint`` and applies
+        extra ``lake`` arguments when told to via ``--test`` / ``--lint``
+        / ``--build-args`` / ``--test-args`` / ``--lint-args``.  These
+        come straight from the per-downstream inventory entry, so a
+        default config must emit none of them and a configured one must
+        emit each exactly once with its tokens joined by spaces.
+        """
+        # Arrange
+        with tempfile.TemporaryDirectory() as tmp:
+            project_dir = Path(tmp) / "downstream"
+            project_dir.mkdir()
+            output_dir = Path(tmp) / "artifacts"
+            tool_exe = Path(tmp) / "hopscotch"
+            tool_exe.write_text("")
+            env = {"LAKE_CACHE_DIR": str(Path(tmp) / "cache")}
+
+            def run(config: DownstreamConfig) -> list[str]:
+                mock_process = Mock()
+                mock_process.stdout = iter([])
+                mock_process.wait.return_value = 0
+                mock_process.args = [str(tool_exe)]
+                with patch(
+                    "scripts.validation.subprocess.Popen", return_value=mock_process
+                ) as mock_popen:
+                    invoke_tool(
+                        config,
+                        "deadbeef00000000000000000000000000000000",
+                        "cafebabe00000000000000000000000000000000",
+                        project_dir,
+                        output_dir,
+                        env,
+                        tool_exe,
+                    )
+                return mock_popen.call_args.args[0]
+
+            # Act / Assert — a bare config emits none of the optional flags.
+            default_command = run(
+                DownstreamConfig(name="d", repo="o/d", default_branch="main")
+            )
+            for flag in ("--test", "--lint", "--build-args", "--test-args", "--lint-args"):
+                assert flag not in default_command, f"{flag} must stay off by default"
+
+            # Act — a fully-configured entry emits each flag once.
+            command = run(
+                DownstreamConfig(
+                    name="d",
+                    repo="o/d",
+                    default_branch="main",
+                    run_test=True,
+                    run_lint=True,
+                    build_args=["-Kenv=dev", "-Kfoo"],
+                    test_args=["--verbose"],
+                    lint_args=["--update"],
+                )
+            )
+
+            # Assert — boolean flags present; each *-args value is space-joined.
+            assert "--test" in command and "--lint" in command
+            assert command[command.index("--build-args") + 1] == "-Kenv=dev -Kfoo"
+            assert command[command.index("--test-args") + 1] == "--verbose"
+            assert command[command.index("--lint-args") + 1] == "--update"
+
 
 class TestClassifyExitCode:
     """Mapping hopscotch exit codes to ``Outcome``."""
@@ -404,12 +469,15 @@ class TestWindowSelectionArtifact:
             assert loaded.previous_downstream_commit == "d" * 40
             assert loaded.previous_last_known_good_commit == "g" * 40
 
-    def test_selection_round_trip_preserves_skip_known_bad_bisect(self) -> None:
-        """A per-downstream ``skip_known_bad_bisect=False`` opt-out survives the trip.
+    def test_selection_round_trip_preserves_forwarded_inventory_settings(self) -> None:
+        """Per-downstream inventory settings survive the select→probe trip.
 
         The select job reads the inventory; the probe job reads the
-        artifact.  The opt-out value must propagate so the probe can
-        honour it without re-reading the inventory.
+        artifact and reconstructs its ``DownstreamConfig`` from it.
+        Every forwarded knob — the skip opt-out and the verify-step /
+        build-argument settings — must propagate so the probe honours
+        them without re-reading the inventory.  A round-trip drop here
+        silently reverts the downstream to default build behaviour.
         """
         # Arrange
         with tempfile.TemporaryDirectory() as tmp:
@@ -421,6 +489,11 @@ class TestWindowSelectionArtifact:
                 upstream_ref="master",
                 target_commit="t" * 40,
                 skip_known_bad_bisect=False,
+                run_test=True,
+                run_lint=True,
+                build_args=["-Kenv=dev"],
+                test_args=["--", "--verbose"],
+                lint_args=["--update"],
             )
 
             artifact_path = selection_artifact_path(output_dir)
@@ -432,6 +505,10 @@ class TestWindowSelectionArtifact:
 
             # Assert
             assert not loaded.skip_known_bad_bisect
+            assert loaded.run_test and loaded.run_lint
+            assert loaded.build_args == ["-Kenv=dev"]
+            assert loaded.test_args == ["--", "--verbose"]
+            assert loaded.lint_args == ["--update"]
 
 
 class TestRenderSelectionSummary:
