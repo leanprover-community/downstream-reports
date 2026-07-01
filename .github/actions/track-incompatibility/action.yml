@@ -51,10 +51,11 @@ inputs:
     description: >
       Token used for PR-side operations (branch push, opening / closing fix
       PRs).  When open-pr is true this typically needs to be a GitHub App
-      token with "contents: write" and "pull-requests: write": pushes by the
-      default GITHUB_TOKEN do not trigger downstream CI, and PR creation can
-      be blocked by the repo-wide "Allow GitHub Actions to create and approve
-      pull requests" setting.  Ignored when open-pr is false.
+      token with "contents: write" and "pull-requests: write": PRs opened under
+      the default GITHUB_TOKEN don't run downstream CI without a maintainer's
+      per-PR approval, and PR creation can be blocked by the repo-wide "Allow
+      GitHub Actions to create and approve pull requests" setting.  Ignored when
+      open-pr is false.
   issue-token:
     required: false
     default: ${{ github.token }}
@@ -868,7 +869,7 @@ runs:
         # hopscotch's own `fix apply` summary (verbatim) when it changed files;
         # empty otherwise.  Surfaced as-is — never synthesized here.
         FIX_SUMMARY: ${{ steps.bump.outputs.fix-summary }}
-        # Used to decide whether to surface the "CI does not run" warning:
+        # Used to decide whether to surface the "CI needs approval" warning:
         # the warning applies only when the PR is opened under the built-in
         # GITHUB_TOKEN. A custom App / PAT token differs from github.token,
         # so the comparison below suppresses the warning in that case.
@@ -902,9 +903,9 @@ runs:
           fi
           if [ "$TOKEN" = "$DEFAULT_TOKEN" ]; then
             printf '> [!WARNING]\n'
-            printf '> This PR was opened by the default `github-actions[bot]` identity, so **your repository'"'"'s own CI does not run on the PR as opened** — GitHub suppresses workflow triggers (`push` / `pull_request`) for events caused by the built-in `GITHUB_TOKEN`. Fix commits you push to this branch yourself *will* trigger CI normally.\n'
+            printf '> This PR was opened by the default `github-actions[bot]` identity, so **your repository'"'"'s own CI does not run until a maintainer approves it** — GitHub holds the workflow runs (`push` / `pull_request`) on PRs opened under the built-in `GITHUB_TOKEN` until a user with write access approves them. (Fix commits you push to this branch yourself trigger CI directly, no approval needed.)\n'
             printf '>\n'
-            printf '> To have CI run on every automated PR from the outset, open them under a GitHub App token instead: see the [authentication guide](https://github.com/leanprover-community/downstream-reports/blob/main/docs/actions.md#set-up-authentication).\n\n'
+            printf '> Use the **Approve and run workflows** button on this PR to run CI. To run it automatically on every automated PR (no per-PR approval), open them under a GitHub App token instead: see the [authentication guide](https://github.com/leanprover-community/downstream-reports/blob/main/docs/actions.md#set-up-authentication).\n\n'
           fi
           printf '_Opened automatically by [downstream-reports/track-incompatibility](https://github.com/leanprover-community/downstream-reports) via [this workflow run](%s)._\n' \
             "$WORKFLOW_RUN_URL"

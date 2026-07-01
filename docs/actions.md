@@ -30,7 +30,7 @@ below.
 > `track-incompatibility`) open issues. They all need a token with the right
 > scopes. There are two ways to provide one — the built-in `GITHUB_TOKEN` is
 > the simplest, but a GitHub App is recommended when you want your
-> downstream's own CI to run on the bump PRs.
+> downstream's own CI to run on the bump PRs without a per-PR approval click.
 
 ### Option A — Default `GITHUB_TOKEN` (simplest, with a CI caveat)
 
@@ -62,26 +62,28 @@ With those two boxes ticked, the [canonical example](#canonical-example) works
 as-is.
 
 > [!WARNING]
-> **Bump PRs opened with `GITHUB_TOKEN` do NOT trigger your downstream's CI.**
+> **Bump PRs opened with `GITHUB_TOKEN` don't run your downstream's CI until a
+> maintainer approves them.**
 >
-> GitHub deliberately suppresses workflow triggers (`push`, `pull_request`, …)
-> for events caused by the default `GITHUB_TOKEN`, to prevent runaway
-> recursion. PRs opened by these actions under `GITHUB_TOKEN` show up
-> authored by `github-actions[bot]` but **do not run any of the workflows
-> configured on your repo** — `pull_request` / `push` checks stay blank.
+> To prevent runaway recursion, GitHub holds the workflow runs (`push`,
+> `pull_request`, …) on PRs opened under the default `GITHUB_TOKEN`: the PR
+> shows up authored by `github-actions[bot]` with its `pull_request` / `push`
+> checks pending until a user with write access clicks **Approve and run
+> workflows** on it.
 >
 > The bump and `lake build` are verified inside `bump-to-latest`'s own
 > job, so the PR is safe to merge. If you rely on additional CI (lints,
-> downstream-of-downstream tests, deploy previews, …) before merging, use a
-> GitHub App token ([Option B](#option-b--github-app-installation-token-recommended-for-ci-on-pr))
+> downstream-of-downstream tests, deploy previews, …) before merging, approve
+> the run as above, or — to run CI automatically without a per-PR approval —
+> open PRs under a GitHub App token
+> ([Option B](#option-b--github-app-installation-token-recommended-for-ci-on-pr))
 > instead.
 >
-> To kick CI off on a single such PR without setting up an App, push a commit
-> yourself (e.g. `git commit --allow-empty -m "run CI"`). A human-triggered
-> event isn't suppressed, and an empty commit is tree-identical, so
-> `open-bump-pr`'s `tree_unchanged` short-circuit leaves it in place on the
-> next run. On a `track-incompatibility` fix PR this is unnecessary: the fix commits
-> you push trigger CI anyway.
+> A commit pushed by a human (e.g. `git commit --allow-empty -m "run CI"`) also
+> starts CI without an approval, and an empty commit is tree-identical, so
+> `open-bump-pr`'s `tree_unchanged` short-circuit leaves it in place on the next
+> run. On a `track-incompatibility` fix PR the fix commits you push already do
+> this.
 
 ### Option B — GitHub App installation token (recommended for CI-on-PR)
 
@@ -367,8 +369,8 @@ auto-generated PR body is the optional `message` (the `bump-description` from
 `bump-to-latest`), a `---` rule, a brief explanation that this is a verified
 last-known-good bump that should be mergeable as-is, and a footer linking back to
 the triggering run. When the PR is opened under the built-in `GITHUB_TOKEN` (no
-App token), the body also includes a warning that downstream CI does not
-run on the PR, pointing at [Set up authentication](#set-up-authentication). Pass
+App token), the body also includes a warning that downstream CI won't run until
+a maintainer approves it, pointing at [Set up authentication](#set-up-authentication). Pass
 `body` to override everything.
 
 If there are no working-tree changes (`git diff` is clean) the action exits with
@@ -432,7 +434,7 @@ side effects without removing the job.
 | `label` | no | `dependency-incompatibility` | Label identifying the tracking issue. Created if missing. |
 | `title` | no | auto | Full issue title; auto-generated when empty. |
 | `close-on-resolve` | no | `true` | Close the tracking issue with a resolution comment when FKB clears. |
-| `token` | no | `github.token` | Token for PR-side operations (push, fix-PR open/close). Needs `contents: write` and `pull-requests: write` when `open-pr: true`. Use a GitHub App token: pushes by the default `GITHUB_TOKEN` do not trigger downstream CI and PR creation can be disabled repo-wide. Ignored when `open-pr: false`. |
+| `token` | no | `github.token` | Token for PR-side operations (push, fix-PR open/close). Needs `contents: write` and `pull-requests: write` when `open-pr: true`. Use a GitHub App token: PRs opened under the default `GITHUB_TOKEN` don't run downstream CI without a maintainer's per-PR approval, and PR creation can be disabled repo-wide. Ignored when `open-pr: false`. |
 | `issue-token` | no | `github.token` | Token for issue-side operations (label, list, create, edit, comment, close). Defaults to `GITHUB_TOKEN`, which is reliable here because `issues: write` granted via the workflow's `permissions:` block isn't subject to repo-wide overrides. Override only to change the issue author. Ignored when `open-issue: false`.  |
 | `open-issue` | no | `true` | Master switch for the tracking-issue side. Set `false` for PR-only mode (no issue is opened or closed). |
 | `open-pr` | no | `true` | Master switch for the fix-PR side. Set `false` for issue-only mode. |

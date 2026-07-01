@@ -212,7 +212,7 @@ runs:
         MESSAGE: ${{ inputs.message }}
         # hopscotch's verbatim fix-apply summary; empty when no fixes applied.
         FIX_SUMMARY: ${{ inputs.fix-summary }}
-        # Used to decide whether to surface the "CI does not run" warning:
+        # Used to decide whether to surface the "CI needs approval" warning:
         # the warning applies only when the PR is opened under the built-in
         # GITHUB_TOKEN. A custom App / PAT token differs from github.token,
         # so the comparison below suppresses the warning in that case.
@@ -253,9 +253,9 @@ runs:
             printf 'Only `lake build` is checked, though — if your own CI does more (linting, failing on warnings, downstream tests, …), run it on this PR before merging.\n\n'
             if [ "$TOKEN" = "$DEFAULT_TOKEN" ]; then
               printf '> [!WARNING]\n'
-              printf '> This PR was opened by the default `github-actions[bot]` identity, so **your repository'"'"'s own CI does not run on it** — GitHub suppresses workflow triggers (`push` / `pull_request`) for events caused by the built-in `GITHUB_TOKEN`.\n'
+              printf '> This PR was opened by the default `github-actions[bot]` identity, so **your repository'"'"'s own CI does not run until a maintainer approves it** — GitHub holds the workflow runs (`push` / `pull_request`) on PRs opened under the built-in `GITHUB_TOKEN` until a user with write access approves them.\n'
               printf '>\n'
-              printf '> To run your CI on this PR once, push an empty commit (`git commit --allow-empty -m "run CI" && git push`) — a human-triggered event is not suppressed. To get CI on every automated bump PR, open them under a GitHub App token instead: see the [authentication guide](https://github.com/leanprover-community/downstream-reports/blob/main/docs/actions.md#set-up-authentication).\n\n'
+              printf '> Use the **Approve and run workflows** button on this PR to run your CI. To run it automatically on every automated bump PR (no per-PR approval), open them under a GitHub App token instead: see the [authentication guide](https://github.com/leanprover-community/downstream-reports/blob/main/docs/actions.md#set-up-authentication).\n\n'
             fi
             printf '_This PR was last updated on %s by [this workflow run](%s). It is an automated bump using [downstream-reports/open-bump-pr](https://github.com/leanprover-community/downstream-reports)._\n' \
               "$TODAY" "$RUN_URL"
