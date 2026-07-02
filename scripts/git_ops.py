@@ -5,12 +5,27 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
-import tomllib
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 from scripts.models import RELEASE_TAG_RE, CommitDetail, DownstreamConfig
+
+
+class CommandError(subprocess.CalledProcessError):
+    """Command failure whose message includes the captured stderr.
+
+    ``subprocess.CalledProcessError`` reports only the command and exit
+    status; for the git/network commands run in CI the actual reason
+    lives on stderr, so it is folded into the message that reaches the
+    job log.  Subclassing keeps every existing
+    ``except subprocess.CalledProcessError`` handler working unchanged.
+    """
+
+    def __str__(self) -> str:
+        message = super().__str__()
+        detail = (self.stderr or "").strip()
+        return f"{message}\nstderr: {detail}" if detail else message
 
 
 def run(
@@ -20,16 +35,23 @@ def run(
     check: bool = True,
     env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
-    """Run one external command and capture text output."""
+    """Run one external command and capture text output.
 
-    return subprocess.run(
+    With ``check=True`` a non-zero exit raises :class:`CommandError`, so
+    the command's stderr appears in the traceback instead of only the
+    exit status.
+    """
+
+    proc = subprocess.run(
         args,
         cwd=cwd,
-        check=check,
         capture_output=True,
         text=True,
         env=env,
     )
+    if check and proc.returncode != 0:
+        raise CommandError(proc.returncode, args, output=proc.stdout, stderr=proc.stderr)
+    return proc
 
 
 def git(repo_dir: Path, *git_args: str) -> str:

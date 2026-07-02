@@ -40,20 +40,17 @@ the filter is exercised end-to-end.
 from __future__ import annotations
 
 import subprocess
-import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-
 from scripts.git_ops import (
     RELEASE_TAG_GLOB,
+    dependency_files_changed_between,
     git_url_from_manifest,
     latest_reachable_tag,
-    dependency_files_changed_between,
     next_release_tag_after,
     repo_clone_source,
     resolve_tag,
@@ -284,13 +281,18 @@ class TestResolveTag:
         normal "no release" case via ``latest_reachable_tag``; if a
         tag is supposedly there but cannot be resolved, that is a
         repository-state bug and we want it to crash the run rather
-        than corrupt ``last_good_release_commit``.
+        than corrupt ``last_good_release_commit``.  The error message
+        must carry git's stderr so the job log shows the reason, not
+        just the exit status.
         """
         # Arrange — no tag named v9.99.99 in the fixture.
 
         # Act / Assert
-        with pytest.raises(subprocess.CalledProcessError):
+        with pytest.raises(subprocess.CalledProcessError) as excinfo:
             resolve_tag(git_fixture.repo, "v9.99.99")
+        assert "stderr:" in str(excinfo.value), (
+            "failed git commands must surface their stderr in the message"
+        )
 
 
 class TestReleaseTagGlob:
