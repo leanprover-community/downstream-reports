@@ -1,3 +1,11 @@
+[tool.ruff]
+# tomllib (used by git_ops) needs 3.11; CI and the dev venv track newer 3.x.
+target-version = "py311"
+
+[tool.ruff.lint]
+# Default rule set (pyflakes + core pycodestyle errors) plus import sorting.
+extend-select = ["I"]
+
 [tool.pytest.ini_options]
 # The test suite lives next to the production code in scripts/.  Pytest is
 # invoked from the repo root via `python3 -m pytest scripts/`; the rootdir
