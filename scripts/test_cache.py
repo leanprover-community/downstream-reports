@@ -37,12 +37,9 @@ from __future__ import annotations
 
 import os
 import subprocess
-import sys
 import tempfile
 from pathlib import Path
 from unittest.mock import patch
-
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from scripts.cache import cache_env, github_cache_scope, warm_downstream_cache
 from scripts.models import DownstreamConfig

@@ -15,8 +15,10 @@ import os
 import sys
 from pathlib import Path
 
-from models import load_inventory
-from notifications import (
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from scripts.models import load_inventory
+from scripts.notifications import (
     DryRunSender,
     ZulipSender,
     fetch_commit_titles,
@@ -62,7 +64,11 @@ def main() -> int:
 
     # Lazy import — avoid hard dependency on sqlalchemy when running tests
     # or in environments that only need the dry-run sender.
-    from storage import create_sql_engine, latest_regression_run_id, load_run_for_site
+    from scripts.storage import (
+        create_sql_engine,
+        latest_regression_run_id,
+        load_run_for_site,
+    )
 
     try:
         engine = create_sql_engine(args.dsn)

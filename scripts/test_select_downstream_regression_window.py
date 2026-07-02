@@ -31,18 +31,16 @@ the report.
 
 from __future__ import annotations
 
-import sys
 from datetime import datetime, timezone
-from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from scripts.conftest import PHYSLIB_CONFIG, make_selection
 from scripts.models import Outcome
 from scripts.select_downstream_regression_window import (
     boundary_bisect_overdue,
-    build_parser as select_build_parser,
     try_skip_already_good,
+)
+from scripts.select_downstream_regression_window import (
+    build_parser as select_build_parser,
 )
 from scripts.storage import DownstreamStatusRecord
 

@@ -71,7 +71,6 @@ from scripts.storage import (
     create_backend,
 )
 
-
 _GITHUB_API = "https://api.github.com"
 _RAW_BASE = "https://raw.githubusercontent.com"
 _JOB_NAME_RE = re.compile(r"^(?:select|probe): (.+)$")

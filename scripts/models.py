@@ -11,7 +11,6 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
-
 # The canonical mathlib release-tag shape, shared by the select/probe,
 # aggregation, and site-rendering paths.  Matches a final (v4.32.0) or release
 # candidate (v4.32.0-rc1); excludes daily/nightly tags (master-2026-04-15,
@@ -215,6 +214,66 @@ class WindowSelection:
         """Serialize the selection using plain JSON-compatible values."""
 
         return asdict(self)
+
+
+# DownstreamConfig fields that describe the downstream's identity rather than
+# per-run tool behaviour.  They are mapped explicitly when a WindowSelection is
+# constructed (``downstream`` ↔ ``name``; ``default_branch`` may be overridden
+# on the on-demand path), so the name-driven forwarding below excludes them.
+_CONFIG_IDENTITY_FIELDS = frozenset({"repo", "default_branch", "dependency_name"})
+
+
+def forwarded_config_fields() -> tuple[str, ...]:
+    """Names of the tool-config fields forwarded config → selection → probe.
+
+    Derived as the field names ``DownstreamConfig`` and ``WindowSelection``
+    share, minus the identity fields: declaring a new per-downstream tool
+    flag on both dataclasses is all it takes for the select scripts to
+    forward it and for the probe job to read it back — no per-script
+    plumbing.
+    """
+
+    config_names = {f.name for f in dataclasses.fields(DownstreamConfig)}
+    selection_names = {f.name for f in dataclasses.fields(WindowSelection)}
+    return tuple(sorted((config_names & selection_names) - _CONFIG_IDENTITY_FIELDS))
+
+
+def apply_config_forwarding(
+    selection: WindowSelection,
+    config: DownstreamConfig,
+    *,
+    exclude: frozenset[str] | set[str] = frozenset(),
+) -> None:
+    """Copy every forwarded tool-config field from ``config`` onto ``selection``.
+
+    ``exclude`` names forwarded fields to leave at their selection defaults —
+    the on-demand select leg uses it to keep ``revalidate_boundary`` off
+    (the bumping branch moves the manifest by design, so the heuristic's
+    manifest-unchanged guard would reject nearly every run).
+    """
+
+    for field_name in forwarded_config_fields():
+        if field_name in exclude:
+            continue
+        setattr(selection, field_name, getattr(config, field_name))
+
+
+def config_from_selection(selection: WindowSelection) -> DownstreamConfig:
+    """Reconstruct the probe job's ``DownstreamConfig`` from a selection.
+
+    The probe job has no inventory file; the identity fields plus every
+    forwarded tool-config field come back out of ``selection.json``.
+    Callers must ensure ``downstream``/``repo``/``default_branch`` are set.
+    """
+
+    forwarded = {name: getattr(selection, name) for name in forwarded_config_fields()}
+    return DownstreamConfig(
+        name=selection.downstream,
+        repo=selection.repo,
+        default_branch=selection.default_branch,
+        dependency_name=selection.dependency_name,
+        **forwarded,
+    )
 
 
 @dataclass

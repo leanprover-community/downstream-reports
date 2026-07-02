@@ -16,7 +16,9 @@ import os
 import sys
 from pathlib import Path
 
-from notifications import (
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from scripts.notifications import (
     ALERTABLE_STATES,
     DryRunSender,
     ZulipSender,

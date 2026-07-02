@@ -58,17 +58,13 @@ import json
 import os
 import sys
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 from unittest import mock
-
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from scripts import check_downstream_manifests as watcher
 from scripts.check_downstream_manifests import Candidate, evaluate_downstream
 from scripts.git_ops import pinned_from_manifest_payload
 from scripts.models import DownstreamConfig
 from scripts.storage import DownstreamStatusRecord, ManifestWatcherLedgerRow
-
 
 _FKB = "f" * 40
 _OLD_PIN = "1" * 40

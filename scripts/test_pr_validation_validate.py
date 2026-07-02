@@ -46,8 +46,6 @@ from unittest.mock import patch
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-
 from scripts.conftest import SHA_A, SHA_C, SHA_D, SHA_F
 from scripts.pr_validation import validate
 from scripts.pr_validation.validate import (
@@ -60,7 +58,6 @@ from scripts.pr_validation.validate import (
     build_result_record,
     derive_pr_endpoints,
 )
-
 
 # ---------------------------------------------------------------------------
 # CLI fixture helpers

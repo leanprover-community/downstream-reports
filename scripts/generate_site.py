@@ -2507,7 +2507,7 @@ def main() -> None:
         commit_titles = git_commit_info(upstream_dir, unique_shas)
         print(f"  {len(commit_titles)} commit(s) resolved.")
 
-        print(f"Reading tags from local clone…")
+        print("Reading tags from local clone…")
         sha_to_tag = git_tag_map(upstream_dir)
         print(f"  {len(sha_to_tag)} tag(s) loaded.")
 

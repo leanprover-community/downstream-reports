@@ -32,11 +32,8 @@ actionable failure comment into an opaque one.
 
 from __future__ import annotations
 
-import sys
 import tempfile
 from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from scripts.pr_validation import log_filter
 

@@ -38,14 +38,10 @@ canonical short name and surprises the user.
 
 from __future__ import annotations
 
-import sys
 from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from scripts.conftest import SHA_A, SHA_C, SHA_D, SHA_F
 from scripts.pr_validation import post_results
-
 
 # ---------------------------------------------------------------------------
 # Fixtures

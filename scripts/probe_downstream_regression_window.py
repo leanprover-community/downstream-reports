@@ -41,7 +41,13 @@ from scripts.git_ops import (
     parent_commit,
     select_search_base_from_candidates,
 )
-from scripts.models import DownstreamConfig, Outcome, ValidationResult, WindowSelection
+from scripts.models import (
+    DownstreamConfig,
+    Outcome,
+    ValidationResult,
+    WindowSelection,
+    config_from_selection,
+)
 from scripts.storage import DownstreamStatusRecord
 from scripts.validation import (
     append_commit_plan_artifact,
@@ -55,7 +61,6 @@ from scripts.validation import (
     tool_summary_text,
     write_result,
 )
-
 
 # ---------------------------------------------------------------------------
 # Skip heuristic: known-bad bisect
@@ -342,17 +347,7 @@ def main() -> int:
     if selection.downstream is None or selection.repo is None or selection.default_branch is None:
         raise SystemExit(f"selection is missing downstream metadata: {args.selection}")
 
-    config = DownstreamConfig(
-        name=selection.downstream,
-        repo=selection.repo,
-        default_branch=selection.default_branch,
-        dependency_name=selection.dependency_name,
-        run_test=selection.run_test,
-        run_lint=selection.run_lint,
-        build_args=selection.build_args,
-        test_args=selection.test_args,
-        lint_args=selection.lint_args,
-    )
+    config = config_from_selection(selection)
 
     # Reconstruct prior episode state from the fields the select step embedded.
     # Used by try_skip_known_bad_bisect to avoid re-bisecting a known failure.

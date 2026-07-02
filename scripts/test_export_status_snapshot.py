@@ -32,15 +32,14 @@ import json
 import sys
 import tempfile
 from pathlib import Path
-from unittest import TestCase, main as unittest_main
+from unittest import TestCase
+from unittest import main as unittest_main
 from unittest.mock import patch
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-
+from scripts.conftest import make_run_result_record
 from scripts.export_status_snapshot import main as export_main
 from scripts.storage import (
     DownstreamStatusRecord,
-    RunResultRecord,
     SqlBackend,
     create_schema,
     create_sql_engine,
@@ -48,7 +47,6 @@ from scripts.storage import (
     status_snapshot_payload,
     write_status_snapshot,
 )
-
 
 _UPSTREAM = "leanprover-community/mathlib4"
 
@@ -207,27 +205,18 @@ class ExportStatusSnapshotCliTests(TestCase):
         most recent bisect time attached in the snapshot, so the select leg
         can apply the boundary-revalidation staleness valve without a
         database read."""
-        bisect_result = RunResultRecord(
+        bisect_result = make_run_result_record(
             upstream=_UPSTREAM,
-            downstream="physlib",
-            repo="leanprover-community/physlib",
-            downstream_commit="d" * 40,
             outcome="failed",
             episode_state="failing",
-            target_commit="t" * 40,
-            previous_last_known_good=None,
-            previous_first_known_bad=None,
             last_known_good="g" * 40,
             first_known_bad="b" * 40,
             current_last_successful="g" * 40,
             current_first_failing="b" * 40,
             failure_stage="lake build",
             search_mode="bisect",
-            commit_window_truncated=False,
-            error=None,
             head_probe_outcome="failed",
             head_probe_failure_stage="lake build",
-            culprit_log_text=None,
         )
         with tempfile.TemporaryDirectory() as tmp:
             dsn = f"sqlite:///{tmp}/state.db"

@@ -42,7 +42,6 @@ from scripts.storage import (
     result_to_row,
 )
 
-
 GITHUB_API = "https://api.github.com"
 
 
@@ -301,17 +300,17 @@ def truncate_log_text(text: str, *, max_lines: int = 50, max_chars: int = 10000)
     return limited
 
 
-def exclude_culprit_log_line(line: str) -> str:
+def exclude_culprit_log_line(line: str) -> bool:
     """
     Exclude line from the 'culprit log' that we want to show
     We want to drop:
         - Successful target messages
         - The log trace
     """
-    l = line.strip()
+    stripped = line.strip()
     filtered_prefixes = ["✔", "trace: .>"]
     for pfx in filtered_prefixes:
-        if l.startswith(pfx):
+        if stripped.startswith(pfx):
             return True
     return False
 

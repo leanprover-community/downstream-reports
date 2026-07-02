@@ -48,7 +48,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from scripts.models import DownstreamConfig, load_inventory
 from scripts.storage import (
     DownstreamStatusRecord,
-    StorageBackend,
     add_backend_args,
     create_backend,
 )

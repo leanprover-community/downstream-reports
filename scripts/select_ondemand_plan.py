@@ -16,11 +16,9 @@ Reads ``GITHUB_TOKEN`` from the environment.
 from __future__ import annotations
 
 import argparse
-import base64
 import json
 import os
 import sys
-import tomllib
 import urllib.error
 import urllib.request
 from pathlib import Path
