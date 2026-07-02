@@ -35,12 +35,7 @@ is designed to prevent.  See ``docs/internal/cache-warming.md``.
 
 from __future__ import annotations
 
-import sys
-from pathlib import Path
-
 import pytest
-
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from scripts.conftest import SHA_A, SHA_B, SHA_C
 from scripts.models import DownstreamConfig

@@ -49,7 +49,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+import pytest
 
 from scripts.export_runs_snapshot import (
     SCHEMA_VERSION,
@@ -58,7 +58,6 @@ from scripts.export_runs_snapshot import (
 )
 from scripts.models import DownstreamConfig
 from scripts.storage import LatestRunRecord
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -455,9 +454,6 @@ class TestFetchSourceRun:
 # ``integration`` marker lets a fast unit-only run deselect via
 # ``pytest -m "not integration"``; the default ``pytest scripts/``
 # invocation still includes them.
-import pytest
-
-
 @pytest.mark.integration
 class TestLoadLatestRunPerDownstream:
     """End-to-end test of the SQL helper against an in-memory SQLite DB."""
@@ -491,15 +487,15 @@ class TestLoadLatestRunPerDownstream:
         culprit_log_artifact_url: str | None = None,
         proposed_fixes: list | None = None,
     ) -> None:
+        from scripts.conftest import make_run_result_record
         from scripts.storage import (
-            RunResultRecord,
-            ValidateJobRecord,
-            SqlBackend,
             DownstreamStatusRecord,
+            SqlBackend,
+            ValidateJobRecord,
         )
 
         backend = SqlBackend(engine)
-        result = RunResultRecord(
+        result = make_run_result_record(
             upstream=upstream,
             downstream=downstream,
             repo="leanprover-community/physlib"
@@ -509,19 +505,9 @@ class TestLoadLatestRunPerDownstream:
             outcome=outcome,
             episode_state=episode_state,
             target_commit=target_commit,
-            previous_last_known_good=None,
-            previous_first_known_bad=None,
             last_known_good=last_known_good,
             first_known_bad=first_known_bad,
-            current_last_successful=None,
-            current_first_failing=None,
-            failure_stage=None,
-            search_mode="head-only",
-            commit_window_truncated=False,
-            error=None,
             head_probe_outcome=outcome,
-            head_probe_failure_stage=None,
-            culprit_log_text=None,
             culprit_log_artifact_url=culprit_log_artifact_url,
             proposed_fixes=_SAMPLE_PROPOSED_FIXES if proposed_fixes is None else proposed_fixes,
         )

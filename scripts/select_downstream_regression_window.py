@@ -23,32 +23,29 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from scripts.git_ops import (
-    build_commit_window,
     clone_downstream,
     clone_upstream,
-    describe_commits,
-    is_strict_ancestor,
     dependency_files_changed_between,
     next_release_tag_after,
-    parent_commit,
     resolve_search_base_commit,
     resolve_tag,
     resolve_upstream_target,
-    select_search_base_from_candidates,
 )
-from scripts.models import DownstreamConfig, Outcome, ValidationResult, WindowSelection, load_inventory
+from scripts.models import (
+    DownstreamConfig,
+    Outcome,
+    ValidationResult,
+    WindowSelection,
+    apply_config_forwarding,
+    load_inventory,
+)
+from scripts.select_window import (
+    embed_prior_state,
+    finalize_selection,
+    populate_selection_window,
+)
 from scripts.storage import DownstreamStatusRecord, read_status_snapshot
-from scripts.validation import (
-    append_commit_plan_artifact,
-    build_error_result,
-    build_skip_result,
-    commit_plan_artifact_path,
-    print_commit_plan_summary,
-    render_selection_summary,
-    selection_summary_path,
-    write_selection,
-)
-
+from scripts.validation import build_skip_result
 
 # ---------------------------------------------------------------------------
 # Boundary-revalidation staleness valve
@@ -219,37 +216,20 @@ def main() -> int:
         default_branch=config.default_branch,
         dependency_name=config.dependency_name,
         upstream_ref=args.upstream_ref,
-        skip_known_bad_bisect=config.skip_known_bad_bisect,
-        revalidate_boundary=config.revalidate_boundary,
-        nuke_lakedir=config.nuke_lakedir,
-        run_test=config.run_test,
-        run_lint=config.run_lint,
-        build_args=config.build_args,
-        test_args=config.test_args,
-        lint_args=config.lint_args,
     )
-
-    # Embed prior episode state so the probe step can apply skip heuristics
-    # (try_skip_known_bad_bisect) without a database connection.
-    if previous is not None:
-        selection.previous_first_known_bad_commit = previous.first_known_bad_commit
-        selection.previous_downstream_commit = previous.downstream_commit
-        selection.previous_last_known_good_commit = previous.last_known_good_commit
+    apply_config_forwarding(selection, config)
+    embed_prior_state(selection, previous)
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
     def finalize(*, error: str | None = None) -> int:
-        """Write selection.json and the human-readable summary, then return 0."""
-        if error is not None:
-            err_result = build_error_result(config, args.upstream_ref, error)
-            selection.pre_resolved_result = err_result.to_json()
-            selection.decision_reason = f"Window selection failed: {error}"
-            selection.next_action = "Probe step will write the error result directly."
-        summary = render_selection_summary(selection)
-        selection_summary_path(args.output_dir).write_text(summary)
-        print(summary, end="")
-        write_selection(args.output_dir / "selection.json", selection)
-        return 0
+        return finalize_selection(
+            selection=selection,
+            config=config,
+            output_dir=args.output_dir,
+            upstream_ref=args.upstream_ref,
+            error=error,
+        )
 
     try:
         upstream_dir = args.workdir / "mathlib4.git"
@@ -320,96 +300,14 @@ def main() -> int:
             selection.pre_resolved_result = skip_result.to_json()
             return finalize()
 
-        target_commit = selection.target_commit
-        stored_last_known_good = previous.last_known_good_commit if previous else None
-
-        # Compute a conservative candidate bisect window using the pinned commit
-        # as the lower bound.  LKG verification requires hopscotch, so it runs
-        # in the probe step (which re-derives the window with a verified LKG if
-        # it turns out to be needed and valid).
-        search_base_commit = select_search_base_from_candidates(
+        populate_selection_window(
+            selection=selection,
+            downstream_name=config.name,
             upstream_dir=upstream_dir,
-            pinned_commit=selection.pinned_commit,
-            last_known_good=stored_last_known_good,
-            verify_last_known_good=None,
+            stored_last_known_good=previous.last_known_good_commit if previous else None,
+            max_commits=args.max_commits,
+            output_dir=args.output_dir,
         )
-        selection.selected_lower_bound_commit = search_base_commit
-
-        commit_window, truncated = build_commit_window(
-            upstream_dir, target_commit, search_base_commit, args.max_commits,
-        )
-
-        if (
-            search_base_commit is not None
-            and search_base_commit != target_commit
-            and len(commit_window) <= 1
-            and not is_strict_ancestor(upstream_dir, search_base_commit, target_commit)
-        ):
-            selection.search_base_not_ancestor = True
-            print(
-                f"::warning title=search-base-not-ancestor::[{config.name}] "
-                f"pinned commit {search_base_commit[:12]} is not an ancestor of "
-                f"target {target_commit[:12]} — no bisect window is available; "
-                f"falling back to head-only probe"
-            )
-
-        commit_plan_path = commit_plan_artifact_path(args.output_dir)
-
-        if search_base_commit is not None and len(commit_window) > 1:
-            # A multi-commit window is available; set up for bisect.
-            bisect_commits = [search_base_commit, *commit_window]
-            tested_commit_details = describe_commits(upstream_dir, bisect_commits)
-            selection.has_bisect_window = True
-            selection.search_mode = "bisect"
-            selection.tested_commits = bisect_commits
-            selection.tested_commit_details = tested_commit_details
-            selection.commit_window_truncated = truncated
-            selection.probe_from_ref = parent_commit(upstream_dir, bisect_commits[0])
-            selection.probe_to_ref = bisect_commits[-1]
-            selection.decision_reason = (
-                "A multi-commit window was found between the search base and the target. "
-                "The probe step will run the HEAD validation first; if it fails, bisect will follow."
-            )
-            selection.next_action = (
-                f"Run the probe task on {len(bisect_commits)} commits from "
-                f"`{search_base_commit[:12]}` to `{target_commit[:12]}`."
-            )
-            append_commit_plan_artifact(
-                output_dir=args.output_dir,
-                label="bisect window (oldest to newest)",
-                commits=tested_commit_details,
-                truncated=truncated,
-                bisect_window=True,
-            )
-            print_commit_plan_summary(
-                downstream=config.name,
-                label="bisect window (oldest to newest)",
-                commits=tested_commit_details,
-                artifact_path=commit_plan_path,
-            )
-        else:
-            # Single-commit or no window; HEAD probe only.
-            head_probe_detail = describe_commits(upstream_dir, [target_commit])
-            selection.has_bisect_window = False
-            selection.search_mode = "head-only"
-            selection.tested_commits = [target_commit]
-            selection.tested_commit_details = head_probe_detail
-            selection.decision_reason = (
-                "No multi-commit window is available (no usable search base, or window "
-                "collapsed to a single commit).  The probe step will check HEAD only."
-            )
-            selection.next_action = "Run the probe task for HEAD validation only."
-            append_commit_plan_artifact(
-                output_dir=args.output_dir,
-                label="head probe commit",
-                commits=head_probe_detail,
-            )
-            print_commit_plan_summary(
-                downstream=config.name,
-                label="head probe commit",
-                commits=head_probe_detail,
-                artifact_path=commit_plan_path,
-            )
 
     except Exception as error:  # pragma: no cover
         return finalize(error=str(error))

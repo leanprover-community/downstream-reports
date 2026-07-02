@@ -31,12 +31,9 @@ Out of scope:
 from __future__ import annotations
 
 import re
-import sys
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from scripts.generate_site import (
     HISTORY_LIMIT,
@@ -475,33 +472,20 @@ class LoadRecentOutcomesTests(unittest.TestCase):
         workflow: str = "regression",
         first_known_bad: str | None = None,
     ) -> None:
+        from scripts.conftest import make_run_result_record
         from scripts.storage import (
             DownstreamStatusRecord,
-            RunResultRecord,
             SqlBackend,
         )
 
-        result = RunResultRecord(
+        result = make_run_result_record(
             upstream=self._UPSTREAM,
             downstream=downstream,
             repo=f"example-org/{downstream}",
-            downstream_commit="d" * 40,
             outcome=outcome,
             episode_state="passing" if outcome == "passed" else "failing",
-            target_commit="t" * 40,
-            previous_last_known_good=None,
-            previous_first_known_bad=None,
-            last_known_good=None,
             first_known_bad=first_known_bad,
-            current_last_successful=None,
-            current_first_failing=None,
-            failure_stage=None,
-            search_mode="head-only",
-            commit_window_truncated=False,
-            error=None,
             head_probe_outcome=outcome,
-            head_probe_failure_stage=None,
-            culprit_log_text=None,
         )
         SqlBackend(engine).save_run(
             run_id=run_id,

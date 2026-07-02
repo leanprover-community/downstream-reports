@@ -39,11 +39,12 @@ from __future__ import annotations
 
 import dataclasses
 import os
-import sys
-from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+import pytest
+from sqlalchemy import create_engine
+from sqlalchemy.exc import OperationalError
 
+from scripts.conftest import make_run_result_record
 from scripts.storage import (
     DownstreamStatusRecord,
     DryRunBackend,
@@ -55,10 +56,6 @@ from scripts.storage import (
     create_sql_engine,
     result_to_row,
 )
-import pytest
-from sqlalchemy import create_engine
-from sqlalchemy.exc import OperationalError
-
 
 # ----------------------------------------------------------------------
 # Test data builders.  Tests build records with all fields populated by
@@ -79,12 +76,12 @@ def _make_run_result(
 
     What state it provides
     ----------------------
-    All required fields populated with stable conventional values; only
-    the three arguments — name, downstream commit, and outcome —
-    distinguish records across tests.  The ``last_known_good`` field
-    mirrors the outcome (``"target_abc"`` on pass, ``None`` on fail/
-    error) so the resulting record is internally consistent and can
-    actually be persisted without violating its own invariants.
+    A record from the shared conftest factory where only the three
+    arguments — name, downstream commit, and outcome — distinguish
+    records across tests.  The ``last_known_good`` field mirrors the
+    outcome (``"target_abc"`` on pass, ``None`` on fail/error) so the
+    resulting record is internally consistent and can actually be
+    persisted without violating its own invariants.
 
     Why a factory rather than module-level fixtures
     -----------------------------------------------
@@ -94,7 +91,7 @@ def _make_run_result(
     intent of each test visible: ``_make_run_result("A", "x", "passed")``
     reads as the scenario it sets up.
     """
-    return RunResultRecord(
+    return make_run_result_record(
         upstream=_UPSTREAM,
         downstream=downstream,
         repo="owner/repo",
@@ -102,19 +99,8 @@ def _make_run_result(
         outcome=outcome,
         episode_state="passing" if outcome == "passed" else "error",
         target_commit="target_abc",
-        previous_last_known_good=None,
-        previous_first_known_bad=None,
         last_known_good="target_abc" if outcome == "passed" else None,
-        first_known_bad=None,
-        current_last_successful=None,
-        current_first_failing=None,
-        failure_stage=None,
-        search_mode="head-only",
-        commit_window_truncated=False,
-        error=None,
         head_probe_outcome=outcome,
-        head_probe_failure_stage=None,
-        culprit_log_text=None,
     )
 
 

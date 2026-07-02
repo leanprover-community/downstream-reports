@@ -39,12 +39,9 @@ vice versa.
 
 from __future__ import annotations
 
-import sys
 import tempfile
 from pathlib import Path
 from unittest.mock import Mock, patch
-
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from scripts.models import CommitDetail, DownstreamConfig, Outcome, WindowSelection
 from scripts.validation import (

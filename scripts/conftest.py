@@ -14,10 +14,13 @@ the public surface of the matching production module:
     test_notifications.py            → notifications.py
     test_plan_cache_warm_jobs.py     → plan_cache_warm_jobs.py
     test_record_warm_shas.py         → record_warm_shas.py
-    test_run_downstream_regression   → cache.py + validation.py +
-                                       select/probe regression scripts
-                                       (the file pre-dates the select/probe
-                                       split and still uses the old name)
+    test_select_downstream_regression_window.py
+                                     → select job (window selection + skip
+                                       heuristics), plus cache.py +
+                                       validation.py helpers
+    test_probe_downstream_regression_window.py
+                                     → probe job (HEAD probe, bisect, skip
+                                       + revalidation heuristics)
     test_storage.py                  → storage.py (SqlBackend via in-memory
                                        SQLite, plus factory/retry helpers)
 
@@ -45,9 +48,20 @@ Fixture scopes
 
 from __future__ import annotations
 
-# Shared SHA-shaped constants.  Tests across multiple files used to repeat
-# `"a" * 40`, `"f" * 40`, etc. ad hoc; collecting them here gives the magic
-# values stable, semantic names without changing any assertions.
+import datetime as _dt
+import sys as _sys
+from pathlib import Path as _Path
+
+# The repo root must be on sys.path before any ``scripts.*`` import so the
+# suite works when pytest is invoked from anywhere in the tree; the two
+# project imports below therefore sit after this insert (hence the noqa).
+_sys.path.insert(0, str(_Path(__file__).resolve().parent.parent))
+
+from scripts.models import DownstreamConfig, WindowSelection  # noqa: E402
+from scripts.storage import RunResultRecord  # noqa: E402
+
+# Shared SHA-shaped constants: stable, semantic names for the ``"a" * 40``
+# style placeholder values used across test files.
 SHA_A = "a" * 40
 SHA_B = "b" * 40
 SHA_C = "c" * 40
@@ -63,8 +77,6 @@ NEW_PIN = "2" * 40
 
 # Fixed "now" used by the manifest watcher tests.  Aligns with the date
 # pinned in MEMORY.md so generated artifacts are stable across runs.
-import datetime as _dt
-
 FIXED_NOW = _dt.datetime(2026, 5, 5, 12, 0, 0, tzinfo=_dt.timezone.utc)
 DEFAULT_LEDGER_TTL = _dt.timedelta(hours=6)
 
@@ -76,15 +88,6 @@ DEFAULT_LEDGER_TTL = _dt.timedelta(hours=6)
 # below construct minimal-but-valid instances so each test only spells
 # out the fields its scenario varies.
 # ----------------------------------------------------------------------
-
-import sys as _sys
-from pathlib import Path as _Path
-
-# Ensure the repo root is on sys.path so ``scripts.*`` imports work when
-# pytest is invoked from anywhere in the tree.
-_sys.path.insert(0, str(_Path(__file__).resolve().parent.parent))
-
-from scripts.models import DownstreamConfig, WindowSelection
 
 PHYSLIB_CONFIG = DownstreamConfig(
     name="physlib",
@@ -117,6 +120,45 @@ def make_selection(**overrides) -> WindowSelection:
     return WindowSelection(**defaults)
 
 
+def make_run_result_record(**overrides) -> RunResultRecord:
+    """Build a minimal-but-valid ``RunResultRecord``.
+
+    What state it provides
+    ----------------------
+    A passing head-only run for ``physlib`` with every required field
+    populated: SHA-shaped placeholders for the commits, ``None`` for the
+    episode endpoints, and a consistent ``outcome`` /
+    ``episode_state`` / ``head_probe_outcome`` triple.  Tests pass
+    ``**overrides`` for exactly the fields their scenario varies —
+    ``RunResultRecord`` has ~20 required fields, so spelling them all
+    out per test site would bury the scenario in filler.
+    """
+    defaults = dict(
+        upstream="leanprover-community/mathlib4",
+        downstream="physlib",
+        repo="leanprover-community/physlib",
+        downstream_commit="d" * 40,
+        outcome="passed",
+        episode_state="passing",
+        target_commit="t" * 40,
+        previous_last_known_good=None,
+        previous_first_known_bad=None,
+        last_known_good=None,
+        first_known_bad=None,
+        current_last_successful=None,
+        current_first_failing=None,
+        failure_stage=None,
+        search_mode="head-only",
+        commit_window_truncated=False,
+        error=None,
+        head_probe_outcome="passed",
+        head_probe_failure_stage=None,
+        culprit_log_text=None,
+    )
+    defaults.update(overrides)
+    return RunResultRecord(**defaults)
+
+
 __all__ = [
     "SHA_A",
     "SHA_B",
@@ -130,4 +172,5 @@ __all__ = [
     "DEFAULT_LEDGER_TTL",
     "PHYSLIB_CONFIG",
     "make_selection",
+    "make_run_result_record",
 ]

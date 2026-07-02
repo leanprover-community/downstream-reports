@@ -55,21 +55,18 @@ from __future__ import annotations
 
 import sys
 from io import StringIO
-from pathlib import Path
 from unittest.mock import MagicMock
 
 # Ensure the repo root is on sys.path so `scripts.*` imports work.
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-
 from scripts.notifications import (
+    _MATHLIB_COMMIT_URL,
+    _MATHLIB_RELEASE_URL,
     ALERTABLE_STATES,
     AlertAction,
     DryRunSender,
-    _MATHLIB_COMMIT_URL,
-    _MATHLIB_RELEASE_URL,
+    _commit_link_with_title,
     compute_alert_actions,
     execute_alerts,
-    fetch_commit_titles,
     format_error_notice_message,
     format_new_failure_message,
     format_ondemand_compatible_message,
@@ -77,9 +74,7 @@ from scripts.notifications import (
     format_ondemand_skipped_message,
     format_recovered_message,
     format_summary_message,
-    _commit_link_with_title,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers

@@ -46,7 +46,6 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Iterator, Protocol, runtime_checkable
 
-
 # ---------------------------------------------------------------------------
 # Domain data types
 # ---------------------------------------------------------------------------
@@ -395,11 +394,11 @@ def read_status_snapshot(
             f"status snapshot {path} has schema_version {version!r}; "
             f"expected {_STATUS_SNAPSHOT_SCHEMA_VERSION}"
         )
-    for field, expected in (("workflow", workflow), ("upstream", upstream)):
-        actual = payload.get(field)
+    for key, expected in (("workflow", workflow), ("upstream", upstream)):
+        actual = payload.get(key)
         if actual != expected:
             raise SystemExit(
-                f"status snapshot {path} was staged for {field}={actual!r}; "
+                f"status snapshot {path} was staged for {key}={actual!r}; "
                 f"expected {expected!r}"
             )
     # Per-downstream keys are exactly the DownstreamStatusRecord fields
@@ -425,8 +424,10 @@ try:
         Table,
         and_,
         func,
-        select as sa_select,
         tuple_,
+    )
+    from sqlalchemy import (
+        select as sa_select,
     )
 
     _sa_metadata = MetaData()
@@ -695,7 +696,9 @@ class SqlBackend:
         if conn.dialect.name == "postgresql":
             from sqlalchemy.dialects.postgresql import insert as _insert
         else:
-            from sqlalchemy.dialects.sqlite import insert as _insert  # type: ignore[no-redef]
+            from sqlalchemy.dialects.sqlite import (
+                insert as _insert,  # type: ignore[no-redef]
+            )
         conn.execute(_insert(table).values(**values).on_conflict_do_nothing())
 
     @staticmethod
@@ -710,7 +713,9 @@ class SqlBackend:
         if conn.dialect.name == "postgresql":
             from sqlalchemy.dialects.postgresql import insert as _insert
         else:
-            from sqlalchemy.dialects.sqlite import insert as _insert  # type: ignore[no-redef]
+            from sqlalchemy.dialects.sqlite import (
+                insert as _insert,  # type: ignore[no-redef]
+            )
         stmt = _insert(table).values(**values)
         stmt = stmt.on_conflict_do_update(
             index_elements=conflict_cols,
@@ -778,7 +783,6 @@ class SqlBackend:
         report_markdown: str | None = None,
         validate_jobs: list[ValidateJobRecord] | None = None,
     ) -> None:
-        from datetime import datetime, timezone
 
         reported_dt = _parse_dt(created_at)
 

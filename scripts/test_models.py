@@ -32,14 +32,18 @@ disable the most expensive savings the regression workflow has.
 from __future__ import annotations
 
 import json
-import sys
 from pathlib import Path
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-
-from scripts.models import DownstreamConfig, load_inventory
+from scripts.models import (
+    DownstreamConfig,
+    WindowSelection,
+    apply_config_forwarding,
+    config_from_selection,
+    forwarded_config_fields,
+    load_inventory,
+)
 
 
 class TestDownstreamConfigDefaults:
@@ -305,4 +309,90 @@ class TestTargetMode:
 
         assert loaded["Bleeding"].target_mode == "master", (
             "Inventory's `target_mode` override must propagate to DownstreamConfig"
+        )
+
+
+class TestConfigForwarding:
+    """The name-driven config → selection → probe forwarding contract."""
+
+    # Non-default value for every forwarded field, so the round-trip test
+    # proves each one actually travels rather than matching by default.
+    _FORWARDED_OVERRIDES = {
+        "skip_known_bad_bisect": False,
+        "revalidate_boundary": True,
+        "nuke_lakedir": True,
+        "run_test": True,
+        "run_lint": True,
+        "build_args": ["-Kwerror"],
+        "test_args": ["--fast"],
+        "lint_args": ["--strict"],
+    }
+
+    def test_forwarded_fields_round_trip_through_selection(self) -> None:
+        """Every forwarded field survives config → selection → reconstructed
+        config, and the forwarded set is exactly the non-identity fields the
+        two dataclasses share.
+
+        This is the contract that makes a new tool flag a two-dataclass
+        change: declare it on ``DownstreamConfig`` and ``WindowSelection``
+        and the select scripts forward it while the probe reads it back —
+        no per-script plumbing.  A field listed here but missing from the
+        round-trip means the forwarding helper regressed.
+        """
+        # Arrange
+        assert set(forwarded_config_fields()) == set(self._FORWARDED_OVERRIDES), (
+            "forwarded set changed: update _FORWARDED_OVERRIDES with a "
+            "non-default value for the new field so the round-trip covers it"
+        )
+        config = DownstreamConfig(
+            name="foo",
+            repo="owner/foo",
+            default_branch="main",
+            dependency_name="mathlib",
+            **self._FORWARDED_OVERRIDES,
+        )
+        selection = WindowSelection(
+            downstream=config.name,
+            repo=config.repo,
+            default_branch=config.default_branch,
+            dependency_name=config.dependency_name,
+        )
+
+        # Act
+        apply_config_forwarding(selection, config)
+        rebuilt = config_from_selection(
+            WindowSelection.from_json(selection.to_json())
+        )
+
+        # Assert — identity fields plus every forwarded field survive the
+        # trip through selection.json serialisation.
+        assert rebuilt.name == config.name
+        assert rebuilt.repo == config.repo
+        assert rebuilt.default_branch == config.default_branch
+        assert rebuilt.dependency_name == config.dependency_name
+        for field_name in forwarded_config_fields():
+            assert getattr(rebuilt, field_name) == getattr(config, field_name), (
+                f"{field_name} did not survive the config → selection → config round-trip"
+            )
+
+    def test_exclude_leaves_selection_default_in_place(self) -> None:
+        """Scenario: the on-demand select leg excludes ``revalidate_boundary``
+        so the bumping branch (which moves the manifest by design) never
+        triggers the manifest-unchanged revalidation guard."""
+        # Arrange
+        config = DownstreamConfig(
+            name="foo", repo="owner/foo", default_branch="main",
+            **self._FORWARDED_OVERRIDES,
+        )
+        selection = WindowSelection(downstream="foo", repo="owner/foo", default_branch="main")
+
+        # Act
+        apply_config_forwarding(selection, config, exclude={"revalidate_boundary"})
+
+        # Assert
+        assert selection.revalidate_boundary is False, (
+            "excluded fields keep their WindowSelection default"
+        )
+        assert selection.nuke_lakedir is True, (
+            "non-excluded fields are still forwarded"
         )
