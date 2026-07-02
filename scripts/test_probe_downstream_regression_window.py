@@ -37,16 +37,15 @@ so the alert payload's culprit-log link works without a back-link.
 from __future__ import annotations
 
 import subprocess
-import sys
 from pathlib import Path
 from unittest.mock import Mock, patch
-
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from scripts.conftest import PHYSLIB_CONFIG, make_selection
 from scripts.models import CommitDetail, Outcome
 from scripts.probe_downstream_regression_window import (
     build_parser as probe_build_parser,
+)
+from scripts.probe_downstream_regression_window import (
     run_culprit_probe,
     try_revalidate_boundary,
     try_skip_known_bad_bisect,

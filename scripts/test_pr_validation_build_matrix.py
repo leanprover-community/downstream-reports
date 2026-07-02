@@ -41,11 +41,8 @@ from unittest.mock import patch
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-
 from scripts.conftest import SHA_F
 from scripts.pr_validation import build_matrix
-
 
 # ---------------------------------------------------------------------------
 # Fixtures

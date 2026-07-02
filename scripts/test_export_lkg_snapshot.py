@@ -41,12 +41,9 @@ import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-
 from scripts.export_lkg_snapshot import SCHEMA_VERSION, build_snapshot
 from scripts.models import DownstreamConfig
 from scripts.storage import DownstreamStatusRecord
-
 
 # ---------------------------------------------------------------------------
 # Helpers

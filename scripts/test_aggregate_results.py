@@ -51,10 +51,7 @@ implemented in ``apply_result`` at aggregate_results.py:460-474.
 from __future__ import annotations
 
 import json
-import sys
 from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from scripts.aggregate_results import (
     EpisodeState,
@@ -62,12 +59,12 @@ from scripts.aggregate_results import (
     ValidationResult,
     _pin_crossed_fkb,
     apply_result,
+    filter_culprit_log_text,
     find_non_adjacent_endpoints,
+    first_bad_position,
     load_culprit_log_text,
     render_report,
     truncate_log_text,
-    filter_culprit_log_text,
-    first_bad_position,
 )
 from scripts.storage import DownstreamStatusRecord
 
@@ -540,7 +537,7 @@ class TestPinCrossedFkb:
 
     def test_returns_false_when_pin_already_past_fkb(self) -> None:
         """Scenario: pin was already ahead of FKB when episode opened — no advancement."""
-        distances = self._distances({("fkb", "old_pin"): 3, ("fkb", "old_pin"): 3})
+        distances = self._distances({("fkb", "old_pin"): 3})
         assert not _pin_crossed_fkb("fkb", "old_pin", "old_pin", distances)
 
     def test_returns_false_when_prior_pin_was_already_past_fkb(self) -> None:
@@ -817,6 +814,7 @@ class TestReleaseEnrichment:
         """Scenario: fetch_release_tags_api returns a tag; updated_statuses gets tag+sha."""
         from dataclasses import replace
         from unittest.mock import patch
+
         import scripts.aggregate_results as agg
 
         status = DownstreamStatusRecord(last_known_good_commit="lkg_abc")
@@ -845,6 +843,7 @@ class TestReleaseEnrichment:
         """Scenario: no tag reachable from LKG — both fields stay None."""
         from dataclasses import replace
         from unittest.mock import patch
+
         import scripts.aggregate_results as agg
 
         status = DownstreamStatusRecord(last_known_good_commit="lkg_abc")
@@ -889,8 +888,7 @@ class TestFetchReleaseTagsApi:
 
     def _mock_urlopen(self, responses: list):
         """Return a context-manager mock that yields successive responses."""
-        import io
-        from unittest.mock import MagicMock, patch
+        from unittest.mock import patch
 
         call_count = [0]
 
@@ -995,13 +993,13 @@ class TestFetchReleaseTagsApi:
 
     def test_tag_list_fetched_once_for_multiple_downstreams(self) -> None:
         """Scenario: two downstreams share one tag-list fetch; two ancestry checks run."""
-        import scripts.aggregate_results as agg
         from unittest.mock import patch
+
+        import scripts.aggregate_results as agg
 
         tags_page = [self._make_tag("v4.13.0", "sha_413")]
         call_urls: list[str] = []
 
-        import io
 
         class _FakeResp:
             def __init__(self, body):
