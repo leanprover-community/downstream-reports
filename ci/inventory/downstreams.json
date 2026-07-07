@@ -281,6 +281,15 @@
       "enabled": true,
       "warm_cache": true,
       "watch_manifest": true
+    },
+    {
+      "name": "hex-dev",
+      "repo": "kim-em/hex-dev",
+      "default_branch": "main",
+      "dependency_name": "mathlib",
+      "enabled": true,
+      "warm_cache": true,
+      "watch_manifest": true
     }
   ]
 }
