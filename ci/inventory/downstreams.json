@@ -240,7 +240,7 @@
     },
     {
       "name": "TauCeti",
-      "repo": "FormalFrontier/TauCeti",
+      "repo": "TauCetiProject/TauCeti",
       "default_branch": "main",
       "dependency_name": "mathlib",
       "enabled": true,
