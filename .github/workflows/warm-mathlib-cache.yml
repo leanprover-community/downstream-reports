@@ -84,7 +84,10 @@ jobs:
       - name: Build matrix
         id: plan
         env:
-          POSTGRES_DSN: ${{ secrets.POSTGRES_DSN }}
+          # Read-only: the planner only reads cache_warmth to drop SHAs that
+          # are already warm.  The write-capable DSN lives on the publish
+          # environment (used by the finalize job below), never here.
+          POSTGRES_DSN: ${{ secrets.POSTGRES_DSN_RO }}
           MANUAL_SHAS: ${{ inputs.shas }}
         run: |
           ARGS=(--backend sql
@@ -141,6 +144,11 @@ jobs:
       (needs.plan.outputs.has_jobs == 'true' ||
        needs.plan.outputs.has_skipped == 'true')
     runs-on: ubuntu-latest
+    # Writes cache_warmth, so it runs in the main-only `publish` environment
+    # and takes that environment's write-capable POSTGRES_DSN.  No branch run
+    # can reach this write (workflow_run / schedule run on main; a branch
+    # workflow_dispatch is blocked by the environment's branch policy).
+    environment: publish
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
@@ -286,6 +294,8 @@ jobs:
       - name: Record warm SHAs
         if: always() && needs.plan.outputs.has_jobs == 'true' && hashFiles('summary.json') != ''
         env:
+          # Resolves to the publish environment's write-capable POSTGRES_DSN
+          # (env secrets override repo secrets for this job).
           POSTGRES_DSN: ${{ secrets.POSTGRES_DSN }}
         run: |
           python3 scripts/record_warm_shas.py \

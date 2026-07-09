@@ -60,7 +60,9 @@ jobs:
 
       - name: Export LKG snapshot
         env:
-          POSTGRES_DSN: ${{ secrets.POSTGRES_DSN }}
+          # Read-only: the exporters only read downstream_status / run_result
+          # and write to Azure Blob, never to the database.
+          POSTGRES_DSN: ${{ secrets.POSTGRES_DSN_RO }}
           GITHUB_REPOSITORY: ${{ github.repository }}
         run: |
           python3 scripts/export_lkg_snapshot.py \
@@ -71,7 +73,9 @@ jobs:
 
       - name: Export runs snapshot
         env:
-          POSTGRES_DSN: ${{ secrets.POSTGRES_DSN }}
+          # Read-only: the exporters only read downstream_status / run_result
+          # and write to Azure Blob, never to the database.
+          POSTGRES_DSN: ${{ secrets.POSTGRES_DSN_RO }}
           GITHUB_REPOSITORY: ${{ github.repository }}
         run: |
           python3 scripts/export_runs_snapshot.py \
