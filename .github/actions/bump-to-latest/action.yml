@@ -24,7 +24,7 @@ inputs:
     description: 'Name of the dependency in the lakefile'
   hopscotch-version:
     required: false
-    default: 'v2.0.0-beta'
+    default: 'v2.0.0-beta2'
     description: >
       Hopscotch release tag to download. v2.0.0-beta+ is required for the `fix`
       subcommand (used by apply-fixes); on older tags the apply step finds no
