@@ -22,7 +22,7 @@ on:
         default: true
         type: boolean
       dry_run:
-        description: "Use the dry-run backend (no database reads or writes)."
+        description: "Skip persisting results and sending alerts. The database is still READ (real prior state), so validation is identical to a live run; only the write is skipped. Always on for non-main branches."
         required: false
         default: false
         type: boolean
@@ -67,11 +67,13 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r scripts/requirements.txt
 
-      # Dry-run mode skips all database reads and writes, using the dry-run
-      # backend which only logs what operations would have been performed.
-      # It is always active on non-main branches (to avoid polluting the
-      # database during workflow development) and can also be forced on via
-      # the dry_run input even when running from main.
+      # Dry-run mode still READS real prior state from the database (so
+      # validation is identical to a live run) and only skips the write: the
+      # environment-gated `publish` job and the Zulip alert send are both
+      # gated off when this is true.  It is always active on non-main branches
+      # (so a branch run can exercise the full pipeline against real state
+      # without ever mutating it) and can also be forced on via the dry_run
+      # input when running from main.
       - id: dry_run
         run: |
           if [ "${{ inputs.dry_run }}" = "true" ] || [ "${{ github.ref_name }}" != "main" ]; then
@@ -125,13 +127,14 @@ jobs:
       - name: Stage status snapshot
         if: steps.matrix.outputs.has_downstreams == 'true'
         env:
-          # POSTGRES_DSN is intentionally omitted in dry-run mode so that
-          # credentials are never present in the environment when not needed.
-          POSTGRES_DSN: ${{ steps.dry_run.outputs.value == 'true' && '' || secrets.POSTGRES_DSN }}
-          BACKEND: ${{ steps.dry_run.outputs.value == 'true' && 'dry-run' || 'sql' }}
+          # Reads run in every mode (dry-run and live) so the select fan-out
+          # always sees real prior episode state.  They use the READ-ONLY DSN:
+          # the write-capable POSTGRES_DSN lives only as an environment secret
+          # on the publish job, so no job outside `publish` can mutate state.
+          POSTGRES_DSN: ${{ secrets.POSTGRES_DSN_RO }}
         run: |
           python3 scripts/export_status_snapshot.py \
-            --backend "$BACKEND" \
+            --backend sql \
             --workflow regression \
             --upstream leanprover-community/mathlib4 \
             --output status-snapshot/status.json
@@ -448,19 +451,21 @@ jobs:
           print(f"Resolved {len(urls)} culprit-log artifact URL(s)")
           PY
       - name: Aggregate results
+        # Reads real prior state and computes the run in every mode, but never
+        # writes: --persist-output serialises the save_run arguments for the
+        # environment-gated publish job instead.  The READ-ONLY DSN is all this
+        # job ever holds, so it cannot mutate state even though it runs on every
+        # branch.
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # POSTGRES_DSN is intentionally omitted in dry-run mode so that
-          # credentials are never present in the environment when not needed.
-          POSTGRES_DSN: ${{ needs.plan.outputs.dry_run == 'true' && '' || secrets.POSTGRES_DSN }}
+          POSTGRES_DSN: ${{ secrets.POSTGRES_DSN_RO }}
           RUN_ID: ${{ github.run_id }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           UPSTREAM_REF: ${{ needs.plan.outputs.upstream_ref }}
-          BACKEND: ${{ needs.plan.outputs.dry_run == 'true' && 'dry-run' || 'sql' }}
         run: |
           python3 scripts/aggregate_results.py \
             --results-dir downloaded-results \
-            --backend "$BACKEND" \
+            --backend sql \
             --workflow regression \
             --upstream leanprover-community/mathlib4 \
             --run-id "$RUN_ID" \
@@ -469,7 +474,8 @@ jobs:
             --job-urls job_urls.json \
             --culprit-log-artifact-urls culprit_log_urls.json \
             --report-output /tmp/report.md \
-            --alert-output /tmp/alert-payload.json
+            --alert-output /tmp/alert-payload.json \
+            --persist-output /tmp/persist-payload.json
           cat /tmp/report.md >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload alert payload
@@ -478,6 +484,18 @@ jobs:
         with:
           name: alert-payload
           path: /tmp/alert-payload.json
+          if-no-files-found: ignore
+
+      # The write half of the report: the publish job replays this payload as
+      # a single save_run.  Uploaded even when aggregate exits nonzero (the
+      # adjacency tripwire writes the filtered payload before failing) so the
+      # already-validated records still reach publish.
+      - name: Upload persist payload
+        if: always()
+        uses: actions/upload-artifact@v7.0.0
+        with:
+          name: persist-payload
+          path: /tmp/persist-payload.json
           if-no-files-found: ignore
 
       - name: Delete consumed artifacts
@@ -496,6 +514,84 @@ jobs:
                 && echo "deleted $name" \
                 || echo "warning: could not delete $name ($id)"
             done || true
+
+  publish:
+    # The write half of the report.  The `report` job computes the run's
+    # results and updated episode state from real prior state but never writes
+    # them (it runs on every branch and holds only a read-only DSN); this job
+    # replays that payload as a single save_run against the write-capable
+    # database.
+    #
+    # Two independent guards keep state off non-main branches:
+    #   1. `environment: publish` — configure this environment in the repo
+    #      settings to permit deployments only from `main`.  A run from any
+    #      other branch that reached this job would be blocked by the
+    #      environment protection rule, never the code.
+    #   2. `dry_run == 'false'` — non-main branches force dry_run on (see the
+    #      plan job), so this job is simply skipped there; it also lets a
+    #      main-branch dispatch opt out of writing via the dry_run input.
+    # The write-capable POSTGRES_DSN is an environment secret on `publish`, so
+    # it is never present in any other job's environment.
+    #
+    # `!cancelled()` (not the implicit success()) lets publish run even when the
+    # report job exited nonzero due to the adjacency tripwire: the tripwire
+    # writes the filtered persist payload before failing, and those already
+    # validated records should still be persisted.  A genuine report crash
+    # leaves no payload artifact, so the download step below fails and nothing
+    # is written.
+    if: ${{ !cancelled() && needs.plan.outputs.has_downstreams == 'true' && needs.plan.outputs.dry_run == 'false' }}
+    needs:
+      - plan
+      - report
+    runs-on: ubuntu-latest
+    environment: publish
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6.2.0
+        with:
+          python-version: '3.x'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r scripts/requirements.txt
+
+      - uses: actions/download-artifact@v8.0.1
+        with:
+          name: persist-payload
+          path: persist-payload
+
+      - name: Persist run results
+        env:
+          # Write-capable DSN, defined as an environment secret on `publish`
+          # so no branch job ever holds a credential that can mutate state.
+          POSTGRES_DSN: ${{ secrets.POSTGRES_DSN }}
+        run: |
+          python3 scripts/publish_run.py \
+            --backend sql \
+            --persist-input persist-payload/persist-payload.json
+
+      - name: Delete persist payload
+        if: success()
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          ART_ID=$(gh api --paginate \
+            "repos/$GH_REPO/actions/runs/$RUN_ID/artifacts?per_page=100" \
+            --jq '.artifacts[] | select(.name == "persist-payload") | .id')
+          if [ -n "$ART_ID" ]; then
+            gh api -X DELETE "repos/$GH_REPO/actions/artifacts/$ART_ID" \
+              && echo "deleted persist-payload ($ART_ID)" \
+              || echo "warning: could not delete persist-payload ($ART_ID)"
+          fi
 
   alert:
     if: always() && needs.plan.outputs.has_downstreams == 'true'

@@ -40,6 +40,7 @@ from scripts.storage import (
     add_backend_args,
     create_backend,
     result_to_row,
+    write_run_payload,
 )
 
 GITHUB_API = "https://api.github.com"
@@ -752,6 +753,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="Path to write the alert payload JSON (consumed by the alert job).",
     )
     parser.add_argument(
+        "--persist-output", type=Path, default=None,
+        help=(
+            "Path to write the run-persistence payload JSON. When set, results "
+            "are NOT written to the backend here — they are serialised for the "
+            "environment-gated publish job (publish_run.py) instead. The "
+            "backend is still used for the prior-state read, so this run "
+            "reads real state while never mutating it."
+        ),
+    )
+    parser.add_argument(
         "--github-token",
         default=os.environ.get("GITHUB_TOKEN"),
         help="GitHub token for commit distance lookups (default: $GITHUB_TOKEN)",
@@ -954,7 +965,32 @@ def main() -> int:
         updated_statuses = {k: v for k, v in updated_statuses.items() if k not in offending}
         result_records = [r for r in result_records if r.downstream not in offending]
         validate_jobs = [j for j in validate_jobs if j.downstream not in offending]
-    if result_records:
+    if args.persist_output is not None:
+        # Read-but-no-write mode.  The report job that runs this (on every
+        # branch) computes the run from real prior state but must never mutate
+        # persisted state — persisting is the environment-gated publish job's
+        # sole responsibility.  Serialise the exact save_run arguments for it
+        # instead of writing here.  Offending downstreams were already excluded
+        # above, so the payload carries only records that should persist; an
+        # empty results list is a valid payload the publish job treats as a
+        # no-op.
+        write_run_payload(
+            args.persist_output,
+            run_id=args.run_id,
+            workflow=args.workflow,
+            upstream=args.upstream,
+            upstream_ref=args.upstream_ref,
+            run_url=args.run_url,
+            created_at=recorded_at,
+            results=result_records,
+            updated_statuses=updated_statuses,
+            validate_jobs=validate_jobs or None,
+        )
+        print(
+            f"[aggregate] wrote persist payload with {len(result_records)} "
+            f"result record(s) to {args.persist_output}"
+        )
+    elif result_records:
         backend.save_run(
             run_id=args.run_id,
             workflow=args.workflow,

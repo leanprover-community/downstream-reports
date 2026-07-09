@@ -410,6 +410,111 @@ def read_status_snapshot(
 
 
 # ---------------------------------------------------------------------------
+# Run-persistence payload
+# ---------------------------------------------------------------------------
+#
+# The regression / on-demand report job reads prior episode state and computes
+# the full set of run results plus updated statuses, but it never writes them:
+# that job runs on every branch (including non-main) and must not mutate
+# persisted state.  The write is isolated in a separate, environment-gated
+# ``publish`` job.  ``aggregate_results.py --persist-output`` serialises the
+# exact ``save_run`` arguments to this payload file; the publish job reads it
+# back with ``read_run_payload`` and replays a single ``save_run`` against the
+# write-capable database (see ``publish_run.py``).  Splitting compute from
+# persist this way keeps the write path off every branch while the read +
+# report path stays identical to a live run.
+
+_RUN_PAYLOAD_SCHEMA_VERSION = 1
+
+
+def run_payload(
+    *,
+    run_id: str,
+    workflow: str,
+    upstream: str,
+    upstream_ref: str,
+    run_url: str,
+    created_at: str,
+    results: list[RunResultRecord],
+    updated_statuses: dict[str, DownstreamStatusRecord],
+    validate_jobs: list[ValidateJobRecord] | None = None,
+) -> dict[str, Any]:
+    """JSON-shaped ``save_run`` arguments, as stored in the persist payload.
+
+    ``report_markdown`` is deliberately omitted: it is never persisted (the
+    SQL backend regenerates the report from structured data), so the publish
+    job has no use for it.  The returned dict's non-metadata keys match
+    ``StorageBackend.save_run``'s keyword arguments exactly, so
+    ``read_run_payload`` can hand them straight back for a splat call.
+    """
+    return {
+        "schema_version": _RUN_PAYLOAD_SCHEMA_VERSION,
+        "run_id": run_id,
+        "workflow": workflow,
+        "upstream": upstream,
+        "upstream_ref": upstream_ref,
+        "run_url": run_url,
+        "created_at": created_at,
+        "results": [asdict(r) for r in results],
+        "updated_statuses": {
+            name: asdict(s) for name, s in sorted(updated_statuses.items())
+        },
+        "validate_jobs": [asdict(j) for j in (validate_jobs or [])],
+    }
+
+
+def write_run_payload(path: Path, **kwargs: Any) -> Path:
+    """Write the run-persistence payload to *path* (see ``run_payload``)."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(run_payload(**kwargs), indent=2, sort_keys=True) + "\n"
+    )
+    return path
+
+
+def read_run_payload(path: Path) -> dict[str, Any]:
+    """Read a staged persist payload back into ``save_run`` keyword arguments.
+
+    Strict by design (mirrors ``read_status_snapshot``): a missing file or an
+    unexpected schema version is a wiring error in the calling workflow, not an
+    empty-state situation — failing loudly here beats a silent no-op write.
+    Per-record keys are exactly the dataclass fields (the writer serialises via
+    ``asdict``); unknown keys raise ``TypeError``.
+
+    Returns a dict whose keys match ``StorageBackend.save_run``'s keyword
+    arguments (``report_markdown`` excluded), so the caller can splat it:
+    ``backend.save_run(**read_run_payload(path))``.  ``validate_jobs`` is
+    ``None`` when the payload recorded none, matching ``save_run``'s default.
+    """
+    if not path.exists():
+        raise SystemExit(f"run payload not found: {path}")
+    payload = json.loads(path.read_text())
+    version = payload.get("schema_version")
+    if version != _RUN_PAYLOAD_SCHEMA_VERSION:
+        raise SystemExit(
+            f"run payload {path} has schema_version {version!r}; "
+            f"expected {_RUN_PAYLOAD_SCHEMA_VERSION}"
+        )
+    return {
+        "run_id": payload["run_id"],
+        "workflow": payload["workflow"],
+        "upstream": payload["upstream"],
+        "upstream_ref": payload["upstream_ref"],
+        "run_url": payload["run_url"],
+        "created_at": payload["created_at"],
+        "results": [RunResultRecord(**r) for r in payload["results"]],
+        "updated_statuses": {
+            name: DownstreamStatusRecord(**s)
+            for name, s in payload["updated_statuses"].items()
+        },
+        "validate_jobs": [
+            ValidateJobRecord(**j) for j in payload["validate_jobs"]
+        ]
+        or None,
+    }
+
+
+# ---------------------------------------------------------------------------
 # SQL implementation (requires sqlalchemy)
 # ---------------------------------------------------------------------------
 
