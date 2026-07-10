@@ -41,7 +41,10 @@
       "enabled": true,
       "warm_cache": true,
       "watch_manifest": true,
-      "build_args": ["--wfail", "--iofail"]
+      "build_args": ["--wfail", "--iofail"],
+      "run_test": true,
+      "test_args": ["--wfail", "--iofail"],
+      "run_lint": true
     },
     {
       "name": "FLT",
@@ -52,7 +55,10 @@
       "enabled": true,
       "warm_cache": true,
       "watch_manifest": true,
-      "build_args": ["--iofail"]
+      "build_args": ["--iofail"],
+      "run_test": true,
+      "test_args": ["--iofail"],
+      "run_lint": true
     },
     {
       "name": "infinity-cosmos",
@@ -229,7 +235,8 @@
       "default_branch": "main",
       "dependency_name": "mathlib",
       "enabled": true,
-      "watch_manifest": true
+      "watch_manifest": true,
+      "run_lint": true
     },
     {
       "name": "Statlib",
@@ -237,7 +244,8 @@
       "default_branch": "main",
       "dependency_name": "mathlib",
       "enabled": true,
-      "watch_manifest": true
+      "watch_manifest": true,
+      "run_lint": true
     },
     {
       "name": "TauCeti",
@@ -263,7 +271,8 @@
       "dependency_name": "mathlib",
       "enabled": true,
       "warm_cache": true,
-      "watch_manifest": true
+      "watch_manifest": true,
+      "run_lint": true
     },
     {
       "name": "ErdosUnitDistance",
