@@ -782,13 +782,23 @@ class TestRenderReportCulpritLog:
     )
 
     def test_truncated_log_with_job_url_shows_download_link(self) -> None:
-        """Scenario: truncated culprit log gets a download link pointing to the probe job."""
+        """Scenario: truncated culprit log gets a download link pointing to the probe job.
+
+        A non-default verify recipe is also named in the section so the failure
+        states which command produced it.
+        """
         truncated_log = "line1\nline2\n[log truncated]"
-        row = {**self._BASE_ROW, "culprit_log_text": truncated_log}
+        row = {
+            **self._BASE_ROW,
+            "culprit_log_text": truncated_log,
+            "build_args": ["--iofail"],
+            "failure_stage": "lake build",
+        }
         job_urls = {"TestProject": "https://example.com/job/42"}
         md = render_report(**self._COMMON_KWARGS, rows=[row], job_urls=job_urls)
         assert "probe job" in md
         assert "https://example.com/job/42" in md
+        assert "- Verify:\n  - `lake build --iofail`: failed" in md
 
     def test_non_truncated_log_has_no_download_link(self) -> None:
         """Scenario: complete log (not truncated) does not add a download link."""

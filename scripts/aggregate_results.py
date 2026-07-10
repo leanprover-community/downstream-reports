@@ -32,7 +32,12 @@ from pathlib import Path
 from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from scripts.models import RELEASE_TAG_RE, Outcome, utc_now
+from scripts.models import (
+    RELEASE_TAG_RE,
+    Outcome,
+    render_verify_summary,
+    utc_now,
+)
 from scripts.storage import (
     DownstreamStatusRecord,
     RunResultRecord,
@@ -195,6 +200,12 @@ class ValidationResult:
     head_probe_failure_stage: str | None = None
     pinned_commit: str | None = None
     search_base_not_ancestor: bool = False
+    # Verify recipe behind this result (see models.describe_verify_commands).
+    run_test: bool = False
+    run_lint: bool = False
+    build_args: list[str] = field(default_factory=list)
+    test_args: list[str] = field(default_factory=list)
+    lint_args: list[str] = field(default_factory=list)
     # Hopscotch fixes for the boundary, carried verbatim (see models.py).
     proposed_fixes: list[dict[str, Any]] = field(default_factory=list)
 
@@ -221,6 +232,11 @@ class ValidationResult:
             head_probe_failure_stage=payload.get("head_probe_failure_stage"),
             pinned_commit=payload.get("pinned_commit"),
             search_base_not_ancestor=payload.get("search_base_not_ancestor", False),
+            run_test=payload.get("run_test", False),
+            run_lint=payload.get("run_lint", False),
+            build_args=payload.get("build_args") or [],
+            test_args=payload.get("test_args") or [],
+            lint_args=payload.get("lint_args") or [],
             proposed_fixes=payload.get("proposed_fixes") or [],
         )
 
@@ -282,6 +298,26 @@ def render_named_commit(details: list[dict[str, Any]], sha: str | None, upstream
     if detail is not None:
         return render_commit_detail(detail)
     return render_commit_link(sha, upstream)
+
+
+def render_verify_recipe(row: dict[str, Any]) -> str | None:
+    """Render the verify-step summary for a report row, or None for the default.
+
+    Names the exact ``lake …`` command(s) behind the row's outcome, one per line
+    tagged passed/failed/not run, so a reader can see which step failed and
+    distinguish a warning promoted to an error (``--wfail``) from a genuine build
+    break.  Suppressed for downstreams on the plain ``lake build`` recipe.
+    """
+    return render_verify_summary(
+        build_args=row.get("build_args") or [],
+        run_test=row.get("run_test", False),
+        test_args=row.get("test_args") or [],
+        run_lint=row.get("run_lint", False),
+        lint_args=row.get("lint_args") or [],
+        outcome=row.get("outcome"),
+        failure_stage=row.get("failure_stage"),
+        label="Verify",
+    )
 
 
 def truncate_log_text(text: str, *, max_lines: int = 50, max_chars: int = 10000) -> str:
@@ -616,6 +652,9 @@ def render_report(
                 "",
             ]
         )
+        recipe = render_verify_recipe(row)
+        if recipe:
+            lines.append(recipe)
         lines.append("- Previous state before this run:")
         lines.append(
             "  - last known good: "
@@ -866,6 +905,11 @@ def main() -> int:
             culprit_log_artifact_url=culprit_artifact_urls.get(result.downstream),
             pinned_commit=result.pinned_commit,
             search_base_not_ancestor=result.search_base_not_ancestor,
+            run_test=result.run_test,
+            run_lint=result.run_lint,
+            build_args=result.build_args,
+            test_args=result.test_args,
+            lint_args=result.lint_args,
             proposed_fixes=result.proposed_fixes,
         )
         result_records.append(record)

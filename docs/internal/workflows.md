@@ -137,10 +137,12 @@ appended directly to the GitHub Actions job summary. It contains:
   (`PASSING`, `NEW_FAILURE`, `FAILING`, `RECOVERED`), the target
   mathlib commit, the last known-good commit, the first known-bad commit, and
   brief notes (failure stage, search mode).
-- A collapsible **`<details>` block per downstream** with the search mode
-  (head-only or bisect), the head-probe result, the bisect window bounds and
-  position, the current episode state, a filtered snippet of the culprit build
-  log (capped at 200 lines / 40 KB), and the full tool summary.
+- A collapsible **`<details>` block per downstream** with the verify-step
+  summary (each `lake` command with its `passed` / `failed` / `not run` status,
+  shown only when the downstream customises the default `lake build`), the
+  search mode (head-only or bisect), the head-probe result, the bisect window
+  bounds and position, the current episode state, a filtered snippet of the
+  culprit build log (capped at 200 lines / 40 KB), and the full tool summary.
 
 ## `mathlib-downstream-ondemand.yml`
 

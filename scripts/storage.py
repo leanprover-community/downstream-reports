@@ -175,6 +175,15 @@ class RunResultRecord:
     # itself (`culprit_log_text` above) is held only in memory for the in-process
     # markdown report and Zulip alert payload — never written to SQL.
     culprit_log_artifact_url: str | None = None
+    # The verify recipe this run used (see models.describe_verify_commands),
+    # carried into the markdown report and Zulip alert payload so a failure names
+    # the exact command.  Report-only, like `culprit_log_text`: never written to
+    # SQL (no columns), it round-trips harmlessly through the persist payload.
+    run_test: bool = False
+    run_lint: bool = False
+    build_args: list[str] = field(default_factory=list)
+    test_args: list[str] = field(default_factory=list)
+    lint_args: list[str] = field(default_factory=list)
     # Hopscotch boundary fixes (results.json `proposedFixes`), stored verbatim as
     # JSON text — hopscotch's own ProposedFix objects (see models.ValidationResult),
     # treated opaquely.  Empty list when none were recorded.

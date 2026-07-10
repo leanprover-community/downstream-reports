@@ -65,6 +65,11 @@ def main() -> int:
         "error": result.error,
         "head_probe_outcome": result.head_probe_outcome,
         "head_probe_failure_stage": result.head_probe_failure_stage,
+        "run_test": result.run_test,
+        "run_lint": result.run_lint,
+        "build_args": result.build_args,
+        "test_args": result.test_args,
+        "lint_args": result.lint_args,
         "culprit_log_text": culprit_log_text,
         "tested_commit_details": [
             {"sha": d.sha, "title": d.title} for d in result.tested_commit_details

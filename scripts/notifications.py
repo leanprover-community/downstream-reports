@@ -22,6 +22,8 @@ import urllib.request
 from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
 
+from scripts.models import render_verify_summary
+
 try:
     import zulip
 except ImportError:  # pragma: no cover — optional at import time
@@ -174,6 +176,27 @@ def _downstream_commit_link(
     return link
 
 
+def _verify_summary(record: dict[str, Any]) -> str | None:
+    """Render the verify-step summary for a failure, or None for `lake build`.
+
+    Surfaces the exact command(s) hopscotch ran, one per line tagged
+    passed/failed/not run, so a reader sees which step failed and with which
+    arguments — telling a warning promoted to an error (e.g. `--wfail`/`--iofail`)
+    apart from a genuine build break.  Subsumes the old standalone "Failure
+    stage" line.  Omitted for downstreams on the default recipe.
+    """
+    return render_verify_summary(
+        build_args=record.get("build_args") or [],
+        run_test=record.get("run_test", False),
+        test_args=record.get("test_args") or [],
+        run_lint=record.get("run_lint", False),
+        lint_args=record.get("lint_args") or [],
+        outcome=record.get("outcome"),
+        failure_stage=record.get("failure_stage"),
+        label="Verify",
+    )
+
+
 def format_new_failure_message(
     record: dict[str, Any],
     run_url: str,
@@ -189,7 +212,6 @@ def format_new_failure_message(
     downstream = record["downstream"]
     target_sha = record.get("target_commit")
     first_bad_sha = record.get("first_known_bad")
-    failure_stage = record.get("failure_stage") or "unknown"
     ds_commit = record.get("downstream_commit")
     ds_repo = record.get("repo")
     release = _release_link(record.get("last_good_release"))
@@ -207,8 +229,11 @@ def format_new_failure_message(
     ]
     if release:
         lines.append(f"- Last compatible release: {release}")
-    if failure_stage != "build":
-        lines.append(f"- Failure stage: {failure_stage}")
+    # The verify summary names the failing step; the default recipe (build only)
+    # can only fail at build, so no separate failure-stage line is needed.
+    verify_summary = _verify_summary(record)
+    if verify_summary:
+        lines.append(verify_summary)
     lines.extend([
         "",
         f"[Downstream validation run]({run_url})",
@@ -269,7 +294,6 @@ def format_ondemand_failure_message(
     downstream = record["downstream"]
     target_sha = record.get("target_commit")
     first_bad_sha = record.get("first_known_bad")
-    failure_stage = record.get("failure_stage") or "unknown"
     ds_commit = record.get("downstream_commit")
     ds_repo = record.get("repo")
     release = _release_link(record.get("last_good_release"))
@@ -288,8 +312,11 @@ def format_ondemand_failure_message(
     ]
     if release:
         lines.append(f"- Last compatible release: {release}")
-    if failure_stage != "build":
-        lines.append(f"- Failure stage: {failure_stage}")
+    # The verify summary names the failing step; the default recipe (build only)
+    # can only fail at build, so no separate failure-stage line is needed.
+    verify_summary = _verify_summary(record)
+    if verify_summary:
+        lines.append(verify_summary)
 
     culprit_log = record.get("culprit_log_text")
     culprit_log_url = record.get("culprit_log_artifact_url")

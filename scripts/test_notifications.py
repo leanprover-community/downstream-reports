@@ -240,12 +240,37 @@ class TestFormatNewFailureMessage:
         )
         assert "deadbeef1234" in msg
 
-    def test_includes_failure_stage(self) -> None:
-        """Scenario: the failure stage (build/test) is mentioned."""
-        msg = format_new_failure_message(
-            _make_record(failure_stage="test"), _RUN_URL
+    def test_surfaces_nondefault_verify_recipe(self) -> None:
+        """Scenario: a customised recipe names the exact command and the failing step; the default is silent.
+
+        A downstream built with e.g. ``--iofail`` can "fail" on a warning
+        rather than a real break, so the recipe is spelled out with the failing
+        step tagged ``failed`` and the rest ``passed``/``not run``; a plain
+        ``lake build`` downstream adds no noise (and needs no failure-stage line).
+        """
+        # Single-step recipe: the build step is tagged failed.
+        custom = format_new_failure_message(
+            _make_record(build_args=["--wfail", "--iofail"], failure_stage="lake build"),
+            _RUN_URL,
         )
-        assert "test" in msg
+        assert "- Verify:\n  - `lake build --wfail --iofail`: failed" in custom
+
+        # Multi-step recipe failing at test: build passed, test failed, lint not run.
+        multi = format_new_failure_message(
+            _make_record(run_test=True, run_lint=True, failure_stage="lake test"),
+            _RUN_URL,
+        )
+        assert (
+            "- Verify:\n"
+            "  - `lake build`: passed\n"
+            "  - `lake test`: failed\n"
+            "  - `lake lint`: not run"
+        ) in multi
+
+        # Default recipe: no verify summary and no standalone failure-stage line.
+        default = format_new_failure_message(_make_record(), _RUN_URL)
+        assert "Verify:" not in default
+        assert "Failure stage" not in default
 
     def test_includes_run_url(self) -> None:
         """Scenario: a link to the CI run is included."""
@@ -789,12 +814,20 @@ class TestFormatOndemandFailureMessage:
         )
         assert "deadbeef1234" in msg
 
-    def test_includes_failure_stage(self) -> None:
-        """Scenario: the failure stage is mentioned."""
+    def test_verify_summary_names_the_failing_step(self) -> None:
+        """Scenario: a non-default recipe lists each step with its status; default stays silent."""
         msg = format_ondemand_failure_message(
-            _make_record(failure_stage="test"), _RUN_URL
+            _make_record(run_test=True, failure_stage="lake test"), _RUN_URL
         )
-        assert "test" in msg
+        assert (
+            "- Verify:\n"
+            "  - `lake build`: passed\n"
+            "  - `lake test`: failed"
+        ) in msg
+
+        default = format_ondemand_failure_message(_make_record(), _RUN_URL)
+        assert "Verify:" not in default
+        assert "Failure stage" not in default
 
     def test_includes_run_url(self) -> None:
         """Scenario: a link to the CI run is included."""
