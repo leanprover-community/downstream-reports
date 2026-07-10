@@ -869,6 +869,9 @@ runs:
         # hopscotch's own `fix apply` summary (verbatim) when it changed files;
         # empty otherwise.  Surfaced as-is — never synthesized here.
         FIX_SUMMARY: ${{ steps.bump.outputs.fix-summary }}
+        # "true"/"false" when a fix was applied and the fixed tree was re-built;
+        # empty when no fix was applied. Drives the title's completeness wording.
+        FIX_VERIFIED: ${{ steps.bump.outputs.fix-verified }}
         # Used to decide whether to surface the "CI needs approval" warning:
         # the warning applies only when the PR is opened under the built-in
         # GITHUB_TOKEN. A custom App / PAT token differs from github.token,
@@ -911,13 +914,18 @@ runs:
             "$WORKFLOW_RUN_URL"
         } > "$BODY_FILE"
 
-        # The title states the PR's goal end-state: fix the breaking changes
-        # (hopscotch's automated fixes plus the maintainer's). The post-fix build
-        # is not re-validated here — that's the PR's own CI — so we don't assert
-        # completeness: when hopscotch applied something, credit it and flag that
-        # remaining manual work may still be needed.
+        # The title states the PR's goal end-state: fix the breaking changes.
+        # When hopscotch applied fixes, bump-to-latest re-built the fixed tree,
+        # so we can be honest about completeness:
+        #   verified build  -> the fixes resolve it: "apply automated fixes"
+        #   build still red  -> partial: "…, fix remaining breaking changes"
+        #   no fix applied  -> maintainer does it all: "fix breaking changes"
         if [ -n "${FIX_SUMMARY:-}" ]; then
-          PR_TITLE="chore: bump ${DEP_NAME} to ${FKB_SHORT}, apply hopscotch fixes, fix remaining breaking changes"
+          if [ "${FIX_VERIFIED:-}" = "true" ]; then
+            PR_TITLE="chore: bump ${DEP_NAME} to ${FKB_SHORT}, apply automated fixes"
+          else
+            PR_TITLE="chore: bump ${DEP_NAME} to ${FKB_SHORT}, apply hopscotch fixes, fix remaining breaking changes"
+          fi
         else
           PR_TITLE="chore: bump ${DEP_NAME} to ${FKB_SHORT}, fix breaking changes"
         fi

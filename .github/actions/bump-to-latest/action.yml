@@ -135,6 +135,14 @@ outputs:
       fixes were recorded. Surface this in a PR body to describe the applied
       fixes using the tool's own words rather than a synthesized count.
     value: ${{ steps.apply-fixes.outputs.fix_summary }}
+  fix-verified:
+    description: >
+      When `apply-fixes` changed files, the fixed tree is re-built (the bump
+      itself never re-builds after `fix apply`): "true" if that build passed,
+      "false" if it still failed. Empty when no fix was applied (nothing to
+      verify). Lets callers distinguish a complete, verified fix from a partial
+      one when wording a PR.
+    value: ${{ steps.verify-fixes.outputs.fix_verified }}
 
 runs:
   using: 'composite'
@@ -800,6 +808,51 @@ runs:
           echo "$DELIM"
         } >> "$GITHUB_OUTPUT"
         set -e
+
+    # ------------------------------------------------------------------
+    # Re-build the *fixed* tree to learn whether the applied fixes actually make
+    # it build — the bump never re-builds after `fix apply`, so otherwise a
+    # partial fix is indistinguishable from a complete one. Runs only when a fix
+    # was applied (fix_summary non-empty): builds exactly the bumped-to commit
+    # with the fix in place (dirty tree, no re-detection) via hopscotch, so cache
+    # and toolchain handling match the bump. Best-effort — a build failure just
+    # means fix-verified=false (a partial fix), not a step failure.
+    # ------------------------------------------------------------------
+    - name: Verify applied fixes build
+      id: verify-fixes
+      if: >-
+        steps.compare.outputs.skipped != 'true'
+        && steps.guard.outputs.skipped != 'true'
+        && steps.run-hopscotch.outputs.updated == 'true'
+        && inputs.apply-fixes == 'true'
+        && steps.apply-fixes.outputs.fix_summary != ''
+      shell: bash
+      env:
+        DEPENDENCY_NAME: ${{ inputs.dependency-name }}
+        TARGET_COMMIT: ${{ steps.fetch-snapshot.outputs.commit }}
+        PROJECT_DIR: ${{ inputs.project-dir }}
+        GITHUB_TOKEN: ${{ github.token }}
+      run: |
+        set +e
+        RESULTS_JSON="$RUNNER_TEMP/verify-fixes-results.json"
+        VERIFY_COMMITS="$RUNNER_TEMP/verify-commits.txt"
+        rm -f "$RESULTS_JSON"
+        printf '%s\n' "$TARGET_COMMIT" > "$VERIFY_COMMITS"
+        hopscotch dep "$DEPENDENCY_NAME" \
+          --commits-file "$VERIFY_COMMITS" \
+          --project-dir "$PROJECT_DIR" \
+          --allow-dirty-workspace \
+          --no-auto-fix \
+          --results-json "$RESULTS_JSON"
+        RC=$?
+        set -e
+        if [ "$RC" -eq 0 ]; then
+          echo "The fixed tree builds cleanly — applied fixes verified."
+          echo "fix_verified=true" >> "$GITHUB_OUTPUT"
+        else
+          echo "::warning::The fixed tree still fails to build; the applied fixes are incomplete."
+          echo "fix_verified=false" >> "$GITHUB_OUTPUT"
+        fi
 
     # ------------------------------------------------------------------
     # Final step: consolidate outputs with safe defaults so callers never
