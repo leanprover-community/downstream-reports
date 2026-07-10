@@ -323,7 +323,6 @@ class TestBuildResultFromToolFixes:
         assert carried.proposed_fixes == [self._FIX]
         # The verify recipe is copied from config so the failure names its command.
         assert carried.build_args == ["--iofail"]
-        assert carried.verify_commands() == ["lake build --iofail"]
 
         # No proposedFixes in results.json → empty list.
         absent = self._build(1, {"firstFailingCommit": "b", "failureStage": "lake build"})

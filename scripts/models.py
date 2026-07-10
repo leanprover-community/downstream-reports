@@ -465,17 +465,6 @@ class ValidationResult:
     # recorded.
     proposed_fixes: list[dict[str, Any]] = field(default_factory=list)
 
-    def verify_commands(self) -> list[str]:
-        """The ordered `lake …` commands behind this result."""
-
-        return describe_verify_commands(
-            build_args=self.build_args,
-            run_test=self.run_test,
-            test_args=self.test_args,
-            run_lint=self.run_lint,
-            lint_args=self.lint_args,
-        )
-
     def to_json(self) -> dict[str, Any]:
         """Serialize the result using plain JSON-compatible values."""
 
