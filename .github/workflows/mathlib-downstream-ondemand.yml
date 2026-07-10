@@ -484,7 +484,10 @@ jobs:
       # adjacency tripwire writes the filtered payload before failing) so the
       # already-validated records still reach publish.
       - name: Upload persist payload
-        if: always()
+        # A skipped-only run (has_skipped, no downstreams) has nothing to
+        # publish, so don't stage a payload the publish job (gated on
+        # has_downstreams) would never consume and delete.
+        if: always() && needs.plan.outputs.has_downstreams == 'true'
         uses: actions/upload-artifact@v7.0.0
         with:
           name: persist-payload
@@ -585,10 +588,21 @@ jobs:
           fi
 
   alert:
-    if: "!cancelled() && needs.report.result == 'success' && (needs.plan.outputs.has_downstreams == 'true' || needs.plan.outputs.has_skipped == 'true')"
+    # Same publish coupling as the regression workflow: on a live run with
+    # downstreams, alert only once publish has persisted the results, so a
+    # failed write can't produce duplicate Zulip messages on the next run.
+    # Skipped-only runs (has_skipped, nothing to publish) and dry runs still
+    # alert as before.
+    if: >-
+      !cancelled() && needs.report.result == 'success'
+      && (needs.plan.outputs.has_downstreams == 'true' || needs.plan.outputs.has_skipped == 'true')
+      && (needs.plan.outputs.dry_run == 'true'
+          || needs.plan.outputs.has_downstreams != 'true'
+          || needs.publish.result == 'success')
     needs:
       - plan
       - report
+      - publish
     runs-on: ubuntu-latest
     permissions:
       contents: read

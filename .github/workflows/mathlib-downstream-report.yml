@@ -594,10 +594,21 @@ jobs:
           fi
 
   alert:
-    if: always() && needs.plan.outputs.has_downstreams == 'true'
+    # Waits on publish and fires only when the write actually landed (or the
+    # run is a dry run, where nothing is sent anyway).  This restores the
+    # alert<->write coupling that existed when save_run ran inside the report
+    # job: if publish fails to persist, the next run recomputes the same
+    # NEW_FAILURE / RECOVERED from unchanged state, so alerting before the
+    # write succeeds would re-fire (duplicate Zulip messages).  On the
+    # adjacency-tripwire path report exits nonzero, but publish still persists
+    # the filtered payload and succeeds, so those alerts still go out.
+    if: >-
+      always() && needs.plan.outputs.has_downstreams == 'true'
+      && (needs.plan.outputs.dry_run == 'true' || needs.publish.result == 'success')
     needs:
       - plan
       - report
+      - publish
     runs-on: ubuntu-latest
     permissions:
       contents: read

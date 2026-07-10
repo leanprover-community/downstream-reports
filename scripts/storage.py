@@ -446,6 +446,13 @@ def run_payload(
     job has no use for it.  The returned dict's non-metadata keys match
     ``StorageBackend.save_run``'s keyword arguments exactly, so
     ``read_run_payload`` can hand them straight back for a splat call.
+
+    Not minimal by design: ``asdict`` also carries fields ``save_run`` ignores
+    — ``RunResultRecord.culprit_log_text`` (in-memory only, but bounded by
+    ``truncate_log_text``) and ``DownstreamStatusRecord.last_fresh_bisect_at``
+    (snapshot-only).  They round-trip harmlessly rather than being pruned, so
+    the payload stays a faithful mirror of the compute step's objects (the
+    alert-payload artifact already serialises the same results identically).
     """
     return {
         "schema_version": _RUN_PAYLOAD_SCHEMA_VERSION,
