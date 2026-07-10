@@ -268,7 +268,7 @@ jobs:
           echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
 
       - name: Download hopscotch binary
-        # Pinned at v2.0.0-beta: emits results.json schema v3 (its proposed
+        # Pinned at v2.0.0-beta2: emits results.json schema v3 (its proposed
         # boundary fixes feed runs/latest.json).  Must stay
         # >= v1.5.0, where `Hopscotch.secretScrubEnv` strips GITHUB_TOKEN from
         # every `lake` / `git` child env — the "Run probe" step below relies on
@@ -278,7 +278,7 @@ jobs:
         run: |
           mkdir -p "${{ runner.temp }}/tool-bin"
           curl -L \
-            https://github.com/leanprover-community/hopscotch/releases/download/v2.0.0-beta/hopscotch-linux-x86_64 \
+            https://github.com/leanprover-community/hopscotch/releases/download/v2.0.0-beta2/hopscotch-linux-x86_64 \
             -o "${{ runner.temp }}/tool-bin/hopscotch"
           chmod +x "${{ runner.temp }}/tool-bin/hopscotch"
 
