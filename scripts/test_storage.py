@@ -38,6 +38,7 @@ contract.
 from __future__ import annotations
 
 import dataclasses
+import json
 import os
 
 import pytest
@@ -50,11 +51,14 @@ from scripts.storage import (
     DryRunBackend,
     RunResultRecord,
     SqlBackend,
+    ValidateJobRecord,
     connect_with_retry,
     create_backend,
     create_schema,
     create_sql_engine,
+    read_run_payload,
     result_to_row,
+    write_run_payload,
 )
 
 # ----------------------------------------------------------------------
@@ -825,3 +829,122 @@ class TestSqlBackendLoadPriorResults:
         # Assert
         assert prior[("ProjectA", "commit_aaa")]["outcome"] == "passed", "Newer run's outcome wins over older run's outcome"
 
+
+
+# ----------------------------------------------------------------------
+# Run-persistence payload — the contract shared by aggregate_results
+# (writer, via --persist-output) and publish_run (reader).  The report
+# job computes the run but never writes; the payload is how the
+# already-validated records reach the environment-gated publish job.
+# ----------------------------------------------------------------------
+
+
+class TestRunPayloadRoundTrip:
+    """A staged persist payload must replay through save_run exactly, and a
+    wiring error (missing file, drifted schema) must fail loudly rather than
+    silently persist the wrong thing — the same strictness as the status
+    snapshot, applied to the write half of the report."""
+
+    def _sample(self):
+        """Return (results, updated_statuses, validate_jobs) exercising every
+        payload record type, including a populated proposed_fixes list."""
+        results = [
+            make_run_result_record(
+                downstream="physlib",
+                outcome="failed",
+                episode_state="failing",
+                last_known_good="g" * 40,
+                first_known_bad="b" * 40,
+                head_probe_outcome="failed",
+                proposed_fixes=[{"file": "Physlib/X.lean", "patch": "-- fix"}],
+            )
+        ]
+        statuses = {
+            "physlib": DownstreamStatusRecord(
+                last_known_good_commit="g" * 40,
+                first_known_bad_commit="b" * 40,
+                pinned_commit="p" * 40,
+                downstream_commit="d" * 40,
+            )
+        }
+        jobs = [
+            ValidateJobRecord(
+                downstream="physlib",
+                job_id="123",
+                job_url="https://example.com/job/123",
+                started_at="2026-06-10T00:00:00Z",
+                finished_at="2026-06-10T00:05:00Z",
+                conclusion="failure",
+            )
+        ]
+        return results, statuses, jobs
+
+    def _write(self, path, *, validate_jobs):
+        results, statuses, jobs = self._sample()
+        return write_run_payload(
+            path,
+            run_id="run_1",
+            workflow="regression",
+            upstream=_UPSTREAM,
+            upstream_ref="master",
+            run_url="https://example.com/run/1",
+            created_at="2026-06-10T00:00:00Z",
+            results=results,
+            updated_statuses=statuses,
+            validate_jobs=validate_jobs if validate_jobs else jobs,
+        ), results, statuses, jobs
+
+    def test_round_trips_into_save_run_kwargs(self, tmp_path):
+        """Scenario: a payload written by the report job reloads into the exact
+        records and save_run keyword arguments the publish job replays."""
+        path, results, statuses, jobs = self._write(tmp_path / "persist.json", validate_jobs=None)
+        loaded = read_run_payload(path)
+        assert loaded == {
+            "run_id": "run_1",
+            "workflow": "regression",
+            "upstream": _UPSTREAM,
+            "upstream_ref": "master",
+            "run_url": "https://example.com/run/1",
+            "created_at": "2026-06-10T00:00:00Z",
+            "results": results,
+            "updated_statuses": statuses,
+            "validate_jobs": jobs,
+        }
+
+    def test_reloaded_payload_persists_through_save_run(self, tmp_path):
+        """Scenario: splatting the reloaded payload into a real backend's
+        save_run persists the statuses — the publish job's exact call path."""
+        path, _, _, _ = self._write(tmp_path / "persist.json", validate_jobs=None)
+        backend = _sqlite_backend()
+        backend.save_run(**read_run_payload(path))
+        reloaded = backend.load_all_statuses("regression", _UPSTREAM)
+        assert reloaded["physlib"].first_known_bad_commit == "b" * 40
+
+    def test_empty_validate_jobs_round_trip_to_none(self, tmp_path):
+        """Scenario: a run with no validate jobs reloads validate_jobs as None,
+        matching save_run's default rather than an empty list."""
+        results, statuses, _ = self._sample()
+        path = write_run_payload(
+            tmp_path / "persist.json",
+            run_id="run_1", workflow="regression", upstream=_UPSTREAM,
+            upstream_ref="master", run_url="https://example.com/run/1",
+            created_at="2026-06-10T00:00:00Z",
+            results=results, updated_statuses=statuses, validate_jobs=None,
+        )
+        assert read_run_payload(path)["validate_jobs"] is None
+
+    def test_missing_file_raises_system_exit(self, tmp_path):
+        """Scenario: pointing publish_run at a nonexistent payload is a workflow
+        wiring error, not a silent no-op write."""
+        with pytest.raises(SystemExit):
+            read_run_payload(tmp_path / "missing.json")
+
+    def test_unexpected_schema_version_raises_system_exit(self, tmp_path):
+        """Scenario: a payload whose schema_version drifted from the reader's
+        means writer and reader are out of sync; reading it could drop fields."""
+        path, _, _, _ = self._write(tmp_path / "persist.json", validate_jobs=None)
+        payload = json.loads(path.read_text())
+        payload["schema_version"] = 99
+        path.write_text(json.dumps(payload))
+        with pytest.raises(SystemExit):
+            read_run_payload(path)

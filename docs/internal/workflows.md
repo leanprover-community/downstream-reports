@@ -92,19 +92,42 @@ commit introduced the breakage?*
    All hopscotch invocations go through `cache_env()`, which strips CI secrets
    as a defence-in-depth measure. Uploads a `result-<name>` artifact.
 
-4. **`report`** — downloads all `result-*` artifacts, updates the
-   database, renders a Markdown report appended to the job summary, and
-   uploads an `alert-payload` artifact for the alert job.
+4. **`report`** — downloads all `result-*` artifacts, reads the prior
+   `downstream_status` state, computes each downstream's episode transition,
+   renders a Markdown report appended to the job summary, and uploads an
+   `alert-payload` artifact for the alert job. It **reads but never writes**:
+   the computed `save_run` arguments are serialised to a `persist-payload`
+   artifact (`aggregate_results.py --persist-output`) for the publish job.
+   Because this job runs on every branch, it holds only the read-only DSN.
 
-5. **`alert`** — downloads the alert payload and sends Zulip messages for
+5. **`publish`** (`environment: publish`) — the sole writer. Downloads the
+   `persist-payload` artifact and replays it as one `save_run` against the
+   write-capable database (`publish_run.py`). Skipped in dry-run mode, and its
+   `environment: publish` must be configured in repository settings to permit
+   deployments only from `main` — so a run from any other branch cannot mutate
+   state even if it reached this job. The write-capable `POSTGRES_DSN` is an
+   environment secret on `publish`; no other job can see it.
+
+6. **`alert`** — downloads the alert payload and sends Zulip messages for
    status changes (`NEW_FAILURE` / `RECOVERED`) to the
    `Hopscotch > Downstream alerts` topic. Steady states (`PASSING`,
-   `FAILING`, `ERROR`) do not trigger alerts.
+   `FAILING`, `ERROR`) do not trigger alerts. Suppressed (dry-run backend, no
+   send) whenever the run is a dry run.
+
+**Dry-run / branch runs.** The `dry_run` flag (forced on for every non-main
+branch, and available as a dispatch input on main) no longer suppresses reads:
+a dry run reads real prior state and runs the full select → probe → report
+pipeline exactly like a live run — only the `publish` write and the Zulip send
+are gated off. This makes a branch run a faithful rehearsal of production while
+being structurally incapable of changing state (read-only DSN everywhere except
+the `main`-only `publish` environment).
 
 **Security invariant:** any job that runs hopscotch has no secrets in its
 `env:` blocks. The `probe` job runs on ephemeral self-hosted runners; the
 `select` job holds `GITHUB_TOKEN` but never invokes hopscotch or lake.
-`POSTGRES_DSN` appears only in the single-leg `plan` and `report` jobs.
+Database reads (`plan` snapshot, `report` aggregation) use a **read-only**
+`POSTGRES_DSN_RO`; the write-capable `POSTGRES_DSN` exists only as an
+environment secret on the `main`-gated `publish` job.
 
 **Job summary report.** The aggregation script renders a Markdown report that is
 appended directly to the GitHub Actions job summary. It contains:

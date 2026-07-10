@@ -237,6 +237,33 @@ Omitting `--status-snapshot` runs a select script with no prior state (every
 downstream is treated as first-run), which is the convenient mode for local
 invocations.
 
+
+## Run-persistence payload (read/compute vs. write split)
+
+The regression and on-demand report jobs are split so that **computing** a run
+is separate from **writing** it:
+
+- The `report` job runs on every branch and reads real prior state (via a
+  read-only DSN), computes all `RunResultRecord`s and updated
+  `DownstreamStatusRecord`s, renders the report, and — instead of calling
+  `save_run` — serialises the exact `save_run` arguments with
+  `aggregate_results.py --persist-output`. The write itself never happens here.
+- The `publish` job (`environment: publish`, `main`-only, skipped in dry-run)
+  reads that payload back with `storage.read_run_payload` and replays a single
+  `backend.save_run(**payload)` against the write-capable DSN. This is the only
+  writer in either workflow (`publish_run.py`).
+
+The payload uses the same strict contract as the status snapshot
+(`storage.run_payload` / `write_run_payload` / `read_run_payload`, schema
+version 1): a missing file or an unexpected `schema_version` fails loudly
+rather than silently persisting the wrong thing. `report_markdown` is omitted
+(never persisted; regenerated from structured data). An empty `results` list
+is a valid payload the publish job treats as a no-op (skipped-only or
+fully-tripwire-excluded runs). Because the write path lives only in a
+`main`-gated environment holding the sole write-capable credential, a run from
+any other branch is structurally incapable of mutating persisted state while
+still exercising the full pipeline against real data.
+
 The helper `result_to_row(r: RunResultRecord) -> dict` serialises a
 `RunResultRecord` to the flat dict shape used by the markdown report
 renderer.

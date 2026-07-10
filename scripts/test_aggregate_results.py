@@ -1033,3 +1033,80 @@ class TestFetchReleaseTagsApi:
         assert len(compare_calls) == 2
         assert result["physlib"] == ("v4.13.0", "sha_413")
         assert result["mathlib4-port"] == ("v4.13.0", "sha_413")
+
+
+class TestPersistOutput:
+    """--persist-output makes the aggregation read-but-no-write: it serialises
+    the save_run arguments for the environment-gated publish job instead of
+    writing them, so the report job can run on any branch (reading real prior
+    state) without ever mutating persisted state."""
+
+    class _RecordingBackend:
+        """Backend stub: reads empty prior state, counts save_run calls."""
+
+        def __init__(self) -> None:
+            self.save_run_calls = 0
+
+        def load_all_statuses(self, workflow: str, upstream: str) -> dict:
+            return {}
+
+        def save_run(self, **kwargs) -> None:
+            self.save_run_calls += 1
+
+    def _run_main(self, tmp_path, extra_argv, backend) -> int:
+        """Run aggregate_results.main over one passing result with the backend
+        and network stubbed; returns the process exit code."""
+        import sys
+        from unittest.mock import patch
+
+        import scripts.aggregate_results as agg
+
+        results_dir = tmp_path / "results" / "physlib"
+        results_dir.mkdir(parents=True)
+        (results_dir / "result.json").write_text(json.dumps({
+            "downstream": "physlib",
+            "repo": "leanprover-community/physlib",
+            "outcome": "passed",
+            "target_commit": "t" * 40,
+            "downstream_commit": "d" * 40,
+            "search_mode": "head-only",
+        }))
+        argv = [
+            "aggregate_results.py",
+            "--results-dir", str(tmp_path / "results"),
+            "--backend", "dry-run",
+            "--workflow", "regression",
+            "--run-id", "run_1",
+            "--run-url", "https://example.com/run/1",
+            "--upstream-ref", "master",
+        ] + extra_argv
+        with patch("scripts.aggregate_results.create_backend", return_value=backend), \
+             patch("scripts.aggregate_results.fetch_commit_distances", return_value={}), \
+             patch(
+                 "scripts.aggregate_results.fetch_release_tags_api",
+                 return_value={"physlib": (None, None)},
+             ), \
+             patch.object(sys, "argv", argv):
+            return agg.main()
+
+    def test_persist_output_writes_payload_and_skips_save(self, tmp_path) -> None:
+        """Scenario: with --persist-output, save_run is never called and the
+        payload reloads into the records the publish job will persist."""
+        from scripts.storage import read_run_payload
+
+        backend = self._RecordingBackend()
+        payload = tmp_path / "persist.json"
+        rc = self._run_main(tmp_path, ["--persist-output", str(payload)], backend)
+        assert rc == 0
+        assert backend.save_run_calls == 0
+        loaded = read_run_payload(payload)
+        assert [r.downstream for r in loaded["results"]] == ["physlib"]
+        assert loaded["updated_statuses"]["physlib"].last_known_good_commit == "t" * 40
+
+    def test_without_persist_output_calls_save_run(self, tmp_path) -> None:
+        """Scenario: without --persist-output, aggregation writes directly via
+        the backend's save_run — the path the CI publish job now owns."""
+        backend = self._RecordingBackend()
+        rc = self._run_main(tmp_path, [], backend)
+        assert rc == 0
+        assert backend.save_run_calls == 1
