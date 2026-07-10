@@ -13,7 +13,10 @@ name: warm-mathlib-cache
 #
 #   - The OIDC subject for the cache bearer mint is bound to the
 #     `cache-warming-token` GitHub Environment (per-SHA reusable
-#     workflow's upload_cache job), so feature-branch dispatch works.
+#     workflow's upload_cache job), so a feature-branch dispatch still
+#     warms and uploads oleans.  Recording cache_warmth (the finalize
+#     job) is a DB write bound to the main-only `publish` environment,
+#     so it runs only on main.
 #   - Production runs are gated to main by the workflow_run filter
 #     below.
 #
@@ -84,7 +87,10 @@ jobs:
       - name: Build matrix
         id: plan
         env:
-          POSTGRES_DSN: ${{ secrets.POSTGRES_DSN }}
+          # Read-only: the planner only reads cache_warmth to drop SHAs that
+          # are already warm.  The write-capable DSN lives on the publish
+          # environment (used by the finalize job below), never here.
+          POSTGRES_DSN: ${{ secrets.POSTGRES_DSN_RO }}
           MANUAL_SHAS: ${{ inputs.shas }}
         run: |
           ARGS=(--backend sql
@@ -136,11 +142,22 @@ jobs:
   # alongside the ones that ran.
   finalize:
     needs: [plan, warm-sha]
+    # Gated to main (like the report workflows' publish job): a branch
+    # workflow_dispatch backfill still warms and uploads oleans (warm-sha, via
+    # the cache-warming-token env), but recording cache_warmth is a DB write,
+    # so it cleanly SKIPS off main rather than failing red at the environment
+    # gate.
     if: >-
-      always() &&
+      always() && github.ref == 'refs/heads/main' &&
       (needs.plan.outputs.has_jobs == 'true' ||
        needs.plan.outputs.has_skipped == 'true')
     runs-on: ubuntu-latest
+    # Writes cache_warmth, so it runs in the main-only `publish` environment and
+    # takes that environment's write-capable POSTGRES_DSN.  NOTE: `publish` must
+    # stay branch-policy-only — adding a required-reviewer or wait-timer rule
+    # would stall this unattended scheduled chain (and the report workflows'
+    # publish job that shares the environment) waiting on manual approval.
+    environment: publish
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
@@ -286,6 +303,8 @@ jobs:
       - name: Record warm SHAs
         if: always() && needs.plan.outputs.has_jobs == 'true' && hashFiles('summary.json') != ''
         env:
+          # Resolves to the publish environment's write-capable POSTGRES_DSN
+          # (env secrets override repo secrets for this job).
           POSTGRES_DSN: ${{ secrets.POSTGRES_DSN }}
         run: |
           python3 scripts/record_warm_shas.py \

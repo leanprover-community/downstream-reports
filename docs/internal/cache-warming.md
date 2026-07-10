@@ -297,6 +297,15 @@ recorded as warm it is dropped from future plans indefinitely. The
 recording step has `if: always()` so partial failures still persist
 the SHAs that did succeed.
 
+`record_warm_shas.py` takes the write-capable `POSTGRES_DSN`, so `finalize`
+runs in the main-only `publish` GitHub Environment and the whole job is gated
+to `main` (`github.ref == 'refs/heads/main'`) — a branch `workflow_dispatch`
+backfill still warms and uploads oleans, but `finalize` cleanly skips rather
+than failing at the environment gate. **The `publish` environment must stay
+branch-policy-only:** adding a required-reviewer or wait-timer rule would stall
+this unattended scheduled chain — and the report/on-demand `publish` jobs that
+share the environment — waiting on manual approval.
+
 ## Throttling
 
 - **Workflow-level concurrency.** `concurrency: warm-mathlib-cache`

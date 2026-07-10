@@ -45,7 +45,8 @@ jobs:
 
       - name: Send summary
         env:
-          POSTGRES_DSN: ${{ secrets.POSTGRES_DSN }}
+          # Read-only: send_summary.py only reads the latest state to post a table.
+          POSTGRES_DSN: ${{ secrets.POSTGRES_DSN_RO }}
           ZULIP_EMAIL: ${{ vars.ZULIP_EMAIL }}
           ZULIP_API_KEY: ${{ secrets.ZULIP_API_KEY }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

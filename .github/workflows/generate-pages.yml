@@ -59,7 +59,8 @@ jobs:
       - name: Generate Pages site
         env:
           GITHUB_TOKEN: ${{ github.token }}
-          POSTGRES_DSN: ${{ secrets.POSTGRES_DSN }}
+          # Read-only: generate_site.py only reads the database to render HTML.
+          POSTGRES_DSN: ${{ secrets.POSTGRES_DSN_RO }}
         run: |
           python3 scripts/generate_site.py \
             --upstream-dir /tmp/mathlib4.git \
