@@ -40,7 +40,8 @@
       "dependency_name": "mathlib",
       "enabled": true,
       "warm_cache": true,
-      "watch_manifest": true
+      "watch_manifest": true,
+      "build_args": ["--wfail", "--iofail"]
     },
     {
       "name": "FLT",
