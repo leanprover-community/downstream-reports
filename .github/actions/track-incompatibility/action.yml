@@ -911,10 +911,21 @@ runs:
             "$WORKFLOW_RUN_URL"
         } > "$BODY_FILE"
 
+        # The title states the PR's goal end-state: fix the breaking changes
+        # (hopscotch's automated fixes plus the maintainer's). The post-fix build
+        # is not re-validated here — that's the PR's own CI — so we don't assert
+        # completeness: when hopscotch applied something, credit it and flag that
+        # remaining manual work may still be needed.
+        if [ -n "${FIX_SUMMARY:-}" ]; then
+          PR_TITLE="chore: bump ${DEP_NAME} to ${FKB_SHORT}, apply hopscotch fixes, fix remaining breaking changes"
+        else
+          PR_TITLE="chore: bump ${DEP_NAME} to ${FKB_SHORT}, fix breaking changes"
+        fi
+
         CREATE_ARGS=(
           --head  "$BRANCH"
           --label "$PR_LABEL"
-          --title "chore: bump ${DEP_NAME} to ${FKB_SHORT}, fix breaking changes"
+          --title "$PR_TITLE"
           --body-file "$BODY_FILE"
         )
 
