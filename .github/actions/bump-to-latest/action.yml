@@ -845,9 +845,14 @@ runs:
         # unverified. Clear that run bookkeeping first — the mathlib cache/oleans
         # live under `.lake/packages`, so this does not discard the warm cache.
         rm -rf "$PROJECT_DIR/.lake/hopscotch"
+        # --scan-mode linear: build the single target commit as-is. The default
+        # (bisect) needs >= 2 commits and errors out ("bisect mode requires at
+        # least 2 commits") on a one-commit file, which would mis-report as an
+        # unverified fix.
         hopscotch dep "$DEPENDENCY_NAME" \
           --commits-file "$VERIFY_COMMITS" \
           --project-dir "$PROJECT_DIR" \
+          --scan-mode linear \
           --allow-dirty-workspace \
           --no-auto-fix \
           --results-json "$RESULTS_JSON"
