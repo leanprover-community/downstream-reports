@@ -57,7 +57,6 @@
       "watch_manifest": true,
       "build_args": ["--iofail"],
       "run_test": true,
-      "test_args": ["--iofail"],
       "run_lint": true
     },
     {
