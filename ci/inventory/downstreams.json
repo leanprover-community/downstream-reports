@@ -6,7 +6,11 @@
       "repo": "marcelolynch/LeanDownstreamPlayground",
       "default_branch": "main",
       "dependency_name": "mathlib",
-      "enabled": true
+      "enabled": true,
+      "build_args": [
+        "--iofail"
+      ],
+      "skip_already_good": false
     },
     {
       "name": "physlib",
@@ -14,7 +18,11 @@
       "default_branch": "master",
       "dependency_name": "mathlib",
       "enabled": true,
-      "revalidate_boundary": true
+      "revalidate_boundary": true,
+      "build_args": [
+        "--iofail"
+      ],
+      "skip_already_good": false
     },
     {
       "name": "PrimeNumberTheoremAnd",
@@ -22,7 +30,11 @@
       "default_branch": "main",
       "dependency_name": "mathlib",
       "enabled": true,
-      "revalidate_boundary": true
+      "revalidate_boundary": true,
+      "build_args": [
+        "--iofail"
+      ],
+      "skip_already_good": false
     },
     {
       "name": "Toric",
@@ -31,7 +43,11 @@
       "dependency_name": "mathlib",
       "enabled": true,
       "warm_cache": true,
-      "watch_manifest": true
+      "watch_manifest": true,
+      "build_args": [
+        "--iofail"
+      ],
+      "skip_already_good": false
     },
     {
       "name": "cslib",
@@ -40,7 +56,11 @@
       "dependency_name": "mathlib",
       "enabled": true,
       "warm_cache": true,
-      "watch_manifest": true
+      "watch_manifest": true,
+      "build_args": [
+        "--iofail"
+      ],
+      "skip_already_good": false
     },
     {
       "name": "FLT",
@@ -51,21 +71,32 @@
       "enabled": true,
       "warm_cache": true,
       "watch_manifest": true,
-      "build_args": ["--iofail"]
+      "build_args": [
+        "--iofail"
+      ],
+      "skip_already_good": false
     },
     {
       "name": "infinity-cosmos",
       "repo": "emilyriehl/infinity-cosmos",
       "default_branch": "main",
       "dependency_name": "mathlib",
-      "enabled": true
+      "enabled": true,
+      "build_args": [
+        "--iofail"
+      ],
+      "skip_already_good": false
     },
     {
       "name": "Sphere-Packing-Lean",
       "repo": "thefundamentaltheor3m/Sphere-Packing-Lean",
       "default_branch": "main",
       "dependency_name": "mathlib",
-      "enabled": true
+      "enabled": true,
+      "build_args": [
+        "--iofail"
+      ],
+      "skip_already_good": false
     },
     {
       "name": "formal-conjectures",
@@ -73,7 +104,11 @@
       "default_branch": "main",
       "dependency_name": "mathlib",
       "enabled": false,
-      "nuke_lakedir": true
+      "nuke_lakedir": true,
+      "build_args": [
+        "--iofail"
+      ],
+      "skip_already_good": false
     },
     {
       "name": "ClassFieldTheory",
@@ -81,7 +116,11 @@
       "default_branch": "main",
       "dependency_name": "mathlib",
       "enabled": true,
-      "watch_manifest": true
+      "watch_manifest": true,
+      "build_args": [
+        "--iofail"
+      ],
+      "skip_already_good": false
     },
     {
       "name": "gibbs-measure",
@@ -90,7 +129,11 @@
       "dependency_name": "mathlib",
       "enabled": true,
       "warm_cache": true,
-      "watch_manifest": true
+      "watch_manifest": true,
+      "build_args": [
+        "--iofail"
+      ],
+      "skip_already_good": false
     },
     {
       "name": "forbidden-matrix",
@@ -99,7 +142,11 @@
       "dependency_name": "mathlib",
       "enabled": true,
       "warm_cache": true,
-      "watch_manifest": true
+      "watch_manifest": true,
+      "build_args": [
+        "--iofail"
+      ],
+      "skip_already_good": false
     },
     {
       "name": "BrauerGroup",
@@ -109,7 +156,11 @@
       "enabled": true,
       "nuke_lakedir": true,
       "revalidate_boundary": true,
-      "watch_manifest": true
+      "watch_manifest": true,
+      "build_args": [
+        "--iofail"
+      ],
+      "skip_already_good": false
     },
     {
       "name": "add-combi",
@@ -118,7 +169,11 @@
       "dependency_name": "mathlib",
       "enabled": true,
       "warm_cache": true,
-      "watch_manifest": true
+      "watch_manifest": true,
+      "build_args": [
+        "--iofail"
+      ],
+      "skip_already_good": false
     },
     {
       "name": "cam-combi",
@@ -127,7 +182,11 @@
       "dependency_name": "mathlib",
       "enabled": true,
       "warm_cache": true,
-      "watch_manifest": true
+      "watch_manifest": true,
+      "build_args": [
+        "--iofail"
+      ],
+      "skip_already_good": false
     },
     {
       "name": "chandra-furst-lipton",
@@ -135,7 +194,11 @@
       "default_branch": "master",
       "dependency_name": "mathlib",
       "enabled": true,
-      "warm_cache": true
+      "warm_cache": true,
+      "build_args": [
+        "--iofail"
+      ],
+      "skip_already_good": false
     },
     {
       "name": "misc-yd",
@@ -144,7 +207,11 @@
       "dependency_name": "mathlib",
       "enabled": true,
       "warm_cache": true,
-      "watch_manifest": true
+      "watch_manifest": true,
+      "build_args": [
+        "--iofail"
+      ],
+      "skip_already_good": false
     },
     {
       "name": "PersistentDecomp",
@@ -152,7 +219,11 @@
       "default_branch": "master",
       "dependency_name": "mathlib",
       "enabled": true,
-      "warm_cache": true
+      "warm_cache": true,
+      "build_args": [
+        "--iofail"
+      ],
+      "skip_already_good": false
     },
     {
       "name": "flt-regular",
@@ -161,7 +232,11 @@
       "dependency_name": "mathlib",
       "enabled": true,
       "warm_cache": true,
-      "watch_manifest": true
+      "watch_manifest": true,
+      "build_args": [
+        "--iofail"
+      ],
+      "skip_already_good": false
     },
     {
       "name": "carleson",
@@ -169,14 +244,22 @@
       "default_branch": "master",
       "dependency_name": "mathlib",
       "enabled": true,
-      "revalidate_boundary": true
+      "revalidate_boundary": true,
+      "build_args": [
+        "--iofail"
+      ],
+      "skip_already_good": false
     },
     {
       "name": "compfiles",
       "repo": "dwrensha/compfiles",
       "default_branch": "main",
       "dependency_name": "mathlib",
-      "enabled": true
+      "enabled": true,
+      "build_args": [
+        "--iofail"
+      ],
+      "skip_already_good": false
     },
     {
       "name": "Poly",
@@ -184,7 +267,11 @@
       "default_branch": "master",
       "dependency_name": "mathlib",
       "enabled": true,
-      "nuke_lakedir": true
+      "nuke_lakedir": true,
+      "build_args": [
+        "--iofail"
+      ],
+      "skip_already_good": false
     },
     {
       "name": "PrimeCert",
@@ -194,7 +281,11 @@
       "enabled": true,
       "warm_cache": true,
       "watch_manifest": true,
-      "run_test": true
+      "run_test": true,
+      "build_args": [
+        "--iofail"
+      ],
+      "skip_already_good": false
     },
     {
       "name": "Robo",
@@ -202,7 +293,13 @@
       "default_branch": "main",
       "dependency_name": "leanprover-community/mathlib",
       "enabled": true,
-      "runs_on": ["ubuntu-latest"]
+      "runs_on": [
+        "ubuntu-latest"
+      ],
+      "build_args": [
+        "--iofail"
+      ],
+      "skip_already_good": false
     },
     {
       "name": "sum_product",
@@ -211,7 +308,11 @@
       "dependency_name": "mathlib",
       "enabled": true,
       "warm_cache": true,
-      "revalidate_boundary": true
+      "revalidate_boundary": true,
+      "build_args": [
+        "--iofail"
+      ],
+      "skip_already_good": false
     },
     {
       "name": "HighlyAbundant",
@@ -220,7 +321,11 @@
       "dependency_name": "mathlib",
       "enabled": true,
       "warm_cache": true,
-      "watch_manifest": true
+      "watch_manifest": true,
+      "build_args": [
+        "--iofail"
+      ],
+      "skip_already_good": false
     },
     {
       "name": "LeanMachineLearning",
@@ -228,7 +333,11 @@
       "default_branch": "main",
       "dependency_name": "mathlib",
       "enabled": true,
-      "watch_manifest": true
+      "watch_manifest": true,
+      "build_args": [
+        "--iofail"
+      ],
+      "skip_already_good": false
     },
     {
       "name": "Statlib",
@@ -236,7 +345,11 @@
       "default_branch": "main",
       "dependency_name": "mathlib",
       "enabled": true,
-      "watch_manifest": true
+      "watch_manifest": true,
+      "build_args": [
+        "--iofail"
+      ],
+      "skip_already_good": false
     },
     {
       "name": "TauCeti",
@@ -244,7 +357,11 @@
       "default_branch": "main",
       "dependency_name": "mathlib",
       "enabled": true,
-      "revalidate_boundary": true
+      "revalidate_boundary": true,
+      "build_args": [
+        "--iofail"
+      ],
+      "skip_already_good": false
     },
     {
       "name": "PFR",
@@ -253,7 +370,11 @@
       "dependency_name": "mathlib",
       "enabled": true,
       "warm_cache": true,
-      "watch_manifest": true
+      "watch_manifest": true,
+      "build_args": [
+        "--iofail"
+      ],
+      "skip_already_good": false
     },
     {
       "name": "DynamicalSystems",
@@ -262,7 +383,11 @@
       "dependency_name": "mathlib",
       "enabled": true,
       "warm_cache": true,
-      "watch_manifest": true
+      "watch_manifest": true,
+      "build_args": [
+        "--iofail"
+      ],
+      "skip_already_good": false
     },
     {
       "name": "ErdosUnitDistance",
@@ -271,7 +396,11 @@
       "dependency_name": "mathlib",
       "enabled": true,
       "warm_cache": true,
-      "watch_manifest": true
+      "watch_manifest": true,
+      "build_args": [
+        "--iofail"
+      ],
+      "skip_already_good": false
     },
     {
       "name": "apap",
@@ -280,7 +409,11 @@
       "dependency_name": "mathlib",
       "enabled": true,
       "warm_cache": true,
-      "watch_manifest": true
+      "watch_manifest": true,
+      "build_args": [
+        "--iofail"
+      ],
+      "skip_already_good": false
     },
     {
       "name": "hex-dev",
@@ -289,7 +422,11 @@
       "dependency_name": "mathlib",
       "enabled": true,
       "warm_cache": true,
-      "watch_manifest": true
+      "watch_manifest": true,
+      "build_args": [
+        "--iofail"
+      ],
+      "skip_already_good": false
     }
   ]
 }
