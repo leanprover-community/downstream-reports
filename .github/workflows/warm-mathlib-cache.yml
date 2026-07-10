@@ -157,7 +157,9 @@ jobs:
     # stay branch-policy-only — adding a required-reviewer or wait-timer rule
     # would stall this unattended scheduled chain (and the report workflows'
     # publish job that shares the environment) waiting on manual approval.
-    environment: publish
+    environment:
+      name: publish
+      deployment: false
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 

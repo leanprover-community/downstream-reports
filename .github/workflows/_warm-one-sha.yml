@@ -261,7 +261,9 @@ jobs:
     # Azure app accepts dispatch from any branch. Production runs are
     # still gated to main by the workflow_run filter on the
     # orchestrator.
-    environment: cache-warming-token
+    environment:
+      name: cache-warming-token
+      deployment: false
     outputs:
       status: ${{ steps.write_result.outputs.status }}
     steps:

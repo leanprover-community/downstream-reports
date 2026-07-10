@@ -42,7 +42,9 @@ jobs:
     # `generate-pages`); the default `GITHUB_TOKEN` would dispatch fine but
     # GitHub suppresses downstream `workflow_run` events when the upstream's
     # actor is `github-actions[bot]`.
-    environment: pr-validation-token
+    environment:
+      name: pr-validation-token
+      deployment: false
     steps:
       - uses: actions/checkout@v6
 
