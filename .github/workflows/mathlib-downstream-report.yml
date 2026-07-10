@@ -547,7 +547,9 @@ jobs:
       - plan
       - report
     runs-on: ubuntu-latest
-    environment: publish
+    environment:
+      name: publish
+      deployment: false
     permissions:
       contents: read
       actions: write
