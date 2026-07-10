@@ -491,7 +491,10 @@ jobs:
       # adjacency tripwire writes the filtered payload before failing) so the
       # already-validated records still reach publish.
       - name: Upload persist payload
-        if: always()
+        # Only staged for a live run: the publish job (which consumes and then
+        # deletes it) is skipped in dry-run, so uploading it there would just
+        # leave a dangling artifact until retention expiry.
+        if: always() && needs.plan.outputs.dry_run == 'false'
         uses: actions/upload-artifact@v7.0.0
         with:
           name: persist-payload

@@ -484,10 +484,10 @@ jobs:
       # adjacency tripwire writes the filtered payload before failing) so the
       # already-validated records still reach publish.
       - name: Upload persist payload
-        # A skipped-only run (has_skipped, no downstreams) has nothing to
-        # publish, so don't stage a payload the publish job (gated on
-        # has_downstreams) would never consume and delete.
-        if: always() && needs.plan.outputs.has_downstreams == 'true'
+        # Only staged for a live run with downstreams: the publish job (which
+        # consumes and then deletes it) is skipped both in dry-run and on a
+        # skipped-only run, so uploading otherwise leaves a dangling artifact.
+        if: always() && needs.plan.outputs.has_downstreams == 'true' && needs.plan.outputs.dry_run == 'false'
         uses: actions/upload-artifact@v7.0.0
         with:
           name: persist-payload
