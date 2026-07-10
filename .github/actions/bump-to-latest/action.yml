@@ -838,6 +838,13 @@ runs:
         VERIFY_COMMITS="$RUNNER_TEMP/verify-commits.txt"
         rm -f "$RESULTS_JSON"
         printf '%s\n' "$TARGET_COMMIT" > "$VERIFY_COMMITS"
+        # The bump ran `hopscotch dep --from…--to…` (range mode); this is a fresh
+        # commits-file run. hopscotch guards against a run-mode change by refusing
+        # to reuse `.lake/hopscotch` state ("run mode changed since the last run"),
+        # which would abort the verify non-zero and mis-report a good fix as
+        # unverified. Clear that run bookkeeping first — the mathlib cache/oleans
+        # live under `.lake/packages`, so this does not discard the warm cache.
+        rm -rf "$PROJECT_DIR/.lake/hopscotch"
         hopscotch dep "$DEPENDENCY_NAME" \
           --commits-file "$VERIFY_COMMITS" \
           --project-dir "$PROJECT_DIR" \
