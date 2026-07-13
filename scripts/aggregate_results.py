@@ -35,7 +35,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from scripts.models import (
     RELEASE_TAG_RE,
     Outcome,
-    render_verify_summary,
+    render_verify_summary_from_record,
     utc_now,
 )
 from scripts.storage import (
@@ -298,26 +298,6 @@ def render_named_commit(details: list[dict[str, Any]], sha: str | None, upstream
     if detail is not None:
         return render_commit_detail(detail)
     return render_commit_link(sha, upstream)
-
-
-def render_verify_recipe(row: dict[str, Any]) -> str | None:
-    """Render the verify-step summary for a report row, or None for the default.
-
-    Names the exact ``lake …`` command(s) behind the row's outcome, one per line
-    tagged passed/failed/not run, so a reader can see which step failed and
-    distinguish a warning promoted to an error (``--wfail``) from a genuine build
-    break.  Suppressed for downstreams on the plain ``lake build`` recipe.
-    """
-    return render_verify_summary(
-        build_args=row.get("build_args") or [],
-        run_test=row.get("run_test", False),
-        test_args=row.get("test_args") or [],
-        run_lint=row.get("run_lint", False),
-        lint_args=row.get("lint_args") or [],
-        outcome=row.get("outcome"),
-        failure_stage=row.get("failure_stage"),
-        label="Verify",
-    )
 
 
 def truncate_log_text(text: str, *, max_lines: int = 50, max_chars: int = 10000) -> str:
@@ -652,7 +632,7 @@ def render_report(
                 "",
             ]
         )
-        recipe = render_verify_recipe(row)
+        recipe = render_verify_summary_from_record(row)
         if recipe:
             lines.append(recipe)
         lines.append("- Previous state before this run:")

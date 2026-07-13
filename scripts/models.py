@@ -421,6 +421,28 @@ def render_verify_summary(
     return "\n".join(lines)
 
 
+def render_verify_summary_from_record(
+    record: dict[str, Any], *, label: str = "Verify"
+) -> str | None:
+    """Render the verify-step summary from a serialised result dict, or None.
+
+    Reads the verify-recipe fields off a report row or alert record (the
+    serialised ``RunResultRecord`` / ``ValidationResult`` shape) and delegates to
+    ``render_verify_summary``, so the markdown report and the Zulip formatters
+    surface the recipe identically.  None for the plain ``lake build`` recipe.
+    """
+    return render_verify_summary(
+        build_args=record.get("build_args") or [],
+        run_test=record.get("run_test", False),
+        test_args=record.get("test_args") or [],
+        run_lint=record.get("run_lint", False),
+        lint_args=record.get("lint_args") or [],
+        outcome=record.get("outcome"),
+        failure_stage=record.get("failure_stage"),
+        label=label,
+    )
+
+
 @dataclass
 class ValidationResult:
     """Machine-readable result for one downstream validation run."""
