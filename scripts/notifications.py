@@ -208,8 +208,8 @@ def format_new_failure_message(
     ]
     if release:
         lines.append(f"- Last compatible release: {release}")
-    # The verify summary names the failing step; the default recipe (build only)
-    # can only fail at build, so no separate failure-stage line is needed.
+    # Names the failing verify step; suppressed for the default build-only recipe,
+    # which can only fail at build.
     verify_summary = render_verify_summary_from_record(record)
     if verify_summary:
         lines.append(verify_summary)
@@ -291,8 +291,8 @@ def format_ondemand_failure_message(
     ]
     if release:
         lines.append(f"- Last compatible release: {release}")
-    # The verify summary names the failing step; the default recipe (build only)
-    # can only fail at build, so no separate failure-stage line is needed.
+    # Names the failing verify step; suppressed for the default build-only recipe,
+    # which can only fail at build.
     verify_summary = render_verify_summary_from_record(record)
     if verify_summary:
         lines.append(verify_summary)

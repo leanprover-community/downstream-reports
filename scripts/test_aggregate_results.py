@@ -784,8 +784,7 @@ class TestRenderReportCulpritLog:
     def test_truncated_log_with_job_url_shows_download_link(self) -> None:
         """Scenario: truncated culprit log gets a download link pointing to the probe job.
 
-        A non-default verify recipe is also named in the section so the failure
-        states which command produced it.
+        A non-default verify recipe is named in the section too.
         """
         truncated_log = "line1\nline2\n[log truncated]"
         row = {

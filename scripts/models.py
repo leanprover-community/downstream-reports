@@ -285,16 +285,13 @@ def describe_verify_commands(
     run_lint: bool = False,
     lint_args: Sequence[str] = (),
 ) -> list[str]:
-    """Render, in run order, the ``lake`` commands hopscotch verifies a commit with.
+    """The ``lake`` commands hopscotch verifies a commit with, in run order.
 
     ``lake build`` always runs (with ``build_args`` appended); ``lake test`` and
-    ``lake lint`` are added only when the matching verify step is enabled, each
-    with its own forwarded arguments.  This is the concrete recipe behind a
-    reported pass or fail, so a reader can tell e.g. a warning promoted to an
-    error by ``--wfail`` from a genuine build break.
-
-    The default recipe is exactly ``["lake build"]``; reporters compare against
-    that to show the recipe only when a downstream customises it.
+    ``lake lint`` follow only when their verify step is enabled, each with its
+    own arguments.  Naming the exact recipe distinguishes a warning promoted to
+    an error (e.g. ``--wfail``) from a genuine build break.  The default recipe
+    is ``["lake build"]``; reporters show it only when it differs.
     """
 
     def _cmd(name: str, extra: Sequence[str]) -> str:
@@ -393,13 +390,11 @@ def render_verify_summary(
     failure_stage: str | None = None,
     label: str = "Verify",
 ) -> str | None:
-    """Render a multi-line ``- <label>:`` step summary, or None for the default.
+    """A multi-line ``- <label>:`` step summary, or None for the default recipe.
 
-    One indented bullet per verify command, each tagged with its status
-    (``passed``/``failed``/``not run``) when the outcome localises one, so a
-    reader sees which command in the chain failed and with exactly which
-    arguments.  Suppressed for the plain ``lake build`` recipe (the extra
-    args/steps are the only surprising part).
+    One indented bullet per verify command, tagged ``passed``/``failed``/``not
+    run`` when the outcome localises a failing step (see
+    ``annotate_verify_commands``).  Suppressed for the plain ``lake build`` recipe.
     """
 
     commands = describe_verify_commands(
@@ -424,12 +419,11 @@ def render_verify_summary(
 def render_verify_summary_from_record(
     record: dict[str, Any], *, label: str = "Verify"
 ) -> str | None:
-    """Render the verify-step summary from a serialised result dict, or None.
+    """``render_verify_summary`` keyed off a serialised result dict.
 
-    Reads the verify-recipe fields off a report row or alert record (the
-    serialised ``RunResultRecord`` / ``ValidationResult`` shape) and delegates to
-    ``render_verify_summary``, so the markdown report and the Zulip formatters
-    surface the recipe identically.  None for the plain ``lake build`` recipe.
+    Pulls the verify-recipe fields from a report row or alert record (the
+    serialised ``RunResultRecord`` / ``ValidationResult`` shape), so the markdown
+    report and the Zulip formatters share one extraction point.
     """
     return render_verify_summary(
         build_args=record.get("build_args") or [],
@@ -471,10 +465,9 @@ class ValidationResult:
     head_probe_summary: str | None = None
     pinned_commit: str | None = None
     search_base_not_ancestor: bool = False
-    # The verify recipe hopscotch ran at each commit, carried so failure reports
-    # can state exactly what command produced the result (see
-    # `describe_verify_commands`).  Copied from the downstream's config by the
-    # result builders; defaults describe the plain `lake build` recipe.
+    # The verify recipe hopscotch ran, copied from the downstream's config by the
+    # result builders so reports can name the exact command (see
+    # `describe_verify_commands`).  Defaults to the plain `lake build` recipe.
     run_test: bool = False
     run_lint: bool = False
     build_args: list[str] = field(default_factory=list)

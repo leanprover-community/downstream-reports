@@ -266,11 +266,10 @@ class TestVerifyStepsAndBuildArgs:
         assert loaded.lint_args == ["--update"]
 
     def test_describe_verify_commands_names_each_enabled_step(self) -> None:
-        """``describe_verify_commands`` renders the concrete recipe reports quote.
+        """``build_args`` append to the default ``lake build``; enabled steps extend it.
 
-        The plain default is exactly ``["lake build"]`` (what reporters treat
-        as "nothing surprising to show"); ``build_args`` append to it, and each
-        enabled verify step adds its own ``lake …`` command with its arguments.
+        The default is exactly ``["lake build"]``; each enabled verify step adds
+        its own ``lake …`` command with its arguments.
         """
         assert describe_verify_commands() == DEFAULT_VERIFY_COMMANDS == ["lake build"]
         assert describe_verify_commands(build_args=["--wfail", "--iofail"]) == [
@@ -290,7 +289,7 @@ class TestVerifyStepsAndBuildArgs:
         build passing, the test failing, and any later step as not run; a pass
         marks every step; and the plain ``lake build`` recipe is omitted.
         """
-        # Default recipe → no summary at all (nothing surprising to show).
+        # Default recipe → no summary.
         assert render_verify_summary(outcome="failed", failure_stage="lake build") is None
 
         # Failure localised to the test step (hopscotch reports "lake test").

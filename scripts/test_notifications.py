@@ -245,10 +245,7 @@ class TestFormatNewFailureMessage:
 
         A downstream built with e.g. ``--iofail`` can "fail" on a warning rather
         than a real break, so the message names the command and its failing step;
-        a plain ``lake build`` downstream adds neither a verify block nor the old
-        standalone failure-stage line.  (The exact multi-step rendering is the
-        province of ``test_render_verify_summary_tags_each_failing_step``; here we
-        only check the formatter wires the record through.)
+        a plain ``lake build`` downstream shows no verify block.
         """
         custom = format_new_failure_message(
             _make_record(build_args=["--wfail", "--iofail"], failure_stage="lake build"),
