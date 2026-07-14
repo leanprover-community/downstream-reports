@@ -37,12 +37,15 @@ from pathlib import Path
 import pytest
 
 from scripts.models import (
+    DEFAULT_VERIFY_COMMANDS,
     DownstreamConfig,
     WindowSelection,
     apply_config_forwarding,
     config_from_selection,
+    describe_verify_commands,
     forwarded_config_fields,
     load_inventory,
+    render_verify_summary,
 )
 
 
@@ -261,6 +264,65 @@ class TestVerifyStepsAndBuildArgs:
         assert loaded.build_args == ["-Kenv=dev"]
         assert loaded.test_args == ["--verbose"]
         assert loaded.lint_args == ["--update"]
+
+    def test_describe_verify_commands_names_each_enabled_step(self) -> None:
+        """``describe_verify_commands`` renders the concrete recipe reports quote.
+
+        The plain default is exactly ``["lake build"]`` (what reporters treat
+        as "nothing surprising to show"); ``build_args`` append to it, and each
+        enabled verify step adds its own ``lake …`` command with its arguments.
+        """
+        assert describe_verify_commands() == DEFAULT_VERIFY_COMMANDS == ["lake build"]
+        assert describe_verify_commands(build_args=["--wfail", "--iofail"]) == [
+            "lake build --wfail --iofail"
+        ]
+        assert describe_verify_commands(
+            build_args=["-Kenv=dev"],
+            run_test=True,
+            test_args=["--verbose"],
+            run_lint=True,
+        ) == ["lake build -Kenv=dev", "lake test --verbose", "lake lint"]
+
+    def test_render_verify_summary_tags_each_failing_step(self) -> None:
+        """The summary tags each step passed/failed/not run by outcome, and hides the default.
+
+        hopscotch stops at the first failing step, so a test failure shows the
+        build passing, the test failing, and any later step as not run; a pass
+        marks every step; and the plain ``lake build`` recipe is omitted.
+        """
+        # Default recipe → no summary at all (nothing surprising to show).
+        assert render_verify_summary(outcome="failed", failure_stage="lake build") is None
+
+        # Failure localised to the test step (hopscotch reports "lake test").
+        assert render_verify_summary(
+            run_test=True,
+            run_lint=True,
+            outcome="failed",
+            failure_stage="lake test",
+        ) == (
+            "- Verify:\n"
+            "  - `lake build`: passed\n"
+            "  - `lake test`: failed\n"
+            "  - `lake lint`: not run"
+        )
+
+        # A pass marks every enabled step.
+        assert render_verify_summary(
+            build_args=["--iofail"],
+            run_test=True,
+            outcome="passed",
+        ) == (
+            "- Verify:\n"
+            "  - `lake build --iofail`: passed\n"
+            "  - `lake test`: passed"
+        )
+
+        # An error (no localisable step) lists bare commands, guessing nothing.
+        assert render_verify_summary(
+            build_args=["--iofail"],
+            outcome="error",
+            failure_stage="setup",
+        ) == "- Verify:\n  - `lake build --iofail`"
 
 
 class TestTargetMode:

@@ -5,6 +5,7 @@ from __future__ import annotations
 import dataclasses
 import json
 import re
+from collections.abc import Sequence
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
@@ -276,6 +277,150 @@ def config_from_selection(selection: WindowSelection) -> DownstreamConfig:
     )
 
 
+def describe_verify_commands(
+    *,
+    build_args: Sequence[str] = (),
+    run_test: bool = False,
+    test_args: Sequence[str] = (),
+    run_lint: bool = False,
+    lint_args: Sequence[str] = (),
+) -> list[str]:
+    """Render, in run order, the ``lake`` commands hopscotch verifies a commit with.
+
+    ``lake build`` always runs (with ``build_args`` appended); ``lake test`` and
+    ``lake lint`` are added only when the matching verify step is enabled, each
+    with its own forwarded arguments.  This is the concrete recipe behind a
+    reported pass or fail, so a reader can tell e.g. a warning promoted to an
+    error by ``--wfail`` from a genuine build break.
+
+    The default recipe is exactly ``["lake build"]``; reporters compare against
+    that to show the recipe only when a downstream customises it.
+    """
+
+    def _cmd(name: str, extra: Sequence[str]) -> str:
+        return f"lake {name}" + (" " + " ".join(extra) if extra else "")
+
+    commands = [_cmd("build", build_args)]
+    if run_test:
+        commands.append(_cmd("test", test_args))
+    if run_lint:
+        commands.append(_cmd("lint", lint_args))
+    return commands
+
+
+DEFAULT_VERIFY_COMMANDS: list[str] = ["lake build"]
+
+# Ordered verify steps, matching hopscotch's build → test → lint sequence.  The
+# chain stops at the first failing step, so anything after it never ran.
+_VERIFY_STEP_ORDER: tuple[str, ...] = ("build", "test", "lint")
+
+# Per-step status words for the verify summary.
+VERIFY_STATUS_PASSED = "passed"
+VERIFY_STATUS_FAILED = "failed"
+VERIFY_STATUS_NOT_RUN = "not run"  # an earlier step failed, so this one never ran
+
+
+def _command_step(command: str) -> str | None:
+    """The verify step a rendered ``lake <step> …`` command belongs to."""
+
+    parts = command.split()
+    return parts[1] if len(parts) > 1 and parts[1] in _VERIFY_STEP_ORDER else None
+
+
+def _failed_step(failure_stage: str | None) -> str | None:
+    """Map hopscotch's ``failureStage`` to a verify step, or None.
+
+    ``failureStage`` is a command-shaped string (e.g. ``"lake build"``); the
+    setup/runner error stages carry no step, so they map to None.
+    """
+
+    if not failure_stage:
+        return None
+    tokens = failure_stage.split()
+    for step in _VERIFY_STEP_ORDER:
+        if step in tokens:
+            return step
+    return None
+
+
+def annotate_verify_commands(
+    commands: Sequence[str],
+    *,
+    outcome: str | None = None,
+    failure_stage: str | None = None,
+) -> list[tuple[str | None, str]]:
+    """Pair each verify command with a status word (or None when unknown).
+
+    A passing run marks every step ``passed``.  A failing run whose stage
+    localises to a step marks the steps before it ``passed``, that step
+    ``failed``, and any steps after it ``not run`` (the chain stopped, so they
+    never ran).  When the outcome is an error, or a failure's stage doesn't
+    localise to a listed step, the status is left None rather than guessed — the
+    caller renders the bare command.
+    """
+
+    steps = [_command_step(command) for command in commands]
+    failed = _failed_step(failure_stage)
+    localised_failure = outcome == "failed" and failed in steps
+
+    annotated: list[tuple[str | None, str]] = []
+    seen_failure = False
+    for command, step in zip(commands, steps):
+        if outcome == "passed":
+            status: str | None = VERIFY_STATUS_PASSED
+        elif localised_failure:
+            if step == failed:
+                status = VERIFY_STATUS_FAILED
+                seen_failure = True
+            elif seen_failure:
+                status = VERIFY_STATUS_NOT_RUN
+            else:
+                status = VERIFY_STATUS_PASSED
+        else:
+            status = None
+        annotated.append((status, command))
+    return annotated
+
+
+def render_verify_summary(
+    *,
+    build_args: Sequence[str] = (),
+    run_test: bool = False,
+    test_args: Sequence[str] = (),
+    run_lint: bool = False,
+    lint_args: Sequence[str] = (),
+    outcome: str | None = None,
+    failure_stage: str | None = None,
+    label: str = "Verify",
+) -> str | None:
+    """Render a multi-line ``- <label>:`` step summary, or None for the default.
+
+    One indented bullet per verify command, each tagged with its status
+    (``passed``/``failed``/``not run``) when the outcome localises one, so a
+    reader sees which command in the chain failed and with exactly which
+    arguments.  Suppressed for the plain ``lake build`` recipe (the extra
+    args/steps are the only surprising part).
+    """
+
+    commands = describe_verify_commands(
+        build_args=build_args,
+        run_test=run_test,
+        test_args=test_args,
+        run_lint=run_lint,
+        lint_args=lint_args,
+    )
+    if commands == DEFAULT_VERIFY_COMMANDS:
+        return None
+    annotated = annotate_verify_commands(
+        commands, outcome=outcome, failure_stage=failure_stage
+    )
+    lines = [f"- {label}:"]
+    for status, command in annotated:
+        suffix = f": {status}" if status else ""
+        lines.append(f"  - `{command}`{suffix}")
+    return "\n".join(lines)
+
+
 @dataclass
 class ValidationResult:
     """Machine-readable result for one downstream validation run."""
@@ -304,6 +449,15 @@ class ValidationResult:
     head_probe_summary: str | None = None
     pinned_commit: str | None = None
     search_base_not_ancestor: bool = False
+    # The verify recipe hopscotch ran at each commit, carried so failure reports
+    # can state exactly what command produced the result (see
+    # `describe_verify_commands`).  Copied from the downstream's config by the
+    # result builders; defaults describe the plain `lake build` recipe.
+    run_test: bool = False
+    run_lint: bool = False
+    build_args: list[str] = field(default_factory=list)
+    test_args: list[str] = field(default_factory=list)
+    lint_args: list[str] = field(default_factory=list)
     # The fixes hopscotch recorded for the boundary, carried verbatim from its
     # results.json `proposedFixes` so the bump action can overlay them onto its
     # own run and `hopscotch fix apply`.  Each entry keeps hopscotch's own object

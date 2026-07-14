@@ -373,6 +373,12 @@ def build_result_from_tool(
         head_probe_summary=head_probe_summary,
         pinned_commit=pinned_commit,
         search_base_not_ancestor=search_base_not_ancestor,
+        # The verify recipe this run used, so reports can name the exact command.
+        run_test=config.run_test,
+        run_lint=config.run_lint,
+        build_args=list(config.build_args),
+        test_args=list(config.test_args),
+        lint_args=list(config.lint_args),
         # The boundary fixes hopscotch recorded, verbatim; non-empty only when
         # the run stopped at a repairable boundary (the FKB).
         proposed_fixes=state.get("proposedFixes") or [],
@@ -433,6 +439,11 @@ def build_error_result(
         summary=error,
         error=error,
         generated_at=utc_now(),
+        run_test=config.run_test,
+        run_lint=config.run_lint,
+        build_args=list(config.build_args),
+        test_args=list(config.test_args),
+        lint_args=list(config.lint_args),
     )
 
 
@@ -473,6 +484,11 @@ def build_skip_result(
         error=None,
         generated_at=utc_now(),
         pinned_commit=pinned_commit,
+        run_test=config.run_test,
+        run_lint=config.run_lint,
+        build_args=list(config.build_args),
+        test_args=list(config.test_args),
+        lint_args=list(config.lint_args),
     )
 
 
@@ -505,6 +521,11 @@ def build_selection_error_result(
         head_probe_outcome=selection.head_probe_outcome,
         head_probe_failure_stage=selection.head_probe_failure_stage,
         head_probe_summary=selection.head_probe_summary,
+        run_test=selection.run_test,
+        run_lint=selection.run_lint,
+        build_args=list(selection.build_args),
+        test_args=list(selection.test_args),
+        lint_args=list(selection.lint_args),
     )
 
 
