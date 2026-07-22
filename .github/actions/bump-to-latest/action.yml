@@ -142,7 +142,9 @@ outputs:
       "false" if it still failed (`failureStage = "lake build"` — the fixes are
       partial). Empty when no fix was applied (nothing to verify) or the verify
       run stopped before the build (completeness unknown). Lets callers
-      distinguish a complete, verified fix from a partial one when wording a PR.
+      distinguish a complete, verified fix from a partial one when wording a
+      PR — pass to open-bump-pr's `fix-verified` input to select the bump-PR
+      body framing; track-incompatibility reads it for the fix-PR title.
     value: ${{ steps.verify-fixes.outputs.fix_verified }}
 
 runs:
@@ -847,14 +849,15 @@ runs:
         VERIFY_COMMITS="$RUNNER_TEMP/verify-commits.txt"
         rm -f "$RESULTS_JSON"
         printf '%s\n' "$TARGET_REV" > "$VERIFY_COMMITS"
-        # The bump ran `hopscotch dep --from…--to…` (range mode); this is a fresh
-        # commits-file run. hopscotch guards against a run-mode change by refusing
-        # to reuse its resume checkpoint ("run mode changed since the last run"),
-        # which would abort the verify non-zero and mis-report a good fix as
-        # unverified. Clear exactly that checkpoint (state.json) first: the rest
-        # of `.lake/hopscotch` must survive — `autofix-backups/` holds the
-        # pre-fix originals of the files `fix apply` just edited — and the
-        # mathlib cache/oleans live under `.lake/packages`, untouched either way.
+        # Clear hopscotch's resume checkpoint (state.json) so this is a fresh
+        # run: the bump's checkpoint is still in place, and reusing it either
+        # aborts the verify (the resume guards reject a changed run shape —
+        # mode, commit list, verify steps) or resumes a finished run and
+        # reports its result without rebuilding — either way not a real
+        # verify. Only the checkpoint goes: the rest of `.lake/hopscotch`
+        # must survive — `autofix-backups/` holds the pre-fix originals of
+        # the files `fix apply` just edited — and the mathlib cache/oleans
+        # live under `.lake/packages`, untouched either way.
         rm -f "$PROJECT_DIR/.lake/hopscotch/state.json"
         # --scan-mode linear: build the single target commit as-is. The default
         # (bisect) needs >= 2 commits and errors out ("bisect mode requires at

@@ -48,9 +48,22 @@ inputs:
     description: >
       hopscotch's own `fix apply` output (the `fix-summary` output of
       bump-to-latest). When non-empty, it is rendered verbatim in the body and
-      the build adjusts the "mergeable as-is" framing — `hopscotch fix` applied
-      changes that the bump's green build did not verify. Leave empty when no
-      fixes were applied. Ignored when `body` is set.
+      the "mergeable as-is" framing is replaced by fix-aware wording — pass
+      `fix-verified` alongside so that wording reflects whether a rebuild
+      proved the fixes complete. Leave empty when no fixes were applied.
+      Ignored when `body` is set.
+  fix-verified:
+    required: false
+    default: ''
+    description: >
+      The `fix-verified` output of bump-to-latest: "true" when a rebuild of
+      the fixed tree passed, "false" when it still failed (the fixes are
+      partial), empty when nothing was verified. Selects the fix section's
+      framing in the auto-generated body — a verified fix keeps the
+      "mergeable as-is" claim, a failed rebuild warns that the fixes need
+      hand-finishing, and empty keeps the neutral "validate via this PR's
+      CI" wording. No effect when `fix-summary` is empty; ignored when
+      `body` is set.
   token:
     required: false
     default: ${{ github.token }}
@@ -212,6 +225,9 @@ runs:
         MESSAGE: ${{ inputs.message }}
         # hopscotch's verbatim fix-apply summary; empty when no fixes applied.
         FIX_SUMMARY: ${{ inputs.fix-summary }}
+        # Tri-state completeness signal for the applied fixes ("true" /
+        # "false" / empty); selects the fix section's framing below.
+        FIX_VERIFIED: ${{ inputs.fix-verified }}
         # Used to decide whether to surface the "CI needs approval" warning:
         # the warning applies only when the PR is opened under the built-in
         # GITHUB_TOKEN. A custom App / PAT token differs from github.token,
@@ -240,11 +256,18 @@ runs:
             fi
             printf -- '---\n\n'
             if [ -n "${FIX_SUMMARY:-}" ]; then
-              # `hopscotch fix` changed files on top of the verified bump that the
-              # green build did not cover, so this branch drops the "mergeable
-              # as-is" framing (the shared trailer below still asks for CI).
+              # `hopscotch fix` changed files on top of the bump, so the framing
+              # follows FIX_VERIFIED: a rebuild that passed restores "mergeable
+              # as-is", a rebuild that failed asks for hand-finishing, and no
+              # verdict (empty) defers to the PR's CI.
               printf 'This is an automated dependency bump to the latest commit this project is known to build against (its **last-known-good** commit). `lake build` succeeded against the new commit before this PR was opened.\n\n'
-              printf 'On top of the bump, `hopscotch fix` applied automated fixes not covered by the bump build (any `skipping` line is an advisory left for you to migrate by hand). Validate them via this PR'"'"'s CI before merging:\n\n'
+              if [ "${FIX_VERIFIED:-}" = "true" ]; then
+                printf 'On top of the bump, `hopscotch fix` applied automated fixes, and a rebuild confirmed the tree builds with them in place — so this PR should be mergeable as-is (any `skipping` line is a fix hopscotch did not apply — migrate it by hand):\n\n'
+              elif [ "${FIX_VERIFIED:-}" = "false" ]; then
+                printf 'On top of the bump, `hopscotch fix` applied automated fixes, but a rebuild shows the tree does **not** build with them — the fixes are partial. Complete them by hand on this branch before merging (any `skipping` line is a fix hopscotch did not apply):\n\n'
+              else
+                printf 'On top of the bump, `hopscotch fix` applied automated fixes not covered by the bump build (any `skipping` line is a fix hopscotch did not apply — migrate it by hand). Validate them via this PR'"'"'s CI before merging:\n\n'
+              fi
               printf '%s' "$FIX_SUMMARY" | bash "${{ github.action_path }}/../../scripts/md-fenced-block.sh"
               printf '\n'
             else

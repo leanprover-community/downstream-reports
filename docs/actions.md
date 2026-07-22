@@ -353,7 +353,7 @@ taken from the snapshot's top-level `upstream` field — no configuration needed
 | `bump-description` | Markdown paragraph describing the bump — new commit + previous pin, with subjects and dates. Pass to `open-bump-pr`'s `message` input. Empty when skipped or `generate-description: false`. |
 | `commit-message` | Suggested git commit message (empty when skipped or `generate-description: false`) |
 | `fix-summary` | hopscotch's own `fix apply` output, verbatim, when it changed files after the bump — empty when nothing was applied, the step was skipped, or no fixes were recorded. Pass to `open-bump-pr`'s `fix-summary` input to describe the applied fixes in the PR body using the tool's own words. |
-| `fix-verified` | When `apply-fixes` changed files, the fixed tree is re-built (the bump itself never re-builds after `fix apply`): `"true"` if that build passed, `"false"` if it still failed (`failureStage = "lake build"` — the fixes are partial). Empty when no fix was applied (nothing to verify) or the verify run stopped before the build (a non-build `failureStage` or tool error — completeness unknown). Lets callers word a PR by completeness; `track-incompatibility` uses it for the fix-PR title. |
+| `fix-verified` | When `apply-fixes` changed files, the fixed tree is re-built (the bump itself never re-builds after `fix apply`): `"true"` if that build passed, `"false"` if it still failed (`failureStage = "lake build"` — the fixes are partial). Empty when no fix was applied (nothing to verify) or the verify run stopped before the build (a non-build `failureStage` or tool error — completeness unknown). Lets callers word a PR by completeness: pass to `open-bump-pr`'s `fix-verified` input to select the bump-PR body framing; `track-incompatibility` uses it for the fix-PR title. |
 
 ---
 
@@ -395,7 +395,8 @@ otherwise trigger PR CI on every tick never lands.
 | `commit-message` | no | `chore: dependency update` | Git commit message |
 | `labels` | no | `''` | Comma-separated labels to apply to the PR |
 | `message` | no | `''` | Content to place in the PR body above the automated footer. Pass the `bump-description` output from `bump-to-latest` here. |
-| `fix-summary` | no | `''` | hopscotch's own `fix apply` output (the `fix-summary` output of `bump-to-latest`). When non-empty it is rendered verbatim in the body and the "mergeable as-is" framing is adjusted — the applied changes were *not* covered by the bump's green build, so CI should run before merge. Ignored when `body` is set. |
+| `fix-summary` | no | `''` | hopscotch's own `fix apply` output (the `fix-summary` output of `bump-to-latest`). When non-empty it is rendered verbatim in the body and the "mergeable as-is" framing is replaced by fix-aware wording — pass `fix-verified` alongside so that wording reflects whether a rebuild proved the fixes complete. Ignored when `body` is set. |
+| `fix-verified` | no | `''` | The `fix-verified` output of `bump-to-latest` (`"true"` / `"false"` / empty). Selects the fix section's framing: `"true"` (the fixed tree rebuilt cleanly) keeps the "mergeable as-is" claim, `"false"` (the rebuild failed) warns that the fixes are partial and need hand-finishing, and empty keeps the neutral "validate via this PR's CI" wording. No effect when `fix-summary` is empty; ignored when `body` is set. |
 | `token` | no | `GITHUB_TOKEN` | Token used to push the branch and create/update the PR. Pass a GitHub App installation token to have PRs opened by a bot account instead of `github-actions[bot]`. |
 | `git-user-name` | no | `github-actions[bot]` | `git user.name` for the bump commit. |
 | `git-user-email` | no | `41898282+github-actions[bot]@users.noreply.github.com` | `git user.email` for the bump commit. |
