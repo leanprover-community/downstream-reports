@@ -260,7 +260,7 @@ runs:
               # follows FIX_VERIFIED: a rebuild that passed restores "mergeable
               # as-is", a rebuild that failed asks for hand-finishing, and no
               # verdict (empty) defers to the PR's CI.
-              printf 'This is an automated dependency bump to the latest commit this project is known to build against (its **last-known-good** commit). `lake build` succeeded against the new commit before this PR was opened.\n\n'
+              printf 'This is an automated dependency bump to the latest commit this project is known to build against (its **last-known-good** commit). `lake build` succeeded against the new commit before the fixes below were applied.\n\n'
               if [ "${FIX_VERIFIED:-}" = "true" ]; then
                 printf 'On top of the bump, `hopscotch fix` applied automated fixes, and a rebuild confirmed the tree builds with them in place — so this PR should be mergeable as-is (any `skipping` line is a fix hopscotch did not apply — migrate it by hand):\n\n'
               elif [ "${FIX_VERIFIED:-}" = "false" ]; then

@@ -140,7 +140,8 @@ outputs:
       When `apply-fixes` changed files, the fixed tree is re-built (the bump
       itself never re-builds after `fix apply`): "true" if that build passed,
       "false" if it still failed (`failureStage = "lake build"` — the fixes are
-      partial). Empty when no fix was applied (nothing to verify) or the verify
+      partial; a transient build failure reads the same way, so "false" is
+      conservative). Empty when no fix was applied (nothing to verify) or the verify
       run stopped before the build (completeness unknown). Lets callers
       distinguish a complete, verified fix from a partial one when wording a
       PR — pass to open-bump-pr's `fix-verified` input to select the bump-PR
@@ -819,9 +820,15 @@ runs:
     # was applied (fix_summary non-empty): builds exactly the bumped-to commit
     # with the fix in place (dirty tree, no re-detection) via hopscotch, so cache
     # and toolchain handling match the bump. Best-effort — a build failure just
-    # means fix-verified=false (a partial fix), not a step failure, and a verify
-    # run that stops before the build (bump-stage flake, tool error) leaves
-    # fix-verified empty (unknown) rather than claiming the fix is partial.
+    # means fix-verified=false (a partial fix; a transient build-stage failure
+    # reads the same way — "false" is conservative, never over-promising), not a
+    # step failure, and a verify run that stops before the build (bump-stage
+    # flake, tool error) leaves fix-verified empty (unknown) rather than
+    # claiming the fix is partial. Invariant: the verify must not mutate
+    # tracked files — it runs before the caller commits the tree, so any change
+    # it made would land in the bump commit. It re-writes the identical rev
+    # (`lake update` at the already-pinned target is a manifest no-op) and
+    # builds into the gitignored `.lake/`.
     # ------------------------------------------------------------------
     - name: Verify applied fixes build
       id: verify-fixes
