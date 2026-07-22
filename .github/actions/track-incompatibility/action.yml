@@ -870,7 +870,8 @@ runs:
         # empty otherwise.  Surfaced as-is — never synthesized here.
         FIX_SUMMARY: ${{ steps.bump.outputs.fix-summary }}
         # "true"/"false" when a fix was applied and the fixed tree was re-built;
-        # empty when no fix was applied. Drives the title's completeness wording.
+        # empty when no fix was applied or the verify run stopped before the
+        # build (completeness unknown). Drives the PR's completeness wording.
         FIX_VERIFIED: ${{ steps.bump.outputs.fix-verified }}
         # Used to decide whether to surface the "CI needs approval" warning:
         # the warning applies only when the PR is opened under the built-in
@@ -900,7 +901,11 @@ runs:
           printf 'This PR bumps `%s` to an identified incompatible (first-known-bad) commit (`%s`) so you can reproduce and fix the incompatibility locally by checking out this branch.\n\n' \
             "$DEP_NAME" "$FKB_SHORT"
           if [ -n "${FIX_SUMMARY:-}" ]; then
-            printf 'It also applies the fixes `hopscotch fix` recommends here. Review them — a fix can be partial (e.g. when the upstream PR also renamed declarations) — and rely on this branch'"'"'s CI to validate the result:\n\n'
+            if [ "${FIX_VERIFIED:-}" = "true" ]; then
+              printf 'It also applies the fixes `hopscotch fix` recommends here — **the tree builds with them applied** (verified by a rebuild after the fixes). Review them and rely on this branch'"'"'s CI to confirm:\n\n'
+            else
+              printf 'It also applies the fixes `hopscotch fix` recommends here. Review them — a fix can be partial (e.g. when the upstream PR also renamed declarations) — and rely on this branch'"'"'s CI to validate the result:\n\n'
+            fi
             printf '%s' "$FIX_SUMMARY" | bash "${{ github.action_path }}/../../scripts/md-fenced-block.sh"
             printf '\n'
           fi
@@ -917,9 +922,11 @@ runs:
         # The title states the PR's goal end-state: fix the breaking changes.
         # When hopscotch applied fixes, bump-to-latest re-built the fixed tree,
         # so we can be honest about completeness:
-        #   verified build  -> the fixes resolve it: "apply automated fixes"
-        #   build still red  -> partial: "…, fix remaining breaking changes"
-        #   no fix applied  -> maintainer does it all: "fix breaking changes"
+        #   verified build       -> the fixes resolve it: "apply automated fixes"
+        #   red or unverified    -> assume partial: "…, fix remaining breaking
+        #                           changes" (an unverified fix is worded as
+        #                           partial on purpose — never over-promise)
+        #   no fix applied       -> maintainer does it all: "fix breaking changes"
         if [ -n "${FIX_SUMMARY:-}" ]; then
           if [ "${FIX_VERIFIED:-}" = "true" ]; then
             PR_TITLE="chore: bump ${DEP_NAME} to ${FKB_SHORT}, apply automated fixes"

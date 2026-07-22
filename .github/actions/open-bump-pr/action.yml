@@ -244,7 +244,7 @@ runs:
               # green build did not cover, so this branch drops the "mergeable
               # as-is" framing (the shared trailer below still asks for CI).
               printf 'This is an automated dependency bump to the latest commit this project is known to build against (its **last-known-good** commit). `lake build` succeeded against the new commit before this PR was opened.\n\n'
-              printf 'On top of the bump, `hopscotch fix` applied automated fixes not covered by the bump build (any `skipping` line is an advisory left for you to migrate by hand). Validate them via this PR before merging:\n\n'
+              printf 'On top of the bump, `hopscotch fix` applied automated fixes not covered by the bump build (any `skipping` line is an advisory left for you to migrate by hand). Validate them via this PR'"'"'s CI before merging:\n\n'
               printf '%s' "$FIX_SUMMARY" | bash "${{ github.action_path }}/../../scripts/md-fenced-block.sh"
               printf '\n'
             else

@@ -353,6 +353,7 @@ taken from the snapshot's top-level `upstream` field — no configuration needed
 | `bump-description` | Markdown paragraph describing the bump — new commit + previous pin, with subjects and dates. Pass to `open-bump-pr`'s `message` input. Empty when skipped or `generate-description: false`. |
 | `commit-message` | Suggested git commit message (empty when skipped or `generate-description: false`) |
 | `fix-summary` | hopscotch's own `fix apply` output, verbatim, when it changed files after the bump — empty when nothing was applied, the step was skipped, or no fixes were recorded. Pass to `open-bump-pr`'s `fix-summary` input to describe the applied fixes in the PR body using the tool's own words. |
+| `fix-verified` | When `apply-fixes` changed files, the fixed tree is re-built (the bump itself never re-builds after `fix apply`): `"true"` if that build passed, `"false"` if it still failed (`failureStage = "lake build"` — the fixes are partial). Empty when no fix was applied (nothing to verify) or the verify run stopped before the build (a non-build `failureStage` or tool error — completeness unknown). Lets callers word a PR by completeness; `track-incompatibility` uses it for the fix-PR title. |
 
 ---
 
@@ -418,6 +419,12 @@ with the lakefile bumped to the FKB commit, giving downstream maintainers a
 ready starting point for investigation. When the FKB advances, stale fix PRs
 are closed automatically. When the regression clears, both the issue and any
 open fix PRs are closed with resolution comments.
+
+The fix-PR title reflects fix completeness (via `bump-to-latest`'s
+`fix-verified` output): `…, apply automated fixes` when applied fixes were
+verified to build, `…, apply hopscotch fixes, fix remaining breaking changes`
+when fixes were applied but the tree still fails (or verification was
+inconclusive), and `…, fix breaking changes` when no fix was applied.
 
 Set `open-pr: false` to run in issue-only mode. Set `open-issue: false` for
 PR-only mode, useful when you reserve issues for longer-lasting problems and
