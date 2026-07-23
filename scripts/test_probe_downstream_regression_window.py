@@ -11,8 +11,11 @@ Coverage scope:
       culprit that captures fresh failure logs in this job's
       artifacts (rather than back-linking to an older run).
     - ``build_parser`` — pins the ``--skip-known-bad-bisect`` /
-      ``--no-skip-known-bad-bisect`` and ``--max-commits`` CLI
-      surface.
+      ``--no-skip-known-bad-bisect``, ``--max-commits``, and
+      ``--min-free-gb`` CLI surface.
+    - ``ensure_free_disk`` / ``reclaim_tree`` — the disk-space guards
+      that fail a build phase fast on a too-full runner and reclaim
+      finished project trees between phases.
 
 Out of scope:
     - HEAD probe execution: tests synthesise the
@@ -40,12 +43,16 @@ import subprocess
 from pathlib import Path
 from unittest.mock import Mock, patch
 
+import pytest
+
 from scripts.conftest import PHYSLIB_CONFIG, make_selection
 from scripts.models import CommitDetail, Outcome
 from scripts.probe_downstream_regression_window import (
     build_parser as probe_build_parser,
 )
 from scripts.probe_downstream_regression_window import (
+    ensure_free_disk,
+    reclaim_tree,
     run_culprit_probe,
     try_revalidate_boundary,
     try_skip_known_bad_bisect,
@@ -493,6 +500,71 @@ class TestRunCulpritProbe:
             )
 
 
+class TestDiskHygiene:
+    """``ensure_free_disk`` / ``reclaim_tree`` — the probe job's disk guards.
+
+    A probe job builds the same downstream up to three times (HEAD probe,
+    stored-endpoint verification, bisect), each in its own project tree
+    whose ``.lake`` holds an unpacked mathlib olean cache.  The guards keep
+    the peak footprint to roughly one built tree and turn a too-full runner
+    into a clear ``error`` result instead of ENOSPC carnage mid-build.
+    """
+
+    def test_ensure_free_disk_raises_below_floor(self) -> None:
+        """Free space below the floor raises with the phase, the measured
+        headroom, and the floor named in the message — the text that lands
+        in the ``error`` result."""
+        # Arrange
+        with patch(
+            "scripts.probe_downstream_regression_window.shutil.disk_usage",
+            return_value=Mock(free=5 * 1024**3),
+        ):
+            # Act / Assert
+            with pytest.raises(RuntimeError) as excinfo:
+                ensure_free_disk(Path("/"), 10.0, "the bisect")
+
+        message = str(excinfo.value)
+        assert "5.0 GiB" in message
+        assert "10.0 GiB" in message
+        assert "the bisect" in message
+
+    def test_ensure_free_disk_logs_headroom_at_or_above_floor(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Free space at or above the floor passes and logs the headroom,
+        giving each phase boundary a free-space data point in the job log."""
+        # Arrange
+        with patch(
+            "scripts.probe_downstream_regression_window.shutil.disk_usage",
+            return_value=Mock(free=32 * 1024**3),
+        ):
+            # Act
+            ensure_free_disk(Path("/"), 10.0, "the HEAD probe")
+
+        # Assert
+        output = capsys.readouterr().out
+        assert "32.0 GiB" in output
+        assert "the HEAD probe" in output
+
+    def test_reclaim_tree_removes_finished_tree_and_ignores_missing(
+        self, tmp_path: Path
+    ) -> None:
+        """A finished check tree is deleted recursively; reclaiming a path
+        that no longer exists is a silent no-op (safe to call from every
+        phase boundary)."""
+        # Arrange
+        tree = tmp_path / "downstreams-lkg-check" / "physlib"
+        (tree / ".lake" / "build").mkdir(parents=True)
+        (tree / ".lake" / "build" / "Physlib.olean").write_text("olean")
+
+        # Act
+        reclaim_tree(tree, "stored last-known-good verification finished")
+        reclaim_tree(tree, "stored last-known-good verification finished")
+
+        # Assert
+        assert not tree.exists()
+
+
 class TestProbeParser:
     """``probe_build_parser()`` — flag surface for the probe step."""
 
@@ -573,3 +645,20 @@ class TestProbeParser:
             [*self._REQUIRED, "--max-commits", "50"]
         )
         assert args.max_commits == 50
+
+    def test_min_free_gb_defaults_and_overrides(self) -> None:
+        """``--min-free-gb`` floors each build phase at 10 GiB unless overridden.
+
+        The default is a universal sanity floor that fits both the
+        self-hosted runners and stock GitHub-hosted ones; operators can
+        raise it per workflow (or pass 0 to disable the guard).
+        """
+        # Arrange / Act / Assert — default
+        args = probe_build_parser().parse_args(self._REQUIRED)
+        assert args.min_free_gb == 10.0
+
+        # Act / Assert — override
+        args = probe_build_parser().parse_args(
+            [*self._REQUIRED, "--min-free-gb", "25"]
+        )
+        assert args.min_free_gb == 25.0

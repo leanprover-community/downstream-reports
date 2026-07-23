@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import shutil
 import subprocess
 import sys
 from collections.abc import Callable
@@ -284,6 +285,51 @@ def run_culprit_probe(
 
 
 # ---------------------------------------------------------------------------
+# Disk hygiene
+# ---------------------------------------------------------------------------
+#
+# A probe job can build the same downstream up to three times — HEAD probe,
+# stored-endpoint verification, bisect — each in its own project tree whose
+# `.lake` holds an unpacked mathlib olean cache (10+ GiB on a heavy
+# downstream).  Finished trees are reclaimed as soon as no later phase can
+# read them, and each build phase is preceded by a free-space floor check so
+# a too-small runner fails fast with a clear error instead of dying on
+# ENOSPC partway through a build.
+
+
+def free_disk_gb(path: Path) -> float:
+    """Return free disk space in GiB on the filesystem holding ``path``."""
+
+    return shutil.disk_usage(path).free / 1024**3
+
+
+def ensure_free_disk(path: Path, min_free_gb: float, phase: str) -> None:
+    """Check the free-space floor before a build phase and log the headroom.
+
+    Raises ``RuntimeError`` below the floor; the caller's error handling
+    turns that into an ``error`` result whose message names the phase and
+    the measured free space.
+    """
+
+    free = free_disk_gb(path)
+    if free < min_free_gb:
+        raise RuntimeError(
+            f"insufficient disk space on the runner: {free:.1f} GiB free before "
+            f"{phase}, below the {min_free_gb:.1f} GiB floor (--min-free-gb)"
+        )
+    print(f"[disk] {free:.1f} GiB free before {phase}")
+
+
+def reclaim_tree(path: Path, reason: str) -> None:
+    """Delete a finished project tree to reclaim disk for the next build."""
+
+    if not path.exists():
+        return
+    shutil.rmtree(path, ignore_errors=True)
+    print(f"[disk] reclaimed {path} ({reason}); {free_disk_gb(path.parent):.1f} GiB free")
+
+
+# ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
 
@@ -298,6 +344,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--quiet", action="store_true")
     parser.add_argument("--tool-exe", type=Path)
     parser.add_argument("--max-commits", type=int, default=100000)
+    parser.add_argument(
+        "--min-free-gb", type=float, default=10.0,
+        help="Free-disk floor (GiB) checked before each build phase.  Below it "
+             "the probe fails fast with a clear error result instead of dying "
+             "on ENOSPC partway through a build.  Set to 0 to disable.",
+    )
     parser.add_argument(
         "--upstream-repo", default="leanprover-community/mathlib4",
         help="Upstream repository to clone for git operations.",
@@ -369,6 +421,7 @@ def main() -> int:
         search_dir = args.workdir / "downstreams-search" / config.name
         cache_dir = downstream_cache_dir(args.workdir, config.name)
         cache_dir.mkdir(parents=True, exist_ok=True)
+        ensure_free_disk(args.workdir, args.min_free_gb, "cloning and the HEAD probe")
         # cache_env() strips privilege-bearing CI secrets.  GITHUB_TOKEN is
         # passed through to hopscotch so it can authenticate commit-range API
         # calls; hopscotch then strips it from every child process it spawns.
@@ -496,6 +549,9 @@ def main() -> int:
             )
             lkg_check_dir = args.workdir / "downstreams-lkg-check" / config.name
             lkg_clone_source = str(downstream_dir) if downstream_dir.exists() else None
+            ensure_free_disk(
+                args.workdir, args.min_free_gb, "the stored last-known-good verification build"
+            )
             clone_downstream(config, lkg_check_dir, clone_source=lkg_clone_source)
             lkg_run, _, _ = run_validation_attempt(
                 config=config,
@@ -509,6 +565,7 @@ def main() -> int:
                 quiet=args.quiet,
             )
             lkg_verification_outcomes[candidate] = lkg_run.returncode == 0
+            reclaim_tree(lkg_check_dir, "stored last-known-good verification finished")
             return lkg_verification_outcomes[candidate]
 
         def probe_first_known_bad(candidate: str) -> int:
@@ -524,6 +581,9 @@ def main() -> int:
             )
             fkb_check_dir = args.workdir / "downstreams-fkb-check" / config.name
             fkb_clone_source = str(downstream_dir) if downstream_dir.exists() else None
+            ensure_free_disk(
+                args.workdir, args.min_free_gb, "the stored first-known-bad re-validation build"
+            )
             clone_downstream(config, fkb_check_dir, clone_source=fkb_clone_source)
             fkb_run, _, _ = run_validation_attempt(
                 config=config,
@@ -536,6 +596,7 @@ def main() -> int:
                 tool_exe=args.tool_exe,
                 quiet=args.quiet,
             )
+            reclaim_tree(fkb_check_dir, "stored first-known-bad re-validation finished")
             return fkb_run.returncode
 
         # HEAD probe failed — try the known-bad bisect skip before committing
@@ -627,6 +688,12 @@ def main() -> int:
 
             clone_source = str(downstream_dir) if downstream_dir.exists() else None
             clone_downstream(config, search_dir, clone_source=clone_source)
+            # The head-probe tree's last remaining role was to serve as the
+            # local clone source for the search tree; its `.lake` holds a
+            # full unpacked mathlib cache, so reclaim it before the bisect
+            # unpacks another one into the search tree.
+            reclaim_tree(downstream_dir, "head-probe tree superseded by the search tree")
+            ensure_free_disk(args.workdir, args.min_free_gb, "the bisect")
 
             probe_from_ref = parent_commit(upstream_dir, bisect_commits[0])
             probe_to_ref = bisect_commits[-1]
