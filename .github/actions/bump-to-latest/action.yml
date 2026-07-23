@@ -135,6 +135,18 @@ outputs:
       fixes were recorded. Surface this in a PR body to describe the applied
       fixes using the tool's own words rather than a synthesized count.
     value: ${{ steps.apply-fixes.outputs.fix_summary }}
+  fix-verified:
+    description: >
+      When `apply-fixes` changed files, the fixed tree is re-built (the bump
+      itself never re-builds after `fix apply`): "true" if that build passed,
+      "false" if it still failed (`failureStage = "lake build"` — the fixes are
+      partial; a transient build failure reads the same way, so "false" is
+      conservative). Empty when no fix was applied (nothing to verify) or the verify
+      run stopped before the build (completeness unknown). Lets callers
+      distinguish a complete, verified fix from a partial one when wording a
+      PR — pass to open-bump-pr's `fix-verified` input to select the bump-PR
+      body framing; track-incompatibility reads it for the fix-PR title.
+    value: ${{ steps.verify-fixes.outputs.fix_verified }}
 
 runs:
   using: 'composite'
@@ -802,8 +814,94 @@ runs:
         set -e
 
     # ------------------------------------------------------------------
+    # Re-build the *fixed* tree to learn whether the applied fixes actually make
+    # it build — the bump never re-builds after `fix apply`, so otherwise a
+    # partial fix is indistinguishable from a complete one. Runs only when a fix
+    # was applied (fix_summary non-empty): builds exactly the bumped-to commit
+    # with the fix in place (dirty tree, no re-detection) via hopscotch, so cache
+    # and toolchain handling match the bump. Best-effort — a build failure just
+    # means fix-verified=false (a partial fix; a transient build-stage failure
+    # reads the same way — "false" is conservative, never over-promising), not a
+    # step failure, and a verify run that stops before the build (bump-stage
+    # flake, tool error) leaves fix-verified empty (unknown) rather than
+    # claiming the fix is partial. Invariant: the verify must not mutate
+    # tracked files — it runs before the caller commits the tree, so any change
+    # it made would land in the bump commit. It re-writes the identical rev
+    # (`lake update` at the already-pinned target is a manifest no-op) and
+    # builds into the gitignored `.lake/`.
+    # ------------------------------------------------------------------
+    - name: Verify applied fixes build
+      id: verify-fixes
+      if: >-
+        steps.compare.outputs.skipped != 'true'
+        && steps.guard.outputs.skipped != 'true'
+        && steps.run-hopscotch.outputs.updated == 'true'
+        && inputs.apply-fixes == 'true'
+        && steps.apply-fixes.outputs.fix_summary != ''
+      shell: bash
+      env:
+        DEPENDENCY_NAME: ${{ inputs.dependency-name }}
+        # The same rev the bump pinned (a tag when the bump relabeled to a
+        # release). hopscotch writes each commits-file entry verbatim into the
+        # lakefile `rev` — it accepts any git rev and never skips an
+        # already-at-target rewrite — so feeding the resolved SHA here would
+        # silently re-pin a tag-pinned bump to the bare SHA in the committed
+        # tree. Re-writing the identical rev leaves the pin untouched.
+        TARGET_REV: ${{ steps.relabel.outputs.rev }}
+        PROJECT_DIR: ${{ inputs.project-dir }}
+        GITHUB_TOKEN: ${{ github.token }}
+      run: |
+        set +e
+        RESULTS_JSON="$RUNNER_TEMP/verify-fixes-results.json"
+        VERIFY_COMMITS="$RUNNER_TEMP/verify-commits.txt"
+        rm -f "$RESULTS_JSON"
+        printf '%s\n' "$TARGET_REV" > "$VERIFY_COMMITS"
+        # Clear hopscotch's resume checkpoint (state.json) so this is a fresh
+        # run: the bump's checkpoint is still in place, and reusing it either
+        # aborts the verify (the resume guards reject a changed run shape —
+        # mode, commit list, verify steps) or resumes a finished run and
+        # reports its result without rebuilding — either way not a real
+        # verify. Only the checkpoint goes: the rest of `.lake/hopscotch`
+        # must survive — `autofix-backups/` holds the pre-fix originals of
+        # the files `fix apply` just edited — and the mathlib cache/oleans
+        # live under `.lake/packages`, untouched either way.
+        rm -f "$PROJECT_DIR/.lake/hopscotch/state.json"
+        # --scan-mode linear: build the single target commit as-is. The default
+        # (bisect) needs >= 2 commits and errors out ("bisect mode requires at
+        # least 2 commits") on a one-commit file, which would mis-report as an
+        # unverified fix.
+        hopscotch dep "$DEPENDENCY_NAME" \
+          --commits-file "$VERIFY_COMMITS" \
+          --project-dir "$PROJECT_DIR" \
+          --scan-mode linear \
+          --allow-dirty-workspace \
+          --no-auto-fix \
+          --results-json "$RESULTS_JSON"
+        RC=$?
+        set -e
+        # Classify on the documented failureStage from results.json, like the
+        # bump step: the bare exit code can't tell a build failure (the signal
+        # we're after) from a bump-stage flake or tool error (no signal at all).
+        FAILURE_STAGE=""
+        if [ -f "$RESULTS_JSON" ]; then
+          FAILURE_STAGE=$(jq -r '.failureStage // empty' "$RESULTS_JSON" 2>/dev/null || true)
+        fi
+        if [ "$RC" -eq 0 ]; then
+          echo "The fixed tree builds cleanly — applied fixes verified."
+          echo "fix_verified=true" >> "$GITHUB_OUTPUT"
+        elif [ "$RC" -eq 1 ] && [ "$FAILURE_STAGE" = "lake build" ]; then
+          echo "::warning::The fixed tree still fails to build; the applied fixes are incomplete."
+          echo "fix_verified=false" >> "$GITHUB_OUTPUT"
+        else
+          echo "::warning::Fix verification stopped before the build (stage '${FAILURE_STAGE:-unknown}', exit $RC); fix completeness is unknown."
+          echo "fix_verified=" >> "$GITHUB_OUTPUT"
+        fi
+
+    # ------------------------------------------------------------------
     # Final step: consolidate outputs with safe defaults so callers never
-    # see empty strings for boolean-valued outputs.
+    # see empty strings for boolean-valued outputs. (`fix-verified` is
+    # deliberately not resolved here: it is tri-state, and empty means
+    # "nothing verified" — see the output's description.)
     # ------------------------------------------------------------------
     - name: Resolve outputs
       id: resolve-outputs
