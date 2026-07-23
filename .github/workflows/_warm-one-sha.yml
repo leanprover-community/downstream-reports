@@ -5,8 +5,15 @@ name: warm-mathlib-cache (one SHA)
 #
 #   build_and_stage  — self-hosted, NO cache token. Clones mathlib at
 #                      <sha>, probes the cache, builds Mathlib if
-#                      needed, stages .ltar files. The cache tool is
-#                      built fresh from a shallow master checkout.
+#                      needed, stages .ltar files. Probe and stage run
+#                      the target SHA's own in-tree cache tool
+#                      (`lake exe cache`): cache file names embed the
+#                      tool's hash generation (Cache/IO.lean
+#                      rootHashGeneration), so only the tool at <sha>
+#                      names files the way consumers at <sha> will
+#                      look them up. A master-built tool can sit on a
+#                      different generation and would probe/stage
+#                      names nobody at <sha> can fetch.
 #   upload_cache     — ubuntu, holds the cache bearer token (minted via
 #                      OIDC bound to the cache-warming-token
 #                      environment). Builds its own cache tool from a
@@ -104,26 +111,23 @@ jobs:
           SHA: ${{ inputs.sha }}
         run: git -C mathlib4 checkout "$SHA"
 
-      # Build the cache tool from a shallow master checkout, kept
-      # separate from the target SHA's working tree. Both jobs use
-      # this pattern, mirroring mathlib4/build_template.yml's
-      # tools-branch idiom.
-      - name: Clone mathlib master (cache tool)
+      # Shallow master checkout, kept separate from the target SHA's
+      # working tree. Exists solely as the leantar-backfill source
+      # below: its `lean-toolchain` resolves a recent toolchain whose
+      # sysroot ships leantar.
+      - name: Clone mathlib master (leantar source)
         run: |
           git clone --depth=1 --branch=master \
             https://github.com/leanprover-community/mathlib4 mathlib4-tools
 
-      - name: Build cache tool
-        working-directory: mathlib4-tools
-        run: lake build cache
-
-      # The master cache binary resolves `leantar` strictly from the
-      # active toolchain's sysroot (`<lean --print-prefix>/bin/leantar`,
+      # The cache binary resolves `leantar` strictly from the active
+      # toolchain's sysroot (`<lean --print-prefix>/bin/leantar`,
       # see Cache/IO.lean leantarSysrootBin) — PATH is not consulted.
       # Target SHAs older than nightly-2026-03-09 pin a toolchain that
       # predates leantar bundling, so cache stage/probe explode with
-      # "leantar not found in Lean sysroot". Backfill by copying master's
-      # leantar (always recent enough) into the target sysroot.
+      # "leantar not found in Lean sysroot". Backfill by copying the
+      # master toolchain's leantar (always recent enough) into the
+      # target sysroot.
       - name: Backfill leantar into target toolchain (if missing)
         run: |
           set -euo pipefail
@@ -143,22 +147,21 @@ jobs:
           cp "$TOOLS_PREFIX/bin/leantar" "$TARGET_PREFIX/bin/leantar"
           echo "Backfilled leantar: $TOOLS_PREFIX/bin/leantar -> $TARGET_PREFIX/bin/leantar"
 
-      # `lake env <cmd>` evaluates the lakefile in the current working
-       # directory, resolves deps, and sets LEAN_PATH / LEAN_SRC_PATH so
-       # the cache binary can find Mathlib modules — invoking the cache
-       # binary directly fails with "unknown module prefix 'Mathlib'".
+      # `lake exe cache` builds and runs the target checkout's own
+      # cache tool, exactly what a consumer at this SHA runs — the
+      # probe therefore measures completeness as consumers see it.
       # Each retryable step gets one extra attempt to absorb transient
       # flakes (Azure 503, network blip, runner hiccup). After the
       # second failure the step reports failure to its `outcome:` and
       # the per-SHA result captures it as build_failed / push_failed /
-      # verify_failed — best-effort, never fails the workflow_run.
+      # verify_failed.
       - name: Probe cache completeness
         id: probe
         working-directory: mathlib4
         continue-on-error: true
         run: |
           probe() {
-            lake env ../mathlib4-tools/.lake/build/bin/cache get \
+            lake exe cache get \
               && lake build --no-build -v Mathlib
           }
           if ! probe; then
@@ -184,8 +187,7 @@ jobs:
         continue-on-error: true
         run: |
           stage() {
-            lake env ../mathlib4-tools/.lake/build/bin/cache stage \
-              --staging-dir=../cache-staging
+            lake exe cache stage --staging-dir=../cache-staging
           }
           if ! stage; then
             echo "::warning::Stage attempt 1 failed, retrying once..."
@@ -256,6 +258,10 @@ jobs:
     needs: build_and_stage
     if: needs.build_and_stage.outputs.status == 'staged'
     runs-on: ubuntu-latest
+    # A push failure fails this job (red in the run's job list) after
+    # the push_failed result is uploaded; continue-on-error keeps the
+    # workflow_run green so publish-lkg + generate-pages still chain.
+    continue-on-error: true
     # Bind the OIDC subject claim to a GitHub Environment, NOT a
     # branch, so the federated credential on the mathlib cache-writer
     # Azure app accepts dispatch from any branch. Production runs are
@@ -286,8 +292,11 @@ jobs:
           echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
 
       # Build a trusted cache binary from a clean master checkout —
-      # the same pattern build_and_stage uses. The cache token below
-      # never sees any binary produced by the build runner.
+      # the cache token below never sees any binary produced by the
+      # build runner. Using the master tool here is safe across hash
+      # generations: `put-staged` uploads the staged .ltar files under
+      # the names build_and_stage's in-tree tool gave them, and does
+      # not compute hashes itself.
       - name: Clone mathlib master (cache tool)
         run: |
           git clone --depth=1 --branch=master \
@@ -388,15 +397,22 @@ jobs:
           path: out/result.json
           if-no-files-found: error
 
-      - name: Annotate push failure
+      # Last step so the result artifact is already uploaded when the
+      # job goes red.
+      - name: Fail job on push failure
         if: steps.push.outcome == 'failure'
         run: |
-          echo "::warning::Cache push failed for ${{ inputs.sha }} after one retry; recorded as push_failed and skipped on future ticks."
+          echo "::error::Cache push failed for ${{ inputs.sha }} after one retry; recorded as push_failed and skipped on future ticks."
+          exit 1
 
   verify:
     needs: upload_cache
     if: needs.upload_cache.outputs.status == 'pushed'
     runs-on: ubuntu-latest
+    # A verify failure fails this job (red in the run's job list) after
+    # the verify_failed result is uploaded; continue-on-error keeps the
+    # workflow_run green so publish-lkg + generate-pages still chain.
+    continue-on-error: true
     steps:
       - name: Download pushed result
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -451,7 +467,10 @@ jobs:
           path: out/result.json
           if-no-files-found: error
 
-      - name: Annotate verify failure
+      # Last step so the result artifact is already uploaded when the
+      # job goes red.
+      - name: Fail job on verify failure
         if: steps.verify.outcome == 'failure'
         run: |
-          echo "::warning::Cache verification failed for ${{ inputs.sha }} after one retry; recorded as verify_failed and skipped on future ticks."
+          echo "::error::Cache verification failed for ${{ inputs.sha }} after one retry; recorded as verify_failed and skipped on future ticks."
+          exit 1

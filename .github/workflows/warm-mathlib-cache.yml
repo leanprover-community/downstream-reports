@@ -131,7 +131,8 @@ jobs:
 
   # Aggregates per-SHA results, persists `cache_warmth` rows so future plan
   # ticks filter warm SHAs out, renders the GitHub job summary, and fails
-  # the workflow on `verify_failed` / `push_failed` / `no_result`.
+  # the workflow on `no_result`. Per-SHA `push_failed` / `verify_failed`
+  # surface as red allowed-failure jobs inside _warm-one-sha.yml instead.
   #
   # Runs whenever the planner found *anything* worth talking about — either
   # SHAs that went through the matrix (`has_jobs`) or SHAs that the
@@ -265,16 +266,17 @@ jobs:
           # Print to job log too, for inline visibility.
           cat summary.json
 
-          # `no_result` is the only failure-worthy status: it means a
-          # matrix entry didn't reach a terminal upload (runner /
-          # timeout / infra trouble worth investigating). Per-SHA
-          # build_failed / push_failed / verify_failed are best-effort
-          # outcomes — they're recorded into `cache_warmth` so future
-          # ticks skip them, and they MUST NOT fail the workflow_run
-          # because publish-lkg + generate-pages gate on this
-          # workflow's success and they serve every downstream.
-          # `cache_warmth_hit` is the steady-state "everything is
-          # fine" case.
+          # `no_result` is the only status that fails finalize: it
+          # means a matrix entry didn't reach a terminal upload
+          # (runner / timeout / infra trouble worth investigating).
+          # Per-SHA push_failed / verify_failed already surfaced as
+          # red allowed-failure jobs in _warm-one-sha.yml; they're
+          # recorded into `cache_warmth` so future ticks skip them,
+          # and they don't fail the workflow_run because publish-lkg
+          # + generate-pages gate on this workflow's success and they
+          # serve every downstream. build_failed stays quiet (mathlib
+          # itself can be broken at an FKB). `cache_warmth_hit` is
+          # the steady-state "everything is fine" case.
           if jq -e 'any(.[]; .status == "no_result")' \
                summary.json >/dev/null; then
             echo "::error::At least one SHA didn't report a result (runner timeout / matrix dropout)."

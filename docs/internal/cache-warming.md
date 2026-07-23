@@ -155,8 +155,9 @@ empty.
 
 Three jobs. Each has its own status; a terminal status uploads
 `warm-result-<sha>` directly so the orchestrator's finalize job always has
-exactly one final result per SHA. The cache tool is built fresh in
-both `build_and_stage` and `upload_cache` from a shallow `master`
+exactly one final result per SHA. `build_and_stage` and `verify` run
+the target SHA's own in-tree cache tool (`lake exe cache`);
+`upload_cache` builds its cache tool fresh from a shallow `master`
 checkout, mirroring mathlib4's own tools-branch idiom — the cache
 binary that sees the bearer token never came off the build runner.
 
@@ -179,19 +180,26 @@ Steps:
    while allowing release-pinned downstreams (see "Published-only"
    under Trade-offs).
 5. Checkout the SHA.
-6. Clone mathlib master shallow into `mathlib4-tools/`.
-7. `lake build cache` in `mathlib4-tools/`.
-8. **Probe:** `../mathlib4-tools/.lake/build/bin/cache get` (run from
-   `mathlib4/`, no `lake env` needed for `get`) then
-   `lake build --no-build -v Mathlib`. If both succeed, status
-   becomes `already_warm` and the chain ends.
+6. Clone mathlib master shallow into `mathlib4-tools/` — kept solely
+   as the leantar-backfill source.
+7. **Backfill leantar** into the target toolchain's sysroot when the
+   pinned toolchain predates leantar bundling
+   (nightly-2026-03-09): the cache tool resolves `leantar` strictly
+   from the sysroot, never from PATH.
+8. **Probe:** `lake exe cache get` then
+   `lake build --no-build -v Mathlib` (both in `mathlib4/`). This
+   runs the target SHA's own in-tree cache tool, so completeness is
+   measured exactly as a consumer at that SHA sees it. If both
+   succeed, status becomes `already_warm` and the chain ends.
 9. `lake build Mathlib` (in `mathlib4/`, only runs when the probe
    failed). The cache is content-hashed, so anything `cache get`
    already pulled is reused; only files whose hashes weren't in the
    cache get rebuilt.
-10. `lake env ../mathlib4-tools/.lake/build/bin/cache stage
-    --staging-dir=../cache-staging`. `lake env` is required for
-    `stage` (and `put-staged`) so `leantar` is found on PATH.
+10. `lake exe cache stage --staging-dir=../cache-staging`. Staging
+    must use the in-tree tool: cache file names embed the tool's
+    hash generation (`Cache/IO.lean` `rootHashGeneration`), and only
+    the tool at the target SHA names files the way `cache get` at
+    that SHA will look them up.
 11. Upload `stage-<sha>` artifact (just `.ltar` files — no binary).
 12. Write result, upload as `warm-result-<sha>` (terminal:
     `already_warm`/`build_failed`) or `intermediate-<sha>`
@@ -219,7 +227,9 @@ Steps:
 6. **Push** via `lake env .lake/build/bin/cache put-staged
    --staging-dir=../cache-staging
    --repo=leanprover-community/mathlib4` (run from
-   `mathlib4-tools/`).
+   `mathlib4-tools/`). `put-staged` uploads the staged `.ltar` files
+   under the names staging gave them and computes no hashes, so the
+   master-built tool is safe here across hash generations.
 7. **Clear** `MATHLIB_CACHE_AZURE_BEARER_TOKEN` from `$GITHUB_ENV`
    so the result-writing and artifact-upload steps that follow
    don't see it.
@@ -254,11 +264,18 @@ Steps:
 | `already_warm` | build_and_stage (probe succeeded) | yes | green job |
 | `build_failed` | build_and_stage (`lake build Mathlib` failed) | yes | green job, recorded in summary |
 | `staged` | build_and_stage (build + stage succeeded) | no — hands off to upload_cache | green job |
-| `push_failed` | upload_cache (cache push errored) | yes | red job (final step exits 1) |
+| `push_failed` | upload_cache (cache push errored) | yes | red job (allowed failure — run stays green) |
 | `pushed` | upload_cache (push succeeded) | no — hands off to verify | green job |
 | `warmed` | verify (post-push check passed) | yes | green job |
-| `verify_failed` | verify (post-push check failed) | yes | red job (final step exits 1) |
+| `verify_failed` | verify (post-push check failed) | yes | red job (allowed failure — run stays green) |
 | `no_result` | finalize (synthesised) | n/a | red finalize job |
+
+"Allowed failure" means the job carries job-level
+`continue-on-error: true`: it shows a red X in the run's job list
+and emits an `::error::` annotation, but the workflow_run conclusion
+stays `success`, so the publish-lkg + generate-pages chain still
+fires and a failed SHA never blocks the snapshot refresh that serves
+every downstream.
 
 `build_failed` is recorded but not loud, because mathlib was
 occasionally non-buildable on master in the past — the FKB of a
@@ -285,8 +302,9 @@ SHA that didn't report back, and renders to the run's job summary:
 - A per-SHA table with short SHA, tag, status, and the list of
   downstreams that benefit.
 
-The finalize job exits 1 if any SHA reports `push_failed`,
-`verify_failed`, or `no_result`.
+The finalize job exits 1 if any SHA reports `no_result`; per-SHA
+`push_failed` / `verify_failed` already surfaced as red
+allowed-failure jobs in the matrix.
 
 After rendering the summary, the job runs
 `scripts/record_warm_shas.py --backend sql ... --summary summary.json`
@@ -431,11 +449,13 @@ data) the in-job verify can't.
   legitimately broken master commit (rare). Workflow does not fail.
 - **`push_failed`** — mint succeeded but the put-staged call errored.
   Look at the push step's logs and Azure storage account health.
-  Workflow fails.
+  The upload_cache job goes red (allowed failure); the run stays
+  green.
 - **`verify_failed`** — push reported success but the post-push
   cache get + `lake build --no-build` showed missing oleans.
   Indicates either the push didn't upload everything, or there's a
-  read-after-write consistency issue. Workflow fails.
+  read-after-write consistency issue. The verify job goes red
+  (allowed failure); the run stays green.
 - **Mint failed** — Azure auth misconfigured. Check the federated
   credential and the `MATHLIB_CACHE_WRITER_CLIENT_ID` secret.
 
@@ -449,6 +469,15 @@ data) the in-job verify can't.
   This is the same posture as
   `mathlib4/.github/workflows/build_template.yml`'s
   `build` → `upload_cache` → `post_steps` chain.
+- **Probe/stage run the target SHA's cache tool.** Cache file names
+  embed the tool's hash generation (`Cache/IO.lean`
+  `rootHashGeneration`), which moves with mathlib master. Probing and
+  staging with the in-tree tool (`lake exe cache`) keeps the warm
+  check and the staged names on the exact scheme consumers'
+  `lake exe cache get` at that SHA computes. A master-built tool on a
+  newer generation reports a warm SHA as cold (wasted rebuild) and
+  stages names nobody at that SHA can fetch. The published-SHA check
+  makes the in-tree tool source trusted.
 - **Published-only.** `build_and_stage` accepts SHAs reachable from
   `origin/master` and SHAs reachable from a published release tag
   (`git tag --contains`); everything else is refused via an explicit
