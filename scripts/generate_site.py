@@ -92,7 +92,7 @@ def _as_datetime(value: Any) -> datetime | None:
     if isinstance(value, datetime):
         return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
     try:
-        dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        dt = datetime.fromisoformat(str(value))
         return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
     except Exception:
         return None
@@ -1319,8 +1319,8 @@ def days_between(date_a: str | None, date_b: str | None) -> int | None:
     if not date_a or not date_b:
         return None
     try:
-        a = datetime.fromisoformat(date_a.replace("Z", "+00:00"))
-        b = datetime.fromisoformat(date_b.replace("Z", "+00:00"))
+        a = datetime.fromisoformat(date_a)
+        b = datetime.fromisoformat(date_b)
         return (b - a).days
     except Exception:
         return None

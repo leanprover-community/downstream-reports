@@ -70,7 +70,7 @@ def boundary_bisect_overdue(
     """
     if last_fresh_bisect_at is None:
         return True
-    moment = datetime.fromisoformat(last_fresh_bisect_at.replace("Z", "+00:00"))
+    moment = datetime.fromisoformat(last_fresh_bisect_at)
     if moment.tzinfo is None:
         moment = moment.replace(tzinfo=timezone.utc)
     current = now if now is not None else datetime.now(timezone.utc)

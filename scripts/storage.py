@@ -41,10 +41,11 @@ import json
 import os
 import random
 import time
+from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Iterable, Iterator, Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 # ---------------------------------------------------------------------------
 # Domain data types
@@ -670,7 +671,7 @@ def create_schema(engine: Any) -> None:
 def _parse_dt(value: str) -> Any:
     """Parse an ISO-8601 timestamp string into a UTC-aware datetime."""
     from datetime import datetime, timezone
-    return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(timezone.utc)
+    return datetime.fromisoformat(value).astimezone(timezone.utc)
 
 
 def _loads_json_list(value: Any) -> list:
