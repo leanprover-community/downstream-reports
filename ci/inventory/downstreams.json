@@ -252,6 +252,7 @@
       "default_branch": "main",
       "dependency_name": "mathlib",
       "enabled": true,
+      "target_mode": "master",
       "revalidate_boundary": true
     },
     {
