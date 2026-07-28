@@ -54,10 +54,11 @@ import re
 import sys
 import urllib.error
 import urllib.request
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -271,7 +272,7 @@ def _ledger_is_fresh(
     if row.observed_pin != current_pin:
         return False
     try:
-        dispatched_at = datetime.fromisoformat(row.dispatched_at.replace("Z", "+00:00"))
+        dispatched_at = datetime.fromisoformat(row.dispatched_at)
     except ValueError:
         return False
     return (now - dispatched_at) < ttl
