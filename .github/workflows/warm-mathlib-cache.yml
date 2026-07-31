@@ -33,7 +33,10 @@ on:
   schedule:
     - cron: "0 0,6,12,18 * * *"
   workflow_run:
-    workflows: ["mathlib-downstream-report"]
+    # On-demand reports persist the same LKG/FKB state as scheduled reports.
+    # Warm and republish that state too, so downstream actions can consume an
+    # on-demand diagnosis without waiting for the next scheduled cycle.
+    workflows: ["mathlib-downstream-report", "mathlib-downstream-ondemand"]
     types: [completed]
     branches: [main]
   workflow_dispatch:
