@@ -288,7 +288,13 @@ wrong branch and the bump rebuilds on every run while a PR is open.
 Fetches the snapshot, reads the current mathlib pin from
 `lake-manifest.json`, and when a bump is needed, installs elan + hopscotch and
 runs `hopscotch dep` to bump and build. On success the working tree contains
-modified `lakefile` and `lake-manifest.json` ready to commit.
+the updated dependency files ready to commit.
+
+Set `preserve-lakefile: 'true'` when the lakefile should continue nominating
+its existing branch or tag. Hopscotch still uses the target revision to produce
+and verify the updated manifest, then the action restores the original lakefile
+and manifest `inputRev`; the manifest's resolved `rev` remains the exact target
+SHA used by builds.
 
 Also fetches human-readable commit metadata from the GitHub API to generate a
 suggested PR title, body snippet, and git commit message — pass
@@ -333,6 +339,7 @@ taken from the snapshot's top-level `upstream` field — no configuration needed
 | `dependency-name` | no | `mathlib` | Name of the dependency in the lakefile |
 | `hopscotch-version` | no | `v2.0.0-beta2` | Hopscotch release tag to download. `v2.0.0-beta`+ is required for the `fix` subcommand (used by `apply-fixes`); older tags lack it and the apply step degrades to a rev-bump-only PR. |
 | `skip-build` | no | `false` | Set to `true` to only run `lake update` (pin lakefile + manifest) and skip the build. `build-failed` is always `false`; the bump succeeds (`updated=true`) only when `lake update` succeeds. If `lake update` fails the step fails so callers don't commit a half-baked tree. Used by the FKB fix-PR path. |
+| `preserve-lakefile` | no | `false` | Restore the pre-bump lakefile and its manifest `inputRev` after Hopscotch finishes. The manifest's resolved `rev` still advances to the exact target SHA. |
 | `generate-description` | no | `true` | Set to `false` to skip GitHub API calls; `pr-title`, `bump-description`, and `commit-message` will be empty |
 | `query-type` | no | `last-known-good` | Which commit to bump to: `last-known-good`, `first-known-bad`, or `last-good-release` (semver tag, e.g. `v4.13.0`) |
 | `branch` | no | `hopscotch/lkg-bump` | Bump-PR branch the Step 1.5 probe checks for an already-applied bump. Must match the `branch` passed to `open-bump-pr`, or the probe watches the wrong branch. Unused for `query-type: first-known-bad`. |
@@ -416,7 +423,7 @@ otherwise trigger PR CI on every tick never lands.
 **Path:** `.github/actions/track-incompatibility`
 
 Opens or maintains a persistent tracking issue and (by default) a fix PR
-with the lakefile bumped to the FKB commit, giving downstream maintainers a
+with the dependency bumped to the FKB commit, giving downstream maintainers a
 ready starting point for investigation. When the FKB advances, stale fix PRs
 are closed automatically. When the regression clears, both the issue and any
 open fix PRs are closed with resolution comments.
@@ -452,6 +459,7 @@ side effects without removing the job.
 | `dependency-name` | no | `mathlib` | Dependency name in the lakefile. Forwarded to `bump-to-latest`. |
 | `apply-fixes` | no | `false` | Forwarded to `bump-to-latest`: when `true`, run `hopscotch fix apply` on the FKB bump so the fix PR carries hopscotch's fixes (plus advisories), not just the rev bump. Off by default; set it `true` per downstream to apply them. |
 | `no-advisories` | no | `false` | Forwarded to `bump-to-latest`: with `apply-fixes` on, restrict it to the failure-boundary fixes (skip deprecation advisories). |
+| `preserve-lakefile` | no | `false` | Forwarded to `bump-to-latest`: leave the lakefile nomination unchanged and carry the exact FKB only in the manifest. |
 | `base` | no | repo default | Base branch for the fix PR. |
 | `git-user-name` | no | `github-actions[bot]` | `git user.name` for the bump commit. |
 | `git-user-email` | no | `41898282+github-actions[bot]@users.noreply.github.com` | `git user.email` for the bump commit. |

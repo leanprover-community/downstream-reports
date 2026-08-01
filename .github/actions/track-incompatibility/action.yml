@@ -2,7 +2,7 @@ name: 'Track Incompatibility'
 description: >
   Consume the downstream snapshot and open or maintain a single persistent
   GitHub issue describing the current incompatibility (first-known-bad).
-  When open-pr is true (the default), also opens a fix PR with the lakefile
+  When open-pr is true (the default), also opens a fix PR with the dependency
   bumped to the FKB commit so downstream maintainers have a ready starting
   point.  Stale fix PRs (from a previous FKB) are closed automatically when
   the FKB advances.  When the regression clears, the tracking issue and any
@@ -128,6 +128,12 @@ inputs:
     description: >
       Forwarded to bump-to-latest: with apply-fixes on, restrict it to the
       failure-boundary fixes and skip the deprecation advisories.
+  preserve-lakefile:
+    required: false
+    default: 'false'
+    description: >
+      Forwarded to bump-to-latest: keep the dependency's lakefile nomination
+      unchanged and carry the exact FKB commit only in lake-manifest.json.
   base:
     required: false
     default: ''
@@ -535,7 +541,7 @@ runs:
           echo
           echo "**Verified when \`${DOWNSTREAM}\` was at:** ${DS_LINE}".
           echo "You can reproduce this break by:"
-          echo "- updating the \`${DEP_NAME:-Dependency}\` \`rev\` field in your \`lakefile\` to \`${FKB_COMMIT}\`"
+          echo "- updating \`${DEP_NAME:-the dependency}\` to \`${FKB_COMMIT}\`"
           echo "- running \`lake update ${DEP_NAME:-Dependency}\`"
           echo "- running \`lake build\`"
           echo
@@ -704,7 +710,7 @@ runs:
           FKB_URL="https://github.com/${UPSTREAM}/commit/${FKB_COMMIT}"
           WORKFLOW_RUN_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
 
-          COMMENT=$(printf 'The first-known-bad commit has advanced to [`%s`](%s); this PR'\''s lakefile is now outdated.\n\nA new fix PR will be opened on branch `%s`.\n\n_Closed automatically by [this workflow run](%s)._' \
+          COMMENT=$(printf 'The first-known-bad commit has advanced to [`%s`](%s); this PR'\''s dependency pin is now outdated.\n\nA new fix PR will be opened on branch `%s`.\n\n_Closed automatically by [this workflow run](%s)._' \
             "$FKB_SHORT" "$FKB_URL" "$CURRENT_BRANCH" "$WORKFLOW_RUN_URL")
 
           gh pr comment "$PR_NUMBER" --body "$COMMENT"
@@ -787,12 +793,12 @@ runs:
         echo "existing_pr_url="               >> "$GITHUB_OUTPUT"
 
     # ------------------------------------------------------------------
-    # Step 13: Bump the lakefile to the FKB commit.
+    # Step 13: Bump the dependency to the FKB commit.
     # Hard-coded: query-type=first-known-bad and skip-build=true (the FKB
     # fails to build by definition; skip-build avoids wasting CI minutes).
     # Runs only when no existing PR was found for the current FKB branch.
     # ------------------------------------------------------------------
-    - name: Bump lakefile to first-known-bad
+    - name: Bump dependency to first-known-bad
       id: bump
       if: inputs.open-pr == 'true' && steps.fkb.outputs.commit != '' && steps.check-pr.outputs.existing_pr_number == ''
       uses: leanprover-community/downstream-reports/.github/actions/bump-to-latest@main
@@ -804,9 +810,10 @@ runs:
         skip-build:      'true'
         apply-fixes:     ${{ inputs.apply-fixes }}
         no-advisories:   ${{ inputs.no-advisories }}
+        preserve-lakefile: ${{ inputs.preserve-lakefile }}
 
     # ------------------------------------------------------------------
-    # Step 14: Commit the lakefile changes and push the fix branch.
+    # Step 14: Commit the dependency changes and push the fix branch.
     # Plain push — step 12 guarantees a fresh branch name (appending a
     # random suffix when a closed PR's branch already exists remotely).
     # ------------------------------------------------------------------

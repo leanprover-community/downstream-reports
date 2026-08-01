@@ -2,8 +2,7 @@ name: 'Bump to Latest'
 description: >
   Look up the target commit (last-known-good or first-known-bad) for a
   downstream and bump the mathlib dependency to it via hopscotch. On success
-  the working tree contains modified lakefile and lake-manifest.json ready
-  to commit.
+  the working tree contains the updated dependency files ready to commit.
 
 inputs:
   downstream:
@@ -37,6 +36,14 @@ inputs:
       in the lakefile and lake-manifest.json via "lake update". When true,
       build-failed is always false; the bump succeeds as long as "lake update"
       succeeds.
+  preserve-lakefile:
+    required: false
+    default: 'false'
+    description: >
+      Restore the pre-bump lakefile after hopscotch finishes and keep its
+      nominated revision in lake-manifest.json inputRev. The manifest's resolved
+      rev still advances to the target commit, so builds remain reproducible
+      while a later lake update continues to follow the original branch or tag.
   generate-description:
     required: false
     default: 'true'
@@ -560,6 +567,32 @@ runs:
     # Steps 5–7 only run when an update is needed.
     # ------------------------------------------------------------------
 
+    - name: Snapshot the dependency nomination
+      id: nomination-snapshot
+      if: >-
+        inputs.preserve-lakefile == 'true'
+        && steps.compare.outputs.skipped != 'true'
+        && steps.guard.outputs.skipped != 'true'
+      shell: bash
+      env:
+        PROJECT_DIR: ${{ inputs.project-dir }}
+      run: |
+        set -euo pipefail
+        SNAPSHOT_DIR=$(mktemp -d "$RUNNER_TEMP/preserve-lakefile.XXXXXX")
+        found=0
+        for name in lakefile.toml lakefile.lean; do
+          if [ -f "$PROJECT_DIR/$name" ]; then
+            cp "$PROJECT_DIR/$name" "$SNAPSHOT_DIR/$name"
+            found=1
+          fi
+        done
+        if [ "$found" -ne 1 ]; then
+          echo "::error::preserve-lakefile requires lakefile.toml or lakefile.lean"
+          exit 1
+        fi
+        cp "$PROJECT_DIR/lake-manifest.json" "$SNAPSHOT_DIR/lake-manifest.json"
+        echo "dir=$SNAPSHOT_DIR" >> "$GITHUB_OUTPUT"
+
     - name: Install Lean (elan)
       if: steps.compare.outputs.skipped != 'true' && steps.guard.outputs.skipped != 'true'
       shell: bash
@@ -898,6 +931,34 @@ runs:
         fi
 
     # ------------------------------------------------------------------
+    # Restore the declaration used to nominate future updates only after all
+    # hopscotch operations have finished. The generated manifest keeps the
+    # resolved target SHA, while inputRev again records the original nomination.
+    - name: Restore the dependency nomination
+      if: >-
+        always()
+        && inputs.preserve-lakefile == 'true'
+        && steps.nomination-snapshot.outputs.dir != ''
+      shell: bash
+      env:
+        DEPENDENCY_NAME: ${{ inputs.dependency-name }}
+        PROJECT_DIR: ${{ inputs.project-dir }}
+        SNAPSHOT_DIR: ${{ steps.nomination-snapshot.outputs.dir }}
+        UPDATED: ${{ steps.run-hopscotch.outputs.updated }}
+      run: |
+        set -euo pipefail
+        for name in lakefile.toml lakefile.lean; do
+          if [ -f "$SNAPSHOT_DIR/$name" ]; then
+            cp "$SNAPSHOT_DIR/$name" "$PROJECT_DIR/$name"
+          fi
+        done
+        if [ "$UPDATED" = "true" ]; then
+          python3 "${{ github.action_path }}/../../../scripts/restore_manifest_nomination.py" \
+            "$SNAPSHOT_DIR/lake-manifest.json" \
+            "$PROJECT_DIR/lake-manifest.json" \
+            "$DEPENDENCY_NAME"
+        fi
+
     # Final step: consolidate outputs with safe defaults so callers never
     # see empty strings for boolean-valued outputs. (`fix-verified` is
     # deliberately not resolved here: it is tri-state, and empty means
