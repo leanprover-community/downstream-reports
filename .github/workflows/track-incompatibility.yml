@@ -126,6 +126,11 @@ on:
         default: 'false'
         required: false
         type: string
+      preserve-lakefile:
+        description: 'Keep the dependency lakefile nomination unchanged and carry the exact FKB only in the manifest.'
+        default: 'false'
+        required: false
+        type: string
       base:
         description: 'Base branch for the fix PR.  Defaults to repo default branch.'
         default: ''
@@ -208,6 +213,7 @@ jobs:
           dependency-name:    ${{ inputs.dependency-name }}
           apply-fixes:        ${{ inputs.apply-fixes }}
           no-advisories:      ${{ inputs.no-advisories }}
+          preserve-lakefile:  ${{ inputs.preserve-lakefile }}
           base:               ${{ inputs.base }}
           git-user-name:      ${{ inputs.git-user-name }}
           git-user-email:     ${{ inputs.git-user-email }}
