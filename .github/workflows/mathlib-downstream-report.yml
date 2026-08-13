@@ -31,6 +31,10 @@ on:
         required: false
         default: false
         type: boolean
+      runner_labels:
+        description: "Runner labels for probe jobs (comma-separated, e.g. `self-hosted, pr-v2`). Replaces the default `self-hosted, pr` labels; downstreams with an explicit runs_on in the inventory keep it."
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -93,6 +97,7 @@ jobs:
       - id: matrix
         env:
           INPUT_DOWNSTREAM: ${{ inputs.downstream }}
+          INPUT_RUNNER_LABELS: ${{ inputs.runner_labels }}
         run: |
           python3 - <<'PY' > matrix.json
           import json
@@ -107,8 +112,10 @@ jobs:
               for item in payload.get("downstreams", [])
               if item.get("enabled", True) and (not filter_names or item["name"] in filter_names)
           ]
+          runner_labels = os.environ.get("INPUT_RUNNER_LABELS", "")
+          default_runs_on = [s.strip() for s in runner_labels.split(",") if s.strip()] or ["self-hosted", "pr"]
           for item in include:
-              item.setdefault("runs_on", ["self-hosted", "pr"])
+              item.setdefault("runs_on", default_runs_on)
           print(json.dumps({"include": include}, sort_keys=True))
           PY
           MATRIX_JSON=$(tr -d '\n' < matrix.json)
@@ -224,8 +231,10 @@ jobs:
     # regressed is read-only access to public repository contents.
     #
     # Runner labels come from `runs_on` on the matrix entry, sourced from
-    # the inventory (default `[self-hosted, pr]`).  Downstreams whose build
-    # needs a stock image override with `runs_on: ["ubuntu-latest"]`.
+    # the inventory (default `[self-hosted, pr]`, replaceable per dispatch
+    # via the runner_labels input).  Downstreams whose build needs a stock
+    # image override with `runs_on: ["ubuntu-latest"]` and are unaffected
+    # by the input.
     #
     # `!cancelled()` (rather than the implicit `success()`) is deliberate: the
     # `select` matrix has `fail-fast: false`, but a failure in *any* select leg
