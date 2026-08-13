@@ -326,6 +326,11 @@ How a non-forward target (`behind`/`diverged`) is handled depends on
   latest release — the normal state after a latest-commit bump has been merged.
   This lets a scheduled `last-good-release` bump run without a caller-side
   forward-move guard, skipping quietly until a newer release lands.
+- `recommended-bump` → **clean skip**. The recommendation is gated on verified
+  cache warmth, so it is designed to lag reality while warming is pending or
+  retrying; a pin already past it just means there is nothing to recommend
+  right now. (A pending recommendation is `null` in the snapshot, which skips
+  even earlier, at the empty-target check.)
 
 The upstream repo for the compare call and commit-description lookups is
 taken from the snapshot's top-level `upstream` field — no configuration needed.
@@ -341,7 +346,7 @@ taken from the snapshot's top-level `upstream` field — no configuration needed
 | `skip-build` | no | `false` | Set to `true` to only run `lake update` (pin lakefile + manifest) and skip the build. `build-failed` is always `false`; the bump succeeds (`updated=true`) only when `lake update` succeeds. If `lake update` fails the step fails so callers don't commit a half-baked tree. Used by the FKB fix-PR path. |
 | `preserve-lakefile` | no | `false` | Restore the pre-bump lakefile and its manifest `inputRev` after Hopscotch finishes. The manifest's resolved `rev` still advances to the exact target SHA. |
 | `generate-description` | no | `true` | Set to `false` to skip GitHub API calls; `pr-title`, `bump-description`, and `commit-message` will be empty |
-| `query-type` | no | `last-known-good` | Which commit to bump to: `last-known-good`, `first-known-bad`, or `last-good-release` (semver tag, e.g. `v4.13.0`) |
+| `query-type` | no | `recommended-bump` | Which commit to bump to: `recommended-bump` (the last-known-good commit, published only once its mathlib cache is verified warm — skips cleanly while warming is pending), `last-known-good` (the compatibility boundary regardless of cache warmth), `first-known-bad`, or `last-good-release` (semver tag, e.g. `v4.13.0`) |
 | `branch` | no | `hopscotch/lkg-bump` | Bump-PR branch the Step 1.5 probe checks for an already-applied bump. Must match the `branch` passed to `open-bump-pr`, or the probe watches the wrong branch. Unused for `query-type: first-known-bad`. |
 | `apply-fixes` | no | `false` | After the bump, run `hopscotch fix apply` so the PR carries the fixes hopscotch recorded, not just the rev bump. When enabled, applies everything hopscotch proposes — the failure-boundary fixes (for an FKB bump, overlaid from the regression probe's published wide-range bisection; an LKG bump is green so it has none) and the deprecation advisories; set `no-advisories` to restrict it to the boundary fixes. Runs on any `query-type`. **Best-effort:** if no fixes were recorded, the installed `hopscotch-version` lacks the `fix` subcommand, or the apply fails, the bump proceeds with the rev bump alone (validated by the PR's own CI). Off by default; the fixes publish to the snapshot regardless of this flag, so set it `true` per downstream to apply them. |
 | `no-advisories` | no | `false` | Pass `--no-advisories` to `hopscotch fix apply`, restricting it to the failure-boundary fixes and skipping the deprecation advisories — changes that build today but break at the upstream cleanup (mirrors hopscotch's own flag, which applies them by default). Set this to keep an LKG bump "mergeable as-is": advisory changes aren't covered by the bump's green build. Advisories are read from the bump's **own** `results.json` (commit-specific: detected at the commit bumped to), so they're complete only when that bump built; `skip-build` finds only the statically-resolved subset; partial ones are skipped by hopscotch. No effect when `apply-fixes` is false. |
@@ -354,7 +359,7 @@ taken from the snapshot's top-level `upstream` field — no configuration needed
 | `commit` | The resolved commit SHA |
 | `current-pin` | The commit the project was pinned to before this action ran |
 | `updated` | `"true"` if hopscotch produced a committable bump. The step **fails** instead of returning `updated=false` whenever hopscotch stops at a stage that leaves nothing committable, e.g. a `lake update` (bump-step) failure, which rewrites the lakefile but leaves `lake-manifest.json` stale. |
-| `skipped` | `"true"` if the project was already at the target commit (or target is empty) |
+| `skipped` | `"true"` if no bump was performed: the project was already at the target commit, the target is empty (e.g. a `recommended-bump` whose warming is pending), or the guardrail skipped a non-forward `last-good-release` / `recommended-bump` target |
 | `build-failed` | `"true"` only for the expected case: a `first-known-bad` bump whose `lake build` (verify) stage failed after `lake update` succeeded (`failureStage = "lake build"` in hopscotch's `results.json`). Any other failure, including `lake update` failure, fails the step rather than returning here. |
 | `pr-title` | Suggested PR title (empty when skipped or `generate-description: false`) |
 | `bump-description` | Markdown paragraph describing the bump — new commit + previous pin, with subjects and dates. Pass to `open-bump-pr`'s `message` input. Empty when skipped or `generate-description: false`. |
@@ -552,7 +557,7 @@ downstream repo can use it with no inputs at all.
 | Input | Required | Default | Description |
 |-------|----------|---------|-------------|
 | `downstream` | no | `${{ github.repository }}` | Downstream name key or repo slug (`owner/repo`). Auto-detected by presence of `/`. |
-| `query-type` | no | `last-known-good` | Which commit to return: `last-known-good`, `first-known-bad`, or `last-good-release` (empty when no active entry) |
+| `query-type` | no | `last-known-good` | Which commit to return: `last-known-good`, `first-known-bad`, `last-good-release`, or `recommended-bump` (the LKG commit gated on verified cache warmth). Empty when no active entry. |
 
 ### Outputs
 

@@ -41,9 +41,11 @@ import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from scripts.export_lkg_snapshot import SCHEMA_VERSION, build_snapshot
 from scripts.models import DownstreamConfig
-from scripts.storage import DownstreamStatusRecord
+from scripts.storage import CacheWarmthRecord, DownstreamStatusRecord
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -95,11 +97,21 @@ _INVENTORY_JSON = {
 }
 
 
-def _make_backend(statuses: dict[str, DownstreamStatusRecord] | None = None) -> MagicMock:
-    """Build a mock StorageBackend that returns *statuses* from load_all_statuses."""
+def _make_backend(
+    statuses: dict[str, DownstreamStatusRecord] | None = None,
+    warmth: dict[str, CacheWarmthRecord] | None = None,
+) -> MagicMock:
+    """Build a mock StorageBackend that returns *statuses* from load_all_statuses
+    and *warmth* from load_cache_warmth."""
     backend = MagicMock()
     backend.load_all_statuses.return_value = statuses or {}
+    backend.load_cache_warmth.return_value = warmth or {}
     return backend
+
+
+def _warmth(status: str) -> CacheWarmthRecord:
+    """A minimal warmth record; the exporter only reads ``is_warm``."""
+    return CacheWarmthRecord(status=status, attempts=1, last_attempt_at="2026-08-12T00:00:00Z")
 
 
 # ---------------------------------------------------------------------------
@@ -214,6 +226,38 @@ class TestBuildSnapshotCommitField:
         }
         snap = build_snapshot(_make_backend(statuses), _INVENTORY, _UPSTREAM)
         assert snap["downstreams"]["physlib"]["first_known_bad_commit"] is None
+
+    @pytest.mark.parametrize(
+        "warmth,expected",
+        [
+            pytest.param({}, None, id="no_warmth_record_pending"),
+            pytest.param({"goodabc": _warmth("warmed")}, "goodabc", id="warmed"),
+            pytest.param({"goodabc": _warmth("already_warm")}, "goodabc", id="already_warm"),
+            pytest.param({"goodabc": _warmth("push_failed")}, None, id="failed_attempt"),
+            pytest.param({"othersha": _warmth("warmed")}, None, id="different_sha_warm"),
+        ],
+    )
+    def test_recommended_bump_commit_gated_on_verified_warmth(
+        self, warmth: dict[str, CacheWarmthRecord], expected: str | None
+    ) -> None:
+        """
+        Scenario: recommended_bump_commit carries the LKG commit only when
+        its cache_warmth record is verified warm; pending, failed, or
+        unrelated warmth leaves it null.  This per-downstream gate — not
+        the workflow chaining — is what keeps bump consumers off cold SHAs.
+        """
+        statuses = {
+            "physlib": DownstreamStatusRecord(last_known_good_commit="goodabc")
+        }
+        snap = build_snapshot(_make_backend(statuses, warmth), _INVENTORY, _UPSTREAM)
+        assert snap["downstreams"]["physlib"]["recommended_bump_commit"] == expected
+
+    def test_recommended_bump_commit_null_without_lkg(self) -> None:
+        """Scenario: no LKG means nothing to recommend, even with warmth rows present."""
+        snap = build_snapshot(
+            _make_backend(warmth={"goodabc": _warmth("warmed")}), _INVENTORY, _UPSTREAM
+        )
+        assert snap["downstreams"]["physlib"]["recommended_bump_commit"] is None
 
     def test_status_present_for_only_one_downstream(self) -> None:
         """Scenario: downstream with status gets populated fields; other gets nulls."""

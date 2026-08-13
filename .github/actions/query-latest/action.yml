@@ -24,6 +24,9 @@ inputs:
                                      (null when no active regression)
         last-good-release          — the latest semver release tag (e.g. v4.13.0)
                                      reachable from the last-known-good commit
+        recommended-bump           — the last-known-good commit, published only
+                                     once its mathlib cache is verified warm
+                                     (empty while warming is pending)
 
 outputs:
   rev:

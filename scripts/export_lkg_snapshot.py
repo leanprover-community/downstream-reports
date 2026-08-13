@@ -66,6 +66,23 @@ def build_snapshot(
     statuses: dict[str, DownstreamStatusRecord] = backend.load_all_statuses(
         "regression", upstream
     )
+    warmth = backend.load_cache_warmth(upstream)
+
+    def _recommended_bump(status: DownstreamStatusRecord | None) -> str | None:
+        """The LKG commit, gated on verified cache warmth.
+
+        ``last_known_good_commit`` keeps meaning the compatibility boundary;
+        this field is the bump target the snapshot can stand behind — the
+        same commit, published only once the warming workflow has verified
+        its oleans are in mathlib's Azure cache.  ``None`` while warming is
+        pending or failing; the retry schedule self-heals it on a later tick.
+        """
+        if status is None or not status.last_known_good_commit:
+            return None
+        record = warmth.get(status.last_known_good_commit)
+        if record is not None and record.is_warm:
+            return status.last_known_good_commit
+        return None
 
     downstreams: dict[str, dict[str, Any]] = {}
     for name, config in inventory.items():
@@ -75,6 +92,7 @@ def build_snapshot(
             "dependency_name": config.dependency_name,
             "last_known_good_commit": status.last_known_good_commit if status else None,
             "first_known_bad_commit": status.first_known_bad_commit if status else None,
+            "recommended_bump_commit": _recommended_bump(status),
             "last_good_release": status.last_good_release if status else None,
             "last_good_release_commit": status.last_good_release_commit if status else None,
         }

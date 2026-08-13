@@ -10,6 +10,13 @@
 #   QUERY_TYPE    Which commit field to extract. One of:
 #                    last-known-good  (default) — last_known_good_commit
 #                    first-known-bad            — first_known_bad_commit
+#                    last-good-release          — last_good_release (tag) +
+#                                                 last_good_release_commit
+#                    recommended-bump           — recommended_bump_commit (the
+#                                                 LKG commit, published only
+#                                                 once its mathlib cache is
+#                                                 verified warm; empty while
+#                                                 warming is pending)
 #
 # Writes to GITHUB_OUTPUT:
 #   rev, commit, downstream_name, repo, dependency_name, upstream
@@ -86,6 +93,10 @@ case "$RESOLVED_TYPE" in
     TARGET_COMMIT=$(printf '%s' "$ENTRY" | jq -r '.last_good_release // empty')
     TARGET_SHA=$(printf '%s' "$ENTRY" | jq -r '.last_good_release_commit // empty')
     COMMIT_LABEL="Release tag" ;;
+  recommended-bump)
+    TARGET_COMMIT=$(printf '%s' "$ENTRY" | jq -r '.recommended_bump_commit // empty')
+    TARGET_SHA="$TARGET_COMMIT"
+    COMMIT_LABEL="Recommended bump commit" ;;
   *)  # last-known-good (default)
     TARGET_COMMIT=$(printf '%s' "$ENTRY" | jq -r '.last_known_good_commit // empty')
     TARGET_SHA="$TARGET_COMMIT"

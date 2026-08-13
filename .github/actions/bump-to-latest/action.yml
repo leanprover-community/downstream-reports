@@ -1,8 +1,9 @@
 name: 'Bump to Latest'
 description: >
-  Look up the target commit (last-known-good or first-known-bad) for a
-  downstream and bump the mathlib dependency to it via hopscotch. On success
-  the working tree contains the updated dependency files ready to commit.
+  Look up the target commit (recommended-bump, last-known-good, first-known-bad
+  or last-good-release) for a downstream and bump the mathlib dependency to it
+  via hopscotch. On success the working tree contains the updated dependency
+  files ready to commit.
 
 inputs:
   downstream:
@@ -52,10 +53,16 @@ inputs:
       When false, pr-title, bump-description, and commit-message outputs are empty.
   query-type:
     required: false
-    default: 'last-known-good'
+    default: 'recommended-bump'
     description: >
       Which commit to bump to. One of:
-        last-known-good  (default) — the last commit known to build successfully
+        recommended-bump (default) — the last-known-good commit, published only
+                                     once its mathlib cache is verified warm;
+                                     the bump skips cleanly (skipped=true) while
+                                     warming is pending, so a consumer never
+                                     rebuilds mathlib from a cold cache
+        last-known-good            — the last commit known to build successfully,
+                                     regardless of cache warmth
         first-known-bad            — the first commit known to break the build
                                      (null when no active regression)
         last-good-release          — the latest semver release tag (e.g. v4.13.0)
@@ -116,9 +123,11 @@ outputs:
     description: >
       "true" if no bump was performed — because the project's manifest is
       already at the target commit, because an open bump PR's branch already
-      pins the dependency at it (Step 1.5 probe), or (query-type=last-good-release
-      only) because the latest release tag is behind or diverged from the
-      current pin. When "true", the working tree is unmodified.
+      pins the dependency at it (Step 1.5 probe), because the target field is
+      empty (e.g. a recommended-bump whose warming is still pending), or
+      (query-type=last-good-release / recommended-bump) because the target is
+      behind or diverged from the current pin. When "true", the working tree
+      is unmodified.
     value: ${{ steps.resolve-outputs.outputs.skipped }}
   build-failed:
     description: '"true" if hopscotch ran but the build failed'
@@ -423,6 +432,10 @@ runs:
     #   * last-good-release → SKIP (skipped=true, exit 0). A release tag
     #     behind the pin means the project is already past the latest release.
     #     This is the normal state once a latest-commit bump has been merged.
+    #   * recommended-bump → SKIP. The recommendation is gated on verified
+    #     cache warmth, so it is designed to lag reality while warming is
+    #     pending or retrying; a pin already past it just means there is
+    #     nothing to recommend right now.
     #
     # A failed or inconclusive API call is a warning, not a hard stop: the
     # guardrail is a safety net, and a transient API error shouldn't block
@@ -463,8 +476,8 @@ runs:
             echo "Target is '${status}' relative to the current pin — safe to proceed."
             ;;
           behind)
-            if [ "$QUERY_TYPE" = "last-good-release" ]; then
-              echo "Latest release tag ${TARGET_REV} (${TARGET_COMMIT}) is behind the current pin ${CURRENT_PIN} in ${UPSTREAM} — the project is already past it. Nothing to do."
+            if [ "$QUERY_TYPE" = "last-good-release" ] || [ "$QUERY_TYPE" = "recommended-bump" ]; then
+              echo "Target ${TARGET_REV} (${TARGET_COMMIT}) is behind the current pin ${CURRENT_PIN} in ${UPSTREAM} — the project is already past it. Nothing to do."
               echo "skipped=true" >> "$GITHUB_OUTPUT"
               exit 0
             fi
@@ -473,8 +486,8 @@ runs:
             exit 1
             ;;
           diverged)
-            if [ "$QUERY_TYPE" = "last-good-release" ]; then
-              echo "::warning::Latest release tag ${TARGET_REV} (${TARGET_COMMIT}) has DIVERGED from the current pin ${CURRENT_PIN} in ${UPSTREAM} (neither is an ancestor of the other) — not a forward move. Nothing to do."
+            if [ "$QUERY_TYPE" = "last-good-release" ] || [ "$QUERY_TYPE" = "recommended-bump" ]; then
+              echo "::warning::Target ${TARGET_REV} (${TARGET_COMMIT}) has DIVERGED from the current pin ${CURRENT_PIN} in ${UPSTREAM} (neither is an ancestor of the other) — not a forward move. Nothing to do."
               echo "skipped=true" >> "$GITHUB_OUTPUT"
               exit 0
             fi
