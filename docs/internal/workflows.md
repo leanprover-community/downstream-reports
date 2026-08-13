@@ -163,17 +163,18 @@ the database and sends a compact Markdown table to Zulip.
 See [`docs/internal/cache-warming.md`](cache-warming.md) for a full description.
 
 After each successful regression report on main, this workflow builds mathlib
-at the LKG / FKB SHAs reported for opted-in downstreams and pushes the oleans
-to mathlib's shared Azure cache. External consumers of `lkg/latest.json`
-(e.g. the `bump-to-latest` action) hit a warm cache instead of having to
-rebuild mathlib from scratch when our reported SHAs land between bors merges.
-The snapshot's `recommended_bump_commit` field carries a downstream's LKG only
-once this workflow has verified its cache; failed warming attempts are retried
-with backoff.
+at the LKG / FKB SHAs reported for every downstream that does not opt out, and
+pushes the oleans to mathlib's shared Azure cache. External consumers of
+`lkg/latest.json` (e.g. the `bump-to-latest` action) hit a warm cache instead
+of having to rebuild mathlib from scratch when our reported SHAs land between
+bors merges. The snapshot's `recommended_bump_commit` field carries a
+downstream's LKG only once this workflow has verified its cache; failed
+warming attempts are retried with backoff.
 
-Per-downstream opt-in via `DownstreamConfig.warm_cache` in the inventory —
-opt in downstreams that consume hopscotch bumps; the rest publish a null
-`recommended_bump_commit` and are never warmed.
+Warming defaults on (`DownstreamConfig.warm_cache: bool = True`); set
+`"warm_cache": false` in the inventory for downstreams that don't consume
+hopscotch bumps — they publish a null `recommended_bump_commit` and are
+never warmed.
 
 `workflow_dispatch` accepts an optional comma-separated `shas` input that
 bypasses the inventory + DB lookup, useful for one-off backfills and for

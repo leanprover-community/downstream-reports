@@ -9,10 +9,11 @@ Coverage scope:
     - ``build_matrix_manual`` — passthrough builder that emits one entry
       per manual SHA tagged ``manual``.
     - ``build_matrix_from_db`` — the steady-state planner: reads
-      ``downstream_status`` for opted-in (``warm_cache``) downstreams,
-      dedups LKG/FKB across them, consults ``cache_warmth`` records to
-      skip verified-warm SHAs and pace failed ones through the backoff
-      retry schedule, and tags each entry by the role(s) it plays.
+      ``downstream_status`` for every downstream not opted out via
+      ``warm_cache: false``, dedups LKG/FKB across them, consults
+      ``cache_warmth`` records to skip verified-warm SHAs and pace
+      failed ones through the backoff retry schedule, and tags each
+      entry by the role(s) it plays.
 
 Out of scope:
     - ``main()`` and ``build_parser()`` — argparse + I/O glue.  The
@@ -65,7 +66,7 @@ def _config(name: str, *, warm_cache: bool = True) -> DownstreamConfig:
     stable mathlib-shaped defaults so the test focus stays on matrix
     logic, not config plumbing.  A factory rather than module-level
     fixtures because most tests want two configs with different names,
-    and the opt-in test wants ``warm_cache`` flipped.
+    and the opt-out test wants ``warm_cache`` flipped.
     """
     return DownstreamConfig(
         name=name,
@@ -216,15 +217,15 @@ class TestBuildMatrixManual:
 # ----------------------------------------------------------------------
 
 
-class TestBuildMatrixFromDbOptIn:
-    """Tests for the inventory opt-in filter (``warm_cache`` flag)."""
+class TestBuildMatrixFromDbOptOut:
+    """Tests for the inventory opt-out filter (``warm_cache`` flag)."""
 
-    def test_build_matrix_skips_downstreams_without_warm_cache_opt_in(self) -> None:
+    def test_build_matrix_skips_downstreams_that_opt_out_of_warming(self) -> None:
         """
-        ``warm_cache=False`` is the default and means "this downstream
-        does not consume hopscotch bumps, so do not pay the warming cost
-        for it".  An opted-out downstream with a populated LKG/FKB pair
-        must contribute zero entries — its published
+        ``warm_cache: false`` marks a downstream that does not consume
+        hopscotch bumps, so the warming cost is not paid for it.  An
+        opted-out downstream with a populated LKG/FKB pair must
+        contribute zero entries — its published
         ``recommended_bump_commit`` stays null instead.
         """
         # Arrange

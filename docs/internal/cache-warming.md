@@ -1,13 +1,13 @@
 # Mathlib cache warming
 
-Builds mathlib at the LKG / FKB SHAs reported for opted-in
-(`warm_cache: true`) downstreams and pushes the resulting oleans to
-mathlib's shared Azure cache, so external consumers of
-`lkg/latest.json` (e.g. the `bump-to-latest` action) hit a warm cache
-instead of having to rebuild mathlib from scratch. The snapshot's
-`recommended_bump_commit` field is gated on the warmth this workflow
-verifies: it carries the LKG commit only once its cache is confirmed
-present, and stays null for downstreams that don't warm.
+Builds mathlib at the LKG / FKB SHAs reported for every downstream
+that does not opt out via `warm_cache: false`, and pushes the
+resulting oleans to mathlib's shared Azure cache, so external
+consumers of `lkg/latest.json` (e.g. the `bump-to-latest` action) hit
+a warm cache instead of having to rebuild mathlib from scratch. The
+snapshot's `recommended_bump_commit` field is gated on the warmth this
+workflow verifies: it carries the LKG commit only once its cache is
+confirmed present, and stays null for downstreams that don't warm.
 
 ## Why
 
@@ -100,7 +100,7 @@ DB state and republish.
 | `scripts/record_warm_shas.py` | CLI used by the finalize job: reads `summary.json`, upserts `(upstream, sha)` rows into `cache_warmth` with each attempted SHA's terminal status. |
 | `scripts/test_record_warm_shas.py` | Unit tests for the warmth-recording filter. |
 | `scripts/export_lkg_snapshot.py` | Publishes `recommended_bump_commit` gated on verified warmth. |
-| `scripts/models.py` | `DownstreamConfig.warm_cache: bool = False` opt-in flag. |
+| `scripts/models.py` | `DownstreamConfig.warm_cache: bool = True` opt-out flag. |
 | `scripts/storage.py` | `cache_warmth` table (`status`, `attempts`, `last_attempt_at`) + `load_cache_warmth` / `record_warmth_results` on the storage backends. |
 
 ## Schema migration (status column)
@@ -147,24 +147,24 @@ Azure olean container is ever cleared.
   inventory + DB *and* the `cache_warmth` filter are bypassed —
   operators forcing a re-warm should not be silently no-op'd.
 
-## Opt-in
+## Opt-out
 
-`DownstreamConfig.warm_cache: bool = False`. Set
-`"warm_cache": true` on selected entries in
-`ci/inventory/downstreams.json`.
+`DownstreamConfig.warm_cache: bool = True`. Warming is on by default
+so a newly-added downstream gets a warm `recommended_bump_commit`
+automatically — TauCeti's cold pins in issue #77 came from consuming
+bumps without being warmed.
 
-Opt in any downstream that consumes hopscotch bumps (`bump-to-latest`
-or anything else reading `recommended_bump_commit`) — TauCeti's cold
-pins in issue #77 came from consuming bumps without being warmed.
-Downstreams that don't consume bumps should stay opted out: warming
-them is wasted compute, and the snapshot gate keeps the contract
-honest on their behalf by publishing a permanently-null
+Set `"warm_cache": false` in `ci/inventory/downstreams.json` for
+downstreams that don't consume hopscotch bumps (`bump-to-latest` or
+anything else reading `recommended_bump_commit`): warming them is
+wasted compute, and the snapshot gate keeps the contract honest on
+their behalf by publishing a permanently-null
 `recommended_bump_commit` (a bump job pointed at them would skip
 cleanly rather than land on a cold SHA).
 
-Deduplication by SHA keeps the marginal cost of an opt-in low:
-passing downstreams share master push tips (which mathlib's own CI
-already caches), so the SHAs that actually need building are the
+Deduplication by SHA keeps the default's marginal cost low: passing
+downstreams share master push tips (which mathlib's own CI already
+caches), so the SHAs that actually need building are the
 bisect-boundary commits inside bors batches.
 
 ## Plan job
@@ -175,8 +175,9 @@ bisect-boundary commits inside bors batches.
   lowercase hex, dedups, and emits one matrix entry per SHA with
   `tag: "manual"` and `downstreams: []`. Skips DB / inventory and the
   `cache_warmth` filter entirely.
-- **DB + inventory** (default): loads enabled inventory entries with
-  `warm_cache=True`, reads `downstream_status` (workflow=`regression`)
+- **DB + inventory** (default): loads enabled inventory entries except
+  those with `warm_cache: false`, reads `downstream_status`
+  (workflow=`regression`)
   via `SqlBackend.load_all_statuses`, collects every non-null LKG / FKB,
   deduplicates by SHA, classifies each SHA against its `cache_warmth`
   record (via `SqlBackend.load_cache_warmth`), and tags each entry

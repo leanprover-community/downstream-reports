@@ -4,12 +4,13 @@
 Two modes:
 
 * **DB / inventory mode** (default): reads the regression-workflow
-  ``downstream_status`` rows for the inventory entries that opt in via
-  ``warm_cache: true``, collects every non-null ``last_known_good_commit``
-  and ``first_known_bad_commit``, and deduplicates by SHA. Warming is
-  opt-in because not every downstream consumes hopscotch bumps; a
-  downstream that never warms simply publishes a null
-  ``recommended_bump_commit``, so the published warmth contract stays
+  ``downstream_status`` rows for every inventory entry except those that
+  opt out via ``warm_cache: false``, collects every non-null
+  ``last_known_good_commit`` and ``first_known_bad_commit``, and
+  deduplicates by SHA. Warming defaults on so a newly-added downstream
+  gets a warm ``recommended_bump_commit`` automatically; downstreams
+  that don't consume hopscotch bumps opt out, and simply publish a null
+  ``recommended_bump_commit`` — the published warmth contract stays
   honest without paying the warming cost for non-consumers.
 
 * **Manual mode** (``--manual-shas a,b,c``): bypasses inventory + DB and
@@ -141,10 +142,10 @@ def build_matrix_from_db(
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Build the matrix include list from inventory + DB statuses.
 
-    Considers only inventory entries with ``warm_cache=True``. Each
-    SHA's ``tag`` reflects the union of roles across downstreams: a
-    SHA that's LKG for one project and FKB for another is tagged
-    ``both``.
+    Considers every inventory entry except those with
+    ``warm_cache=False``. Each SHA's ``tag`` reflects the union of
+    roles across downstreams: a SHA that's LKG for one project and FKB
+    for another is tagged ``both``.
 
     Returns ``(include, skipped)``: the first list is the matrix of SHAs
     to probe this run, the second is candidate SHAs the *warmth* records
