@@ -8,15 +8,16 @@ Coverage scope:
     - ``create_backend`` — factory that selects SqlBackend / DryRunBackend
       based on the ``--backend`` flag.
     - ``SqlBackend.{save_run, load_all_statuses,
-      load_tested_downstream_commits, load_prior_results}`` — the
+      load_tested_downstream_commits, load_prior_results,
+      record_warmth_results, load_cache_warmth}`` — the
       production read/write path, exercised against in-memory SQLite.
     - ``connect_with_retry`` / ``create_sql_engine`` — transient-blip
       resilience primitives.
 
 Out of scope:
     - PostgreSQL-specific behaviour: the production dialect is exercised
-      in CI by the regression workflow itself.  ``load_known_warm_shas``,
-      ``record_warm_shas``, ``load_manifest_watcher_ledger``, and
+      in CI by the regression workflow itself.
+      ``load_manifest_watcher_ledger`` and
       ``upsert_manifest_watcher_ledger`` are not exercised by the unit
       suite.
     - ``DryRunBackend``: by design it has no state to assert against; it
@@ -829,6 +830,97 @@ class TestSqlBackendLoadPriorResults:
         # Assert
         assert prior[("ProjectA", "commit_aaa")]["outcome"] == "passed", "Newer run's outcome wins over older run's outcome"
 
+
+@pytest.mark.integration
+class TestSqlBackendCacheWarmthRoundTrip:
+    """Tests for the ``record_warmth_results`` / ``load_cache_warmth`` round trip.
+
+    The ``cache_warmth`` row is the contract between the warming
+    workflow's finalize job (writer) and both the planner (retry
+    schedule) and the LKG exporter (``recommended_bump_commit`` gate).
+    The attempt counter must accumulate across runs — it is what caps
+    the retry schedule.
+    """
+
+    def test_load_cache_warmth_on_fresh_database_returns_empty_dict(self) -> None:
+        """
+        A fresh database has no warming history; ``{}`` (rather than
+        raising) lets the planner treat every SHA as cold on the first
+        tick.
+        """
+        # Arrange / Act / Assert
+        backend = _sqlite_backend()
+        assert backend.load_cache_warmth(_UPSTREAM) == {}, "Empty cache_warmth must read as an empty mapping"
+
+    def test_record_then_load_round_trips_status_and_attempts(self) -> None:
+        """
+        First recording of a SHA stores its status verbatim with
+        ``attempts=1`` and a parseable UTC timestamp — the three fields
+        the planner's ``_classify`` reads.
+        """
+        # Arrange
+        backend = _sqlite_backend()
+
+        # Act
+        backend.record_warmth_results(_UPSTREAM, {"sha_warm": "warmed", "sha_fail": "push_failed"})
+        warmth = backend.load_cache_warmth(_UPSTREAM)
+
+        # Assert
+        assert warmth["sha_warm"].status == "warmed"
+        assert warmth["sha_warm"].is_warm, "warmed classifies as verified warm"
+        assert warmth["sha_fail"].status == "push_failed"
+        assert not warmth["sha_fail"].is_warm, "a failed attempt must not classify as warm"
+        assert warmth["sha_fail"].attempts == 1
+        assert warmth["sha_fail"].last_attempt_at, "last_attempt_at must be populated"
+
+    def test_rerecording_increments_attempts_and_replaces_status(self) -> None:
+        """
+        A SHA re-attempted on a later tick gets its attempt counter
+        incremented and its status replaced — this accumulation is what
+        lets the planner's backoff grow and eventually exhaust, and what
+        lets a retried SHA graduate from ``push_failed`` to ``warmed``.
+        """
+        # Arrange
+        backend = _sqlite_backend()
+
+        # Act — two ticks: a failure, then a successful retry.
+        backend.record_warmth_results(_UPSTREAM, {"sha_x": "push_failed"})
+        backend.record_warmth_results(_UPSTREAM, {"sha_x": "warmed"})
+        warmth = backend.load_cache_warmth(_UPSTREAM)
+
+        # Assert
+        assert warmth["sha_x"].attempts == 2, "Attempts must accumulate across recordings"
+        assert warmth["sha_x"].status == "warmed", "The newest status wins"
+        assert warmth["sha_x"].is_warm
+
+    def test_warmth_is_scoped_per_upstream(self) -> None:
+        """
+        Rows are keyed ``(upstream, sha)``: warmth recorded for one
+        upstream must not leak into another's planner view.
+        """
+        # Arrange
+        backend = _sqlite_backend()
+
+        # Act
+        backend.record_warmth_results(_UPSTREAM, {"sha_x": "warmed"})
+
+        # Assert
+        assert backend.load_cache_warmth("other/upstream") == {}, "Warmth must not leak across upstreams"
+
+    def test_record_with_empty_results_is_a_noop(self) -> None:
+        """
+        A tick with nothing to record (all planner skips) must leave the
+        table untouched without opening a write transaction path that
+        could fail.
+        """
+        # Arrange
+        backend = _sqlite_backend()
+
+        # Act
+        backend.record_warmth_results(_UPSTREAM, {})
+
+        # Assert
+        assert backend.load_cache_warmth(_UPSTREAM) == {}
 
 
 # ----------------------------------------------------------------------

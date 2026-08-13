@@ -41,7 +41,7 @@ import json
 import os
 import random
 import time
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -135,6 +135,33 @@ class ManifestWatcherLedgerRow:
     observed_pin: str
     dispatched_at: str           # ISO-8601 timestamp
     run_url: str | None = None
+
+
+# Terminal statuses that mean the SHA's olean cache is confirmed present in
+# mathlib's Azure container. Every other terminal status is a failed warming
+# attempt: mathlib master always builds, so failures are infra trouble and
+# the planner retries them with backoff rather than trusting them forever.
+CACHE_WARMTH_WARM_STATUSES = frozenset({"already_warm", "warmed"})
+
+
+@dataclass
+class CacheWarmthRecord:
+    """Warming state for one ``(upstream, sha)`` in ``cache_warmth``.
+
+    ``status`` is the terminal status of the most recent warming attempt,
+    verbatim from ``warm-mathlib-cache.yml``'s summary (``already_warm``,
+    ``warmed``, ``build_failed``, ``push_failed``, ``verify_failed``).
+    ``attempts`` counts recorded warming attempts; the planner uses it with
+    ``last_attempt_at`` to schedule backoff retries for failed SHAs.
+    """
+
+    status: str
+    attempts: int
+    last_attempt_at: str         # ISO-8601 timestamp
+
+    @property
+    def is_warm(self) -> bool:
+        return self.status in CACHE_WARMTH_WARM_STATUSES
 
 
 @dataclass
@@ -284,18 +311,22 @@ class StorageBackend(Protocol):
         """
         ...
 
-    def load_known_warm_shas(self, upstream: str) -> set[str]:
-        """Return the set of upstream SHAs already confirmed warm in the cache.
+    def load_cache_warmth(self, upstream: str) -> dict[str, "CacheWarmthRecord"]:
+        """Return the per-SHA warming state recorded for *upstream*.
 
-        Used by the cache-warming planner to skip SHAs whose Azure cache state
-        was already verified by a previous warm run. Backends with no
-        persistence (dry-run) return an empty set so planning degrades
-        gracefully off SQL.
+        Used by the cache-warming planner to skip verified-warm SHAs and to
+        schedule backoff retries for SHAs whose last attempt failed. Backends
+        with no persistence (dry-run) return an empty dict so planning
+        degrades gracefully off SQL.
         """
         ...
 
-    def record_warm_shas(self, upstream: str, shas: Iterable[str]) -> None:
-        """Mark *shas* as confirmed warm for *upstream* (idempotent upsert)."""
+    def record_warmth_results(self, upstream: str, results: dict[str, str]) -> None:
+        """Record ``{sha: status}`` warming outcomes for *upstream*.
+
+        Upserts each SHA with its terminal status, stamps the attempt time,
+        and increments the stored attempt counter.
+        """
         ...
 
     def load_manifest_watcher_ledger(
@@ -628,15 +659,19 @@ try:
         Column("conclusion", String),
     )
 
-    # Records SHAs that the cache-warming workflow has confirmed as warm in the
-    # mathlib Azure cache. Mathlib's olean cache is content-hashed and immutable
-    # per SHA, so once a SHA is recorded here the planner can skip it forever.
+    # Records the warming state of each SHA the cache-warming workflow has
+    # attempted. Mathlib's olean cache is content-hashed and immutable per
+    # SHA, so a SHA whose status is warm (see CACHE_WARMTH_WARM_STATUSES)
+    # can be skipped forever; a SHA whose last attempt failed is retried
+    # with backoff, using `attempts` and `last_attempt_at`.
     _sa_cache_warmth = Table(
         "cache_warmth",
         _sa_metadata,
         Column("upstream", String, primary_key=True),
         Column("sha", String, primary_key=True),
-        Column("warmed_at", DateTime(timezone=True), nullable=False),
+        Column("status", String, nullable=False),
+        Column("attempts", Integer, nullable=False),
+        Column("last_attempt_at", DateTime(timezone=True), nullable=False),
     )
 
     _sa_manifest_watcher_ledger = Table(
@@ -1088,27 +1123,54 @@ class SqlBackend:
             }
         return result
 
-    def load_known_warm_shas(self, upstream: str) -> set[str]:
+    def load_cache_warmth(self, upstream: str) -> dict[str, CacheWarmthRecord]:
         t = _sa_cache_warmth
-        stmt = sa_select(t.c.sha).where(t.c.upstream == upstream)
+        stmt = sa_select(t.c.sha, t.c.status, t.c.attempts, t.c.last_attempt_at).where(
+            t.c.upstream == upstream
+        )
         with self._connect() as conn:
-            return {row[0] for row in conn.execute(stmt).fetchall()}
+            rows = conn.execute(stmt).fetchall()
+        result: dict[str, CacheWarmthRecord] = {}
+        for sha, status, attempts, last_attempt_at in rows:
+            result[sha] = CacheWarmthRecord(
+                status=status,
+                attempts=attempts,
+                last_attempt_at=(
+                    last_attempt_at.isoformat().replace("+00:00", "Z")
+                    if last_attempt_at is not None
+                    else ""
+                ),
+            )
+        return result
 
-    def record_warm_shas(self, upstream: str, shas: Iterable[str]) -> None:
+    def record_warmth_results(self, upstream: str, results: dict[str, str]) -> None:
         from datetime import datetime, timezone
 
-        deduped = sorted({sha for sha in shas if sha})
-        if not deduped:
+        cleaned = {sha: status for sha, status in results.items() if sha}
+        if not cleaned:
             return
-        warmed_at = datetime.now(timezone.utc)
+        last_attempt_at = datetime.now(timezone.utc)
+        t = _sa_cache_warmth
         with self._begin() as conn:
-            for sha in deduped:
+            # The finalize job is the table's only writer, so a read-then-
+            # upsert attempt increment inside one transaction is race-free.
+            stmt = sa_select(t.c.sha, t.c.attempts).where(
+                t.c.upstream == upstream, t.c.sha.in_(sorted(cleaned))
+            )
+            prior_attempts = dict(conn.execute(stmt).fetchall())
+            for sha in sorted(cleaned):
                 self._upsert(
                     conn,
-                    _sa_cache_warmth,
-                    values={"upstream": upstream, "sha": sha, "warmed_at": warmed_at},
+                    t,
+                    values={
+                        "upstream": upstream,
+                        "sha": sha,
+                        "status": cleaned[sha],
+                        "attempts": prior_attempts.get(sha, 0) + 1,
+                        "last_attempt_at": last_attempt_at,
+                    },
                     conflict_cols=["upstream", "sha"],
-                    update_cols=["warmed_at"],
+                    update_cols=["status", "attempts", "last_attempt_at"],
                 )
 
     def load_manifest_watcher_ledger(
@@ -1503,13 +1565,13 @@ class DryRunBackend:
         print(f"[dry-run] load_prior_results({workflow!r}, {len(pairs)} pair(s)) -> {{}}")
         return {}
 
-    def load_known_warm_shas(self, upstream: str) -> set[str]:
-        print(f"[dry-run] load_known_warm_shas(upstream={upstream!r}) -> set()")
-        return set()
+    def load_cache_warmth(self, upstream: str) -> dict[str, CacheWarmthRecord]:
+        print(f"[dry-run] load_cache_warmth(upstream={upstream!r}) -> {{}}")
+        return {}
 
-    def record_warm_shas(self, upstream: str, shas: Iterable[str]) -> None:
-        deduped = sorted({sha for sha in shas if sha})
-        print(f"[dry-run] record_warm_shas(upstream={upstream!r}, shas={deduped})")
+    def record_warmth_results(self, upstream: str, results: dict[str, str]) -> None:
+        cleaned = {sha: status for sha, status in sorted(results.items()) if sha}
+        print(f"[dry-run] record_warmth_results(upstream={upstream!r}, results={cleaned})")
 
     def load_manifest_watcher_ledger(
         self, upstream: str
