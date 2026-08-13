@@ -30,6 +30,7 @@
       "default_branch": "master",
       "dependency_name": "mathlib",
       "enabled": true,
+      "warm_cache": true,
       "watch_manifest": true
     },
     {
@@ -38,6 +39,7 @@
       "default_branch": "main",
       "dependency_name": "mathlib",
       "enabled": true,
+      "warm_cache": true,
       "watch_manifest": true,
       "build_args": ["--wfail", "--iofail"],
       "run_test": true,
@@ -51,6 +53,7 @@
       "dependency_name": "mathlib",
       "skip_known_bad_bisect": false,
       "enabled": true,
+      "warm_cache": true,
       "watch_manifest": true,
       "build_args": ["--iofail"],
       "run_test": true,
@@ -92,6 +95,7 @@
       "default_branch": "main",
       "dependency_name": "mathlib",
       "enabled": true,
+      "warm_cache": true,
       "watch_manifest": true
     },
     {
@@ -100,6 +104,7 @@
       "default_branch": "master",
       "dependency_name": "mathlib",
       "enabled": true,
+      "warm_cache": true,
       "watch_manifest": true
     },
     {
@@ -118,6 +123,7 @@
       "default_branch": "master",
       "dependency_name": "mathlib",
       "enabled": true,
+      "warm_cache": true,
       "watch_manifest": true
     },
     {
@@ -126,6 +132,7 @@
       "default_branch": "master",
       "dependency_name": "mathlib",
       "enabled": true,
+      "warm_cache": true,
       "watch_manifest": true
     },
     {
@@ -133,7 +140,8 @@
       "repo": "YaelDillies/chandra-furst-lipton",
       "default_branch": "master",
       "dependency_name": "mathlib",
-      "enabled": true
+      "enabled": true,
+      "warm_cache": true
     },
     {
       "name": "misc-yd",
@@ -141,6 +149,7 @@
       "default_branch": "master",
       "dependency_name": "mathlib",
       "enabled": true,
+      "warm_cache": true,
       "watch_manifest": true
     },
     {
@@ -148,7 +157,8 @@
       "repo": "Paul-Lez/PersistentDecomp",
       "default_branch": "master",
       "dependency_name": "mathlib",
-      "enabled": true
+      "enabled": true,
+      "warm_cache": true
     },
     {
       "name": "flt-regular",
@@ -156,6 +166,7 @@
       "default_branch": "master",
       "dependency_name": "mathlib",
       "enabled": true,
+      "warm_cache": true,
       "watch_manifest": true
     },
     {
@@ -187,6 +198,7 @@
       "default_branch": "master",
       "dependency_name": "mathlib",
       "enabled": true,
+      "warm_cache": true,
       "watch_manifest": true,
       "run_test": true
     },
@@ -204,6 +216,7 @@
       "default_branch": "main",
       "dependency_name": "mathlib",
       "enabled": true,
+      "warm_cache": true,
       "revalidate_boundary": true
     },
     {
@@ -212,6 +225,7 @@
       "default_branch": "master",
       "dependency_name": "mathlib",
       "enabled": true,
+      "warm_cache": true,
       "watch_manifest": true
     },
     {
@@ -240,6 +254,7 @@
       "enabled": true,
       "bumping_branch": "main",
       "target_mode": "master",
+      "warm_cache": true,
       "revalidate_boundary": true
     },
     {
@@ -248,6 +263,7 @@
       "default_branch": "master",
       "dependency_name": "mathlib",
       "enabled": true,
+      "warm_cache": true,
       "watch_manifest": true
     },
     {
@@ -256,6 +272,7 @@
       "default_branch": "main",
       "dependency_name": "mathlib",
       "enabled": true,
+      "warm_cache": true,
       "watch_manifest": true,
       "run_lint": true
     },
@@ -265,6 +282,7 @@
       "default_branch": "master",
       "dependency_name": "mathlib",
       "enabled": true,
+      "warm_cache": true,
       "watch_manifest": true
     },
     {
@@ -273,6 +291,7 @@
       "default_branch": "master",
       "dependency_name": "mathlib",
       "enabled": true,
+      "warm_cache": true,
       "watch_manifest": true
     }, 
     {
@@ -281,6 +300,7 @@
       "default_branch": "master",
       "dependency_name": "mathlib",
       "enabled": true,
+      "warm_cache": true,
       "watch_manifest": true
     },
     {
@@ -289,6 +309,7 @@
       "default_branch": "main",
       "dependency_name": "mathlib",
       "enabled": true,
+      "warm_cache": true,
       "watch_manifest": true
     },
     {
@@ -297,6 +318,7 @@
       "default_branch": "master",
       "dependency_name": "mathlib",
       "enabled": true,
+      "warm_cache": true,
       "watch_manifest": true
     }
   ]

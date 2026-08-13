@@ -9,10 +9,10 @@ Coverage scope:
     - ``build_matrix_manual`` — passthrough builder that emits one entry
       per manual SHA tagged ``manual``.
     - ``build_matrix_from_db`` — the steady-state planner: reads
-      ``downstream_status`` for every enabled downstream, dedups LKG/FKB
-      across them, consults ``cache_warmth`` records to skip verified-warm
-      SHAs and pace failed ones through the backoff retry schedule, and
-      tags each entry by the role(s) it plays.
+      ``downstream_status`` for opted-in (``warm_cache``) downstreams,
+      dedups LKG/FKB across them, consults ``cache_warmth`` records to
+      skip verified-warm SHAs and pace failed ones through the backoff
+      retry schedule, and tags each entry by the role(s) it plays.
 
 Out of scope:
     - ``main()`` and ``build_parser()`` — argparse + I/O glue.  The
@@ -58,19 +58,21 @@ from scripts.storage import CacheWarmthRecord, DownstreamStatusRecord
 _NOW = datetime(2026, 8, 12, 12, 0, 0, tzinfo=timezone.utc)
 
 
-def _config(name: str) -> DownstreamConfig:
+def _config(name: str, *, warm_cache: bool = True) -> DownstreamConfig:
     """Construct a minimal ``DownstreamConfig`` for matrix-building tests.
 
     The fields (``repo``, ``default_branch``, ``dependency_name``) take
     stable mathlib-shaped defaults so the test focus stays on matrix
     logic, not config plumbing.  A factory rather than module-level
-    fixtures because most tests want two configs with different names.
+    fixtures because most tests want two configs with different names,
+    and the opt-in test wants ``warm_cache`` flipped.
     """
     return DownstreamConfig(
         name=name,
         repo=f"org/{name}",
         default_branch="main",
         dependency_name="mathlib",
+        warm_cache=warm_cache,
     )
 
 
@@ -212,6 +214,33 @@ class TestBuildMatrixManual:
 # they don't benefit from parametrize; the warm-filter cases at the
 # bottom are tabular and use parametrize.
 # ----------------------------------------------------------------------
+
+
+class TestBuildMatrixFromDbOptIn:
+    """Tests for the inventory opt-in filter (``warm_cache`` flag)."""
+
+    def test_build_matrix_skips_downstreams_without_warm_cache_opt_in(self) -> None:
+        """
+        ``warm_cache=False`` is the default and means "this downstream
+        does not consume hopscotch bumps, so do not pay the warming cost
+        for it".  An opted-out downstream with a populated LKG/FKB pair
+        must contribute zero entries — its published
+        ``recommended_bump_commit`` stays null instead.
+        """
+        # Arrange
+        inventory = {"physlib": _config("physlib", warm_cache=False)}
+        statuses = {
+            "physlib": DownstreamStatusRecord(
+                last_known_good_commit=SHA_A,
+                first_known_bad_commit=SHA_B,
+            ),
+        }
+
+        # Act
+        include, skipped = build_matrix_from_db(inventory, statuses)
+
+        # Assert
+        assert (include, skipped) == ([], []), "Opted-out downstream contributed entries — the warm_cache flag is broken"
 
 
 class TestBuildMatrixFromDbRoleTagging:

@@ -1,10 +1,11 @@
 name: warm-mathlib-cache
 
-# Builds mathlib at the LKG / FKB SHAs reported for every enabled
-# downstream and pushes the resulting oleans to the shared mathlib cache,
-# so future consumers of `lkg/latest.json` hit a warm cache. The published
-# `recommended_bump_commit` field is gated on the warmth this workflow
-# verifies and records.
+# Builds mathlib at the LKG / FKB SHAs reported for downstreams opted in
+# via `warm_cache: true` and pushes the resulting oleans to the shared
+# mathlib cache, so future consumers of `lkg/latest.json` hit a warm
+# cache. The published `recommended_bump_commit` field is gated on the
+# warmth this workflow verifies and records; downstreams not opted in
+# publish a null recommendation instead of an unwarmed SHA.
 #
 # Triggered after each successful regression report on main, plus
 # workflow_dispatch for manual backfills (with optional `shas` input that

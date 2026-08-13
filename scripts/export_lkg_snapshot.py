@@ -75,7 +75,9 @@ def build_snapshot(
         this field is the bump target the snapshot can stand behind — the
         same commit, published only once the warming workflow has verified
         its oleans are in mathlib's Azure cache.  ``None`` while warming is
-        pending or failing; the retry schedule self-heals it on a later tick.
+        pending or failing (the retry schedule self-heals it on a later
+        tick), and permanently ``None`` for downstreams not opted into
+        warming (``warm_cache``) — bump consumers skip cleanly either way.
         """
         if status is None or not status.last_known_good_commit:
             return None
