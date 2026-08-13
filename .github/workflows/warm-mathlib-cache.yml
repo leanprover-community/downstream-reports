@@ -1,8 +1,10 @@
 name: warm-mathlib-cache
 
-# Builds mathlib at the LKG / FKB SHAs reported for opted-in downstreams
-# and pushes the resulting oleans to the shared mathlib cache, so future
-# consumers of `lkg/latest.json` hit a warm cache.
+# Builds mathlib at the LKG / FKB SHAs reported for every enabled
+# downstream and pushes the resulting oleans to the shared mathlib cache,
+# so future consumers of `lkg/latest.json` hit a warm cache. The published
+# `recommended_bump_commit` field is gated on the warmth this workflow
+# verifies and records.
 #
 # Triggered after each successful regression report on main, plus
 # workflow_dispatch for manual backfills (with optional `shas` input that
@@ -70,7 +72,7 @@ jobs:
     outputs:
       matrix: ${{ steps.plan.outputs.matrix }}
       has_jobs: ${{ steps.plan.outputs.has_jobs }}
-      skipped_warm: ${{ steps.plan.outputs.skipped_warm }}
+      skipped: ${{ steps.plan.outputs.skipped }}
       has_skipped: ${{ steps.plan.outputs.has_skipped }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -87,9 +89,10 @@ jobs:
       - name: Build matrix
         id: plan
         env:
-          # Read-only: the planner only reads cache_warmth to drop SHAs that
-          # are already warm.  The write-capable DSN lives on the publish
-          # environment (used by the finalize job below), never here.
+          # Read-only: the planner only reads cache_warmth to drop
+          # verified-warm SHAs and to schedule backoff retries for failed
+          # ones.  The write-capable DSN lives on the publish environment
+          # (used by the finalize job below), never here.
           POSTGRES_DSN: ${{ secrets.POSTGRES_DSN_RO }}
           MANUAL_SHAS: ${{ inputs.shas }}
         run: |
@@ -105,8 +108,8 @@ jobs:
           {
             echo "matrix=$(jq -c '{include: .include}' plan.json)"
             echo "has_jobs=$(jq -r '(.include | length) > 0' plan.json)"
-            echo "skipped_warm=$(jq -c '.skipped_warm // []' plan.json)"
-            echo "has_skipped=$(jq -r '((.skipped_warm // []) | length) > 0' plan.json)"
+            echo "skipped=$(jq -c '.skipped // []' plan.json)"
+            echo "has_skipped=$(jq -r '((.skipped // []) | length) > 0' plan.json)"
           } >> "$GITHUB_OUTPUT"
 
   # Each matrix element fans out into its own reusable-workflow run
@@ -182,7 +185,7 @@ jobs:
       - name: Render summary
         env:
           MATRIX_JSON: ${{ needs.plan.outputs.matrix }}
-          SKIPPED_JSON: ${{ needs.plan.outputs.skipped_warm }}
+          SKIPPED_JSON: ${{ needs.plan.outputs.skipped }}
         run: |
           set -euo pipefail
 
@@ -220,13 +223,16 @@ jobs:
             echo '[]' > missing.json
           fi
 
-          # SHAs the planner filtered out via the `cache_warmth` table
-          # before the matrix ran. Tagged with a distinct status so they
-          # can be told apart from `already_warm` (which is what the
-          # per-SHA build job reports when it probes and finds the cache
-          # already populated). `record_warm_shas.py` ignores this status
-          # — these rows are by definition already in the table.
-          jq 'map({sha, tag, downstreams, status: "cache_warmth_hit"})' \
+          # SHAs the planner filtered out before the matrix ran. Each
+          # entry already carries its own status (`cache_warmth_hit` for
+          # verified-warm SHAs — distinct from `already_warm`, which is
+          # what the per-SHA build job reports when it probes and finds
+          # the cache already populated — plus `retry_backoff` /
+          # `retry_exhausted` for failed SHAs the planner is pacing) and
+          # a human-readable `detail`. `record_warm_shas.py` ignores all
+          # of these statuses — they describe SHAs that did not run this
+          # tick, so there is no attempt to record.
+          jq 'map({sha, tag, downstreams, status, detail})' \
             <<<"$SKIPPED_JSON" > skipped.json
 
           jq -s 'add' received.json missing.json skipped.json > summary.json
@@ -234,8 +240,9 @@ jobs:
           # Counts by status, in a stable order. `cache_warmth_hit` is
           # listed first because it represents the cheapest path: the
           # SHA never even entered the matrix.
+          statuses=(cache_warmth_hit already_warm warmed retry_backoff retry_exhausted build_failed push_failed verify_failed no_result)
           declare -A counts=()
-          for status in cache_warmth_hit already_warm warmed build_failed push_failed verify_failed no_result; do
+          for status in "${statuses[@]}"; do
             n=$(jq --arg s "$status" '[.[] | select(.status == $s)] | length' summary.json)
             counts[$status]=$n
           done
@@ -249,45 +256,58 @@ jobs:
             echo ""
             echo "| Status | Count |"
             echo "|---|---|"
-            for status in cache_warmth_hit already_warm warmed build_failed push_failed verify_failed no_result; do
+            for status in "${statuses[@]}"; do
               if [ "${counts[$status]}" -gt 0 ]; then
                 echo "| \`$status\` | ${counts[$status]} |"
               fi
             done
             echo ""
-            echo "| SHA | Tag | Status | Downstreams |"
-            echo "|---|---|---|---|"
+            echo "| SHA | Tag | Status | Detail | Downstreams |"
+            echo "|---|---|---|---|---|"
             jq -r '
               sort_by(.sha)[] |
-              "| \(.sha[0:7]) | \(.tag) | \(.status) | \((.downstreams // []) | join(", ")) |"
+              "| \(.sha[0:7]) | \(.tag) | \(.status) | \(.detail // "") | \((.downstreams // []) | join(", ")) |"
             ' summary.json
           } >> "$GITHUB_STEP_SUMMARY"
 
           # Print to job log too, for inline visibility.
           cat summary.json
 
+          # A SHA that exhausted its retry budget needs operator attention
+          # (mathlib master always builds, so repeated failures mean the
+          # warming infra is unhealthy — or needs a --manual-shas backfill,
+          # which bypasses the planner's filter). Warn loudly without
+          # failing: failing finalize would freeze snapshot publication
+          # for every downstream over one SHA.
+          if jq -e 'any(.[]; .status == "retry_exhausted")' \
+               summary.json >/dev/null; then
+            echo "::warning::At least one SHA is out of warming retry budget (see the summary table); its downstreams keep a stale or empty recommended_bump_commit until it is warmed manually."
+          fi
+
           # `no_result` is the only status that fails finalize: it
           # means a matrix entry didn't reach a terminal upload
-          # (runner / timeout / infra trouble worth investigating).
-          # Per-SHA push_failed / verify_failed already surfaced as
-          # red allowed-failure jobs in _warm-one-sha.yml; they're
-          # recorded into `cache_warmth` so future ticks skip them,
-          # and they don't fail the workflow_run because publish-lkg
-          # + generate-pages gate on this workflow's success and they
-          # serve every downstream. build_failed stays quiet (mathlib
-          # itself can be broken at an FKB). `cache_warmth_hit` is
-          # the steady-state "everything is fine" case.
+          # (runner / timeout / matrix dropout worth investigating).
+          # Per-SHA build_failed / push_failed / verify_failed already
+          # surfaced as red allowed-failure jobs in _warm-one-sha.yml;
+          # they're recorded into `cache_warmth` with their status so
+          # the planner retries them with backoff, and they don't fail
+          # the workflow_run because publish-lkg + generate-pages gate
+          # on this workflow's success and they serve every downstream
+          # (per-SHA warmth gating happens in the snapshot's
+          # recommended_bump_commit field instead). `cache_warmth_hit`
+          # is the steady-state "everything is fine" case.
           if jq -e 'any(.[]; .status == "no_result")' \
                summary.json >/dev/null; then
             echo "::error::At least one SHA didn't report a result (runner timeout / matrix dropout)."
             exit 1
           fi
 
-      # The remaining steps record warm SHAs into `cache_warmth` so
-      # future plan ticks filter them out. Skipped on pure-skipped runs:
-      # there is nothing to record (every entry is `cache_warmth_hit`,
-      # which `record_warm_shas.py` ignores anyway, so the round-trip
-      # would be pure overhead).
+      # The remaining steps record each attempted SHA's terminal status
+      # into `cache_warmth` so future plan ticks skip verified-warm SHAs
+      # and pace the failed ones. Skipped on pure-skipped runs: there is
+      # nothing to record (every entry is a planner skip status, which
+      # `record_warm_shas.py` ignores anyway, so the round-trip would be
+      # pure overhead).
       - name: Set up Python (for cache_warmth recording)
         if: always() && needs.plan.outputs.has_jobs == 'true' && hashFiles('summary.json') != ''
         uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
@@ -300,11 +320,12 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r scripts/requirements.txt
 
-      # Persist already_warm / warmed SHAs to cache_warmth so future plan
-      # runs filter them out. Runs even when the summary step exited red,
-      # so that the warm SHAs from a partially-failed run still get
-      # recorded (each row is per-SHA and independent).
-      - name: Record warm SHAs
+      # Persist every attempted SHA's terminal status to cache_warmth —
+      # already_warm / warmed rows are skipped forever, failed rows enter
+      # the planner's backoff retry schedule. Runs even when the summary
+      # step exited red, so that the statuses from a partially-failed run
+      # still get recorded (each row is per-SHA and independent).
+      - name: Record warming statuses
         if: always() && needs.plan.outputs.has_jobs == 'true' && hashFiles('summary.json') != ''
         env:
           # Resolves to the publish environment's write-capable POSTGRES_DSN

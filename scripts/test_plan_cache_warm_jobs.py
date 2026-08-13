@@ -9,8 +9,9 @@ Coverage scope:
     - ``build_matrix_manual`` — passthrough builder that emits one entry
       per manual SHA tagged ``manual``.
     - ``build_matrix_from_db`` — the steady-state planner: reads
-      ``downstream_status`` for opted-in downstreams, dedups LKG/FKB
-      across them, drops SHAs already recorded in ``cache_warmth``, and
+      ``downstream_status`` for every enabled downstream, dedups LKG/FKB
+      across them, consults ``cache_warmth`` records to skip verified-warm
+      SHAs and pace failed ones through the backoff retry schedule, and
       tags each entry by the role(s) it plays.
 
 Out of scope:
@@ -18,60 +19,67 @@ Out of scope:
       end-to-end behaviour is exercised by the workflow itself; the unit
       suite focuses on the matrix-building logic that the workflow can't
       easily assert against.
-    - ``SqlBackend.load_known_warm_shas`` — covered indirectly here via
-      the ``known_warm_shas`` parameter and lives in ``test_storage.py``
-      for the SQL side.
+    - ``SqlBackend.load_cache_warmth`` — covered indirectly here via
+      the ``warmth`` parameter and lives in ``test_storage.py`` for the
+      SQL side.
 
 Why this matters
 ----------------
 The matrix is the contract with ``warm-mathlib-cache.yml``: a SHA listed
 in ``include`` will be cloned, built, and pushed to the shared Azure
-cache.  A SHA listed in ``skipped_warm`` will be reported as
-``cache_warmth_hit`` in the finalize summary.  Misclassifying a cold
-SHA as warm causes ``publish-lkg`` to advertise a SHA whose Azure cache
-is empty — exactly the cold-SHA contract violation the warming pipeline
-is designed to prevent.  See ``docs/internal/cache-warming.md``.
+cache.  A SHA listed in ``skipped`` will be reported under its skip
+status (``cache_warmth_hit`` / ``retry_backoff`` / ``retry_exhausted``)
+in the finalize summary.  Misclassifying a cold SHA as warm causes
+``publish-lkg`` to advertise a ``recommended_bump_commit`` whose Azure
+cache is empty — exactly the cold-SHA contract violation the warming
+pipeline is designed to prevent.  See ``docs/internal/cache-warming.md``.
 """
 
 from __future__ import annotations
+
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
 from scripts.conftest import SHA_A, SHA_B, SHA_C
 from scripts.models import DownstreamConfig
 from scripts.plan_cache_warm_jobs import (
+    MAX_WARM_ATTEMPTS,
     _parse_manual_shas,
     build_matrix_from_db,
     build_matrix_manual,
+    retry_delay,
 )
-from scripts.storage import DownstreamStatusRecord
+from scripts.storage import CacheWarmthRecord, DownstreamStatusRecord
+
+# Fixed "current time" for the retry-schedule tests: the planner compares
+# `now` against `last_attempt_at + retry_delay(attempts)`, so tests pin
+# both sides instead of racing the wall clock.
+_NOW = datetime(2026, 8, 12, 12, 0, 0, tzinfo=timezone.utc)
 
 
-def _config(name: str, *, warm_cache: bool = True) -> DownstreamConfig:
+def _config(name: str) -> DownstreamConfig:
     """Construct a minimal ``DownstreamConfig`` for matrix-building tests.
 
-    What state it provides
-    ----------------------
-    A frozen ``DownstreamConfig`` whose ``warm_cache`` flag is the only
-    knob most tests need to vary.  The other fields (``repo``,
-    ``default_branch``, ``dependency_name``) take stable mathlib-shaped
-    defaults so the test focus stays on matrix logic, not config
-    plumbing.
-
-    Why a factory rather than module-level fixtures
-    -----------------------------------------------
-    Most tests want two configs with different names, and a few want
-    the same name with ``warm_cache`` flipped.  A factory expresses
-    that variation directly without requiring callers to pre-build
-    every combination.
+    The fields (``repo``, ``default_branch``, ``dependency_name``) take
+    stable mathlib-shaped defaults so the test focus stays on matrix
+    logic, not config plumbing.  A factory rather than module-level
+    fixtures because most tests want two configs with different names.
     """
     return DownstreamConfig(
         name=name,
         repo=f"org/{name}",
         default_branch="main",
         dependency_name="mathlib",
-        warm_cache=warm_cache,
     )
+
+
+def _warmth(
+    status: str = "warmed", attempts: int = 1, age_hours: float = 0.0
+) -> CacheWarmthRecord:
+    """Construct a ``CacheWarmthRecord`` whose attempt is *age_hours* before ``_NOW``."""
+    stamp = (_NOW - timedelta(hours=age_hours)).isoformat().replace("+00:00", "Z")
+    return CacheWarmthRecord(status=status, attempts=attempts, last_attempt_at=stamp)
 
 
 # ----------------------------------------------------------------------
@@ -204,32 +212,6 @@ class TestBuildMatrixManual:
 # they don't benefit from parametrize; the warm-filter cases at the
 # bottom are tabular and use parametrize.
 # ----------------------------------------------------------------------
-
-
-class TestBuildMatrixFromDbOptIn:
-    """Tests for the inventory opt-in filter (``warm_cache`` flag)."""
-
-    def test_build_matrix_skips_downstreams_without_warm_cache_opt_in(self) -> None:
-        """
-        ``warm_cache=False`` is the default and means "do not pay the
-        every-6-hours warming cost for this downstream".  An opted-out
-        downstream with a populated LKG/FKB pair must contribute zero
-        entries — otherwise the opt-in flag is a lie.
-        """
-        # Arrange
-        inventory = {"physlib": _config("physlib", warm_cache=False)}
-        statuses = {
-            "physlib": DownstreamStatusRecord(
-                last_known_good_commit=SHA_A,
-                first_known_bad_commit=SHA_B,
-            ),
-        }
-
-        # Act
-        include, skipped = build_matrix_from_db(inventory, statuses)
-
-        # Assert
-        assert (include, skipped) == ([], []), "Opted-out downstream contributed entries — the warm_cache flag is broken"
 
 
 class TestBuildMatrixFromDbRoleTagging:
@@ -417,15 +399,15 @@ class TestBuildMatrixFromDbEmptyState:
 
 
 class TestBuildMatrixFromDbKnownWarmFilter:
-    """Tests for the ``cache_warmth`` table filter (``known_warm_shas``)."""
+    """Tests for the verified-warm filter (``warmth`` records)."""
 
-    def test_build_matrix_drops_known_warm_shas_into_skipped_list(self) -> None:
+    def test_build_matrix_drops_verified_warm_shas_into_skipped_list(self) -> None:
         """
         The ``cache_warmth`` table is the steady-state contract that
-        prevents re-warming SHAs we know are populated.  A known-warm
+        prevents re-warming SHAs we know are populated.  A verified-warm
         SHA must move from ``include`` to ``skipped`` — not vanish —
-        so the finalize summary can still mention it as
-        ``cache_warmth_hit`` rather than implying nothing was planned.
+        carrying the ``cache_warmth_hit`` status so the finalize summary
+        can still mention it rather than implying nothing was planned.
         """
         # Arrange
         inventory = {
@@ -439,20 +421,21 @@ class TestBuildMatrixFromDbKnownWarmFilter:
 
         # Act
         include, skipped = build_matrix_from_db(
-            inventory, statuses, known_warm_shas={SHA_A}
+            inventory, statuses, warmth={SHA_A: _warmth("warmed")}, now=_NOW
         )
 
         # Assert
         assert [entry["sha"] for entry in include] == [SHA_B], "Cold SHA stays in include; warm SHA leaves include"
-        assert [entry["sha"] for entry in skipped] == [SHA_A], "Warm SHA must appear in skipped so the summary can show it"
+        assert [(entry["sha"], entry["status"]) for entry in skipped] == [(SHA_A, "cache_warmth_hit")], "Warm SHA must appear in skipped as cache_warmth_hit so the summary can show it"
 
-    def test_build_matrix_with_all_shas_known_warm_yields_empty_include(self) -> None:
+    def test_build_matrix_with_all_shas_verified_warm_yields_empty_include(self) -> None:
         """
         Steady-state expectation: every SHA in the planner's view is
-        already warm, so ``include`` is empty and ``skipped`` lists all
-        of them.  This is the "everything green" tick that should still
-        run finalize (so the summary reflects the cache_warmth hits)
-        without spinning up any per-SHA runners.
+        already warm (either terminal warm status), so ``include`` is
+        empty and ``skipped`` lists all of them.  This is the
+        "everything green" tick that should still run finalize (so the
+        summary reflects the cache_warmth hits) without spinning up any
+        per-SHA runners.
         """
         # Arrange
         inventory = {"physlib": _config("physlib")}
@@ -465,12 +448,16 @@ class TestBuildMatrixFromDbKnownWarmFilter:
 
         # Act
         include, skipped = build_matrix_from_db(
-            inventory, statuses, known_warm_shas={SHA_A, SHA_B}
+            inventory,
+            statuses,
+            warmth={SHA_A: _warmth("warmed"), SHA_B: _warmth("already_warm")},
+            now=_NOW,
         )
 
         # Assert
         assert include == [], "All SHAs warm: nothing to build"
-        assert sorted(entry["sha"] for entry in skipped) == [SHA_A, SHA_B], "All SHAs warm: skipped lists every known-warm SHA"
+        assert sorted(entry["sha"] for entry in skipped) == [SHA_A, SHA_B], "All SHAs warm: skipped lists every verified-warm SHA"
+        assert {entry["status"] for entry in skipped} == {"cache_warmth_hit"}, "Both warm statuses classify as cache_warmth_hit"
 
     def test_build_matrix_warm_filter_is_per_sha_not_per_downstream(self) -> None:
         """
@@ -490,7 +477,7 @@ class TestBuildMatrixFromDbKnownWarmFilter:
 
         # Act — only the LKG is warm; the FKB should still be planned.
         include, skipped = build_matrix_from_db(
-            inventory, statuses, known_warm_shas={SHA_A}
+            inventory, statuses, warmth={SHA_A: _warmth("warmed")}, now=_NOW
         )
 
         # Assert
@@ -516,7 +503,7 @@ class TestBuildMatrixFromDbKnownWarmFilter:
 
         # Act
         _, skipped = build_matrix_from_db(
-            inventory, statuses, known_warm_shas={SHA_A}
+            inventory, statuses, warmth={SHA_A: _warmth("warmed")}, now=_NOW
         )
 
         # Assert
@@ -524,3 +511,122 @@ class TestBuildMatrixFromDbKnownWarmFilter:
         assert skipped[0]["sha"] == SHA_A
         assert skipped[0]["tag"] == "both", "Skipped entry must carry the cross-role tag, not be reduced to 'lkg' or 'fkb'"
         assert sorted(skipped[0]["downstreams"]) == ["FLT", "physlib"]
+
+
+class TestBuildMatrixFromDbRetrySchedule:
+    """Tests for the failed-SHA backoff retry schedule.
+
+    Mathlib master always builds, so every failed warming attempt is
+    infra trouble: the planner re-attempts failed SHAs once their
+    backoff has elapsed, and stops (``retry_exhausted``) only when the
+    attempt budget runs out.  Permanently trusting a failure is exactly
+    the "failed warming attempts are recorded as warmth" bug this
+    schedule replaces.
+    """
+
+    @pytest.mark.parametrize(
+        "status", ["build_failed", "push_failed", "verify_failed"]
+    )
+    def test_failed_sha_with_elapsed_backoff_is_replanned(self, status: str) -> None:
+        """
+        Every failure status re-enters the matrix once its backoff has
+        elapsed — none of them is terminal before the attempt budget
+        runs out.
+        """
+        # Arrange
+        inventory = {"physlib": _config("physlib")}
+        statuses = {"physlib": DownstreamStatusRecord(last_known_good_commit=SHA_A)}
+        delay_h = retry_delay(1).total_seconds() / 3600
+
+        # Act — last attempt just past its backoff window.
+        include, skipped = build_matrix_from_db(
+            inventory,
+            statuses,
+            warmth={SHA_A: _warmth(status, attempts=1, age_hours=delay_h + 0.1)},
+            now=_NOW,
+        )
+
+        # Assert
+        assert [entry["sha"] for entry in include] == [SHA_A], f"{status} SHA past its backoff must be re-planned"
+        assert skipped == []
+
+    def test_failed_sha_inside_backoff_window_is_skipped_as_retry_backoff(self) -> None:
+        """
+        A failed SHA whose backoff has not yet elapsed is skipped this
+        tick with status ``retry_backoff`` — visible in the summary,
+        untouched in the matrix — so a flapping infra failure can't
+        spin the self-hosted runner on every 6h tick.
+        """
+        # Arrange
+        inventory = {"physlib": _config("physlib")}
+        statuses = {"physlib": DownstreamStatusRecord(last_known_good_commit=SHA_A)}
+
+        # Act — attempt 2 (12h backoff), only 1h old.
+        include, skipped = build_matrix_from_db(
+            inventory,
+            statuses,
+            warmth={SHA_A: _warmth("push_failed", attempts=2, age_hours=1.0)},
+            now=_NOW,
+        )
+
+        # Assert
+        assert include == [], "SHA inside its backoff window must not re-enter the matrix"
+        assert [(entry["sha"], entry["status"]) for entry in skipped] == [(SHA_A, "retry_backoff")]
+        assert "push_failed" in skipped[0]["detail"], "The detail field carries the underlying failure status for the summary"
+
+    def test_backoff_doubles_per_recorded_attempt(self) -> None:
+        """
+        The schedule is exponential: attempt n waits ``6h * 2^(n-1)``.
+        An age that clears attempt 1's window must still be inside
+        attempt 3's, so the same age classifies differently as the
+        attempt counter grows.
+        """
+        # Arrange
+        inventory = {"physlib": _config("physlib")}
+        statuses = {"physlib": DownstreamStatusRecord(last_known_good_commit=SHA_A)}
+        age_hours = 7.0  # > 6h (attempt 1), < 24h (attempt 3)
+
+        # Act
+        include_a1, _ = build_matrix_from_db(
+            inventory, statuses,
+            warmth={SHA_A: _warmth("verify_failed", attempts=1, age_hours=age_hours)},
+            now=_NOW,
+        )
+        include_a3, skipped_a3 = build_matrix_from_db(
+            inventory, statuses,
+            warmth={SHA_A: _warmth("verify_failed", attempts=3, age_hours=age_hours)},
+            now=_NOW,
+        )
+
+        # Assert
+        assert [entry["sha"] for entry in include_a1] == [SHA_A], "7h clears the 6h backoff of attempt 1"
+        assert include_a3 == [], "7h is inside the 24h backoff of attempt 3"
+        assert skipped_a3[0]["status"] == "retry_backoff"
+
+    def test_sha_out_of_attempt_budget_is_skipped_as_retry_exhausted(self) -> None:
+        """
+        After ``MAX_WARM_ATTEMPTS`` recorded failures the planner stops
+        rescheduling the SHA regardless of age, and reports it as
+        ``retry_exhausted`` so the finalize summary can warn the
+        operator (a ``--manual-shas`` backfill bypasses the filter).
+        """
+        # Arrange
+        inventory = {"physlib": _config("physlib")}
+        statuses = {"physlib": DownstreamStatusRecord(last_known_good_commit=SHA_A)}
+
+        # Act — ancient failure, but the budget is spent.
+        include, skipped = build_matrix_from_db(
+            inventory,
+            statuses,
+            warmth={
+                SHA_A: _warmth(
+                    "build_failed", attempts=MAX_WARM_ATTEMPTS, age_hours=24 * 365
+                )
+            },
+            now=_NOW,
+        )
+
+        # Assert
+        assert include == [], "An exhausted SHA must never re-enter the matrix"
+        assert [(entry["sha"], entry["status"]) for entry in skipped] == [(SHA_A, "retry_exhausted")]
+        assert f"{MAX_WARM_ATTEMPTS}/{MAX_WARM_ATTEMPTS}" in skipped[0]["detail"], "The detail field shows the spent budget"

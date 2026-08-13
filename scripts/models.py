@@ -63,7 +63,6 @@ class DownstreamConfig:
     # try_skip_known_bad_bisect never fires because downstream_commit moves
     # between runs.
     revalidate_boundary: bool = False
-    warm_cache: bool = False
     # When True, the probe step sets HOPSCOTCH_DEBUG_NUKE_LAKEDIR=1 in the
     # hopscotch subprocess environment.  Hopscotch then wipes <projectDir>/.lake
     # (preserving .lake/hopscotch/) before every probe and forces the bump step
