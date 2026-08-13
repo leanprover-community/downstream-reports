@@ -1,10 +1,12 @@
 # Mathlib cache warming
 
-Builds mathlib at the LKG / FKB SHAs reported for opted-in downstreams
-and pushes the resulting oleans to mathlib's shared Azure cache, so
-external consumers of `lkg/latest.json` (e.g. the `bump-to-latest`
-action) hit a warm cache instead of having to rebuild mathlib from
-scratch.
+Builds mathlib at the LKG / FKB SHAs reported for every enabled
+downstream and pushes the resulting oleans to mathlib's shared Azure
+cache, so external consumers of `lkg/latest.json` (e.g. the
+`bump-to-latest` action) hit a warm cache instead of having to rebuild
+mathlib from scratch. The snapshot's `recommended_bump_commit` field is
+gated on the warmth this workflow verifies: it carries the LKG commit
+only once its cache is confirmed present.
 
 ## Why
 
@@ -33,8 +35,9 @@ mathlib-downstream-report (on main, success)
     ▼  workflow_run trigger
 warm-mathlib-cache.yml         (orchestrator; also: cron every 6h, dispatch)
     │
-    ├─ plan job        → reads inventory + DB, filters cache_warmth,
-    │                    emits matrix of unique cold SHAs
+    ├─ plan job        → reads inventory + DB, consults cache_warmth
+    │                    (skip verified-warm, pace failed via backoff),
+    │                    emits matrix of unique SHAs to attempt
     │
     ├─ warm-sha matrix → calls _warm-one-sha.yml once per SHA (max-parallel: 1)
     │                     │
@@ -47,22 +50,33 @@ warm-mathlib-cache.yml         (orchestrator; also: cron every 6h, dispatch)
     │                     └─ verify             ubuntu-latest, NO token
     │                         fresh clone → cache get → assert all oleans present
     │
-    └─ finalize job    → renders breakdown, upserts already_warm/warmed
-                         SHAs into the cache_warmth table
+    └─ finalize job    → renders breakdown, upserts every attempted
+                         SHA's terminal status into cache_warmth
+                         (incrementing its attempt counter)
                   │
                   ▼  workflow_run trigger (success on main)
         publish-lkg.yml + generate-pages.yml
         (refresh lkg/latest.json, runs/latest.json, and the Pages site)
 ```
 
+**Where the warmth contract lives.** Per downstream, in the snapshot
+itself: `export_lkg_snapshot.py` publishes `recommended_bump_commit` —
+the LKG commit, but only when its `cache_warmth` row is verified warm
+(`already_warm` / `warmed`). Bump consumers (`bump-to-latest`'s default
+`recommended-bump` query type) read that field and skip cleanly while
+it is null, so a failed or pending warming attempt for one SHA never
+sends a consumer to a cold cache and never blocks the snapshot refresh
+that serves every other downstream. `last_known_good_commit` /
+`first_known_bad_commit` keep meaning the compatibility boundary,
+regardless of warmth — redefining them would break the LKG/FKB
+adjacency invariant.
+
 **Why publish-lkg / generate-pages chain off warming, not off the
-report directly.** The warming pass is the gate that turns the DB's
-LKG/FKB rows into a contract that "the SHAs we advertise are warm in
-mathlib's Azure cache." If warming is skipped or fails, the snapshot
-and the rendered status page do not refresh — consumers continue to
-see the previous, still-warm cycle. Without this gate the snapshot
-could point at SHAs whose oleans aren't on Azure yet, forcing
-external consumers to rebuild mathlib from scratch.
+report directly.** Ordering: a freshly-reported LKG gets its warming
+attempt before the snapshot refresh, so in the common case the same
+cycle that reported it also recommends it. If warming is skipped or
+fails outright, the snapshot and the rendered status page do not
+refresh — consumers continue to see the previous cycle.
 
 **Eventual consistency.** The cron schedule (`0,6,12,18 UTC`) gives
 the chain a recurring entry point so a missed `workflow_run` event,
@@ -78,12 +92,40 @@ DB state and republish.
 |---|---|
 | `.github/workflows/warm-mathlib-cache.yml` | Orchestrator: plan, matrix dispatch, finalize. |
 | `.github/workflows/_warm-one-sha.yml` | Reusable per-SHA worker (`workflow_call`). |
-| `scripts/plan_cache_warm_jobs.py` | Builds the matrix from inventory + DB or from a manual SHA list. Filters out SHAs already recorded in `cache_warmth`. |
+| `scripts/plan_cache_warm_jobs.py` | Builds the matrix from inventory + DB or from a manual SHA list. Skips verified-warm SHAs and paces failed SHAs through the backoff retry schedule. |
 | `scripts/test_plan_cache_warm_jobs.py` | Unit tests for the planner. |
-| `scripts/record_warm_shas.py` | CLI used by the finalize job: reads `summary.json`, upserts `(upstream, sha)` rows into `cache_warmth` for terminal-warm statuses. |
+| `scripts/record_warm_shas.py` | CLI used by the finalize job: reads `summary.json`, upserts `(upstream, sha)` rows into `cache_warmth` with each attempted SHA's terminal status. |
 | `scripts/test_record_warm_shas.py` | Unit tests for the warmth-recording filter. |
-| `scripts/models.py` | `DownstreamConfig.warm_cache: bool = False` opt-in flag. |
-| `scripts/storage.py` | `cache_warmth` table + `load_known_warm_shas` / `record_warm_shas` on the storage backends. |
+| `scripts/export_lkg_snapshot.py` | Publishes `recommended_bump_commit` gated on verified warmth. |
+| `scripts/storage.py` | `cache_warmth` table (`status`, `attempts`, `last_attempt_at`) + `load_cache_warmth` / `record_warmth_results` on the storage backends. |
+
+## Schema migration (status column)
+
+`cache_warmth` carries `status`, `attempts`, and `last_attempt_at`
+(formerly just `warmed_at`). Rows written before the status column
+existed cannot be classified — membership used to conflate "verified
+warm" with "gave up" — so the migration is drop-and-rebuild rather
+than backfill:
+
+```sql
+DROP TABLE cache_warmth;
+-- then re-create via scripts/storage.py create_schema, or:
+CREATE TABLE cache_warmth (
+  upstream        TEXT NOT NULL,
+  sha             TEXT NOT NULL,
+  status          TEXT NOT NULL,
+  attempts        INTEGER NOT NULL,
+  last_attempt_at TIMESTAMPTZ NOT NULL,
+  PRIMARY KEY (upstream, sha)
+);
+```
+
+This is cheap: the planner only consults rows for SHAs that are
+*currently* someone's LKG/FKB, so the live set is small and the next
+scheduled tick re-probes it — a genuinely warm SHA takes the
+`already_warm` fast path (cache get + `--no-build` check, no build).
+Historical rows were dead weight. The same rebuild applies if the
+Azure olean container is ever cleared.
 
 ## Trigger
 
@@ -101,24 +143,14 @@ DB state and republish.
   inventory + DB *and* the `cache_warmth` filter are bypassed —
   operators forcing a re-warm should not be silently no-op'd.
 
-## Opt-in
+## Scope
 
-`DownstreamConfig.warm_cache: bool = False`. Set
-`"warm_cache": true` on selected entries in
-`ci/inventory/downstreams.json`. Default is false so existing entries
-are unaffected.
-
-```json
-{
-  "name": "FLT",
-  "repo": "ImperialCollegeLondon/FLT",
-  "default_branch": "main",
-  "dependency_name": "mathlib",
-  "skip_known_bad_bisect": false,
-  "enabled": true,
-  "warm_cache": true
-}
-```
+Every enabled downstream in `ci/inventory/downstreams.json` is warmed
+— the published snapshot covers every enabled downstream, so the
+warmth contract has no opt-in carve-out. Deduplication by SHA keeps
+the marginal cost low: passing downstreams share master push tips
+(which mathlib's own CI already caches), so the SHAs that actually
+need building are the bisect-boundary commits inside bors batches.
 
 ## Plan job
 
@@ -126,14 +158,35 @@ are unaffected.
 
 - **Manual** (`--manual-shas a,b,c`): validates each SHA is 40-char
   lowercase hex, dedups, and emits one matrix entry per SHA with
-  `tag: "manual"` and `downstreams: []`. Skips DB / inventory.
-- **DB + inventory** (default): loads enabled inventory entries with
-  `warm_cache=True`, reads `downstream_status` (workflow=`regression`)
-  via `SqlBackend.load_all_statuses`, collects every non-null LKG /
-  FKB, deduplicates by SHA, drops any SHA already recorded in
-  `cache_warmth` (via `SqlBackend.load_known_warm_shas`), and tags
-  each remaining entry `lkg`, `fkb`, or `both` based on the union of
-  roles across downstreams.
+  `tag: "manual"` and `downstreams: []`. Skips DB / inventory and the
+  `cache_warmth` filter entirely.
+- **DB + inventory** (default): loads every enabled inventory entry,
+  reads `downstream_status` (workflow=`regression`) via
+  `SqlBackend.load_all_statuses`, collects every non-null LKG / FKB,
+  deduplicates by SHA, classifies each SHA against its `cache_warmth`
+  record (via `SqlBackend.load_cache_warmth`), and tags each entry
+  `lkg`, `fkb`, or `both` based on the union of roles across
+  downstreams.
+
+Classification per SHA:
+
+- no `cache_warmth` row → **include** (never attempted);
+- verified warm (`already_warm` / `warmed`) → **skip** as
+  `cache_warmth_hit`. Mathlib's olean cache is content-hashed and
+  immutable per SHA, so a verified SHA never needs re-probing;
+- failed attempt with backoff still pending → **skip** as
+  `retry_backoff`;
+- failed attempt past its backoff → **include** (retry);
+- failed `MAX_WARM_ATTEMPTS` (5) times → **skip** as
+  `retry_exhausted`; the finalize summary warns.
+
+The backoff doubles per recorded attempt: 6h (one scheduled tick),
+12h, 24h, 48h. Mathlib master always builds, so a failed warming
+attempt — `build_failed` included — is infra trouble, not a property
+of the SHA; the schedule keeps re-attempting without letting a
+flapping failure spin the self-hosted runner every tick. An exhausted
+SHA needs operator attention (or a `--manual-shas` backfill, which
+bypasses the filter).
 
 Output JSON:
 
@@ -143,13 +196,20 @@ Output JSON:
     {"sha": "<40-hex>",
      "tag": "lkg|fkb|both|manual",
      "downstreams": ["physlib", "FLT"]}
+  ],
+  "skipped": [
+    {"sha": "<40-hex>",
+     "tag": "lkg|fkb|both",
+     "downstreams": ["physlib"],
+     "status": "cache_warmth_hit|retry_backoff|retry_exhausted",
+     "detail": "<human-readable reason>"}
   ]
 }
 ```
 
-The orchestrator's `plan` job reads this, sets `matrix` and
-`has_jobs` outputs, and the matrix job is skipped when the plan is
-empty.
+The orchestrator's `plan` job reads this, sets `matrix`, `has_jobs`,
+`skipped`, and `has_skipped` outputs, and the matrix job is skipped
+when the plan is empty.
 
 ## Per-SHA chain (`_warm-one-sha.yml`)
 
@@ -275,12 +335,14 @@ Steps:
 and emits an `::error::` annotation, but the workflow_run conclusion
 stays `success`, so the publish-lkg + generate-pages chain still
 fires and a failed SHA never blocks the snapshot refresh that serves
-every downstream.
+every downstream. (The failed SHA's own downstreams are protected by
+the `recommended_bump_commit` gate, which stays null for them.)
 
-`build_failed` is recorded but not loud, because mathlib was
-occasionally non-buildable on master in the past — the FKB of a
-downstream is a mathlib commit that broke that downstream, not
-necessarily mathlib itself, but rare exceptions exist.
+All three `*_failed` statuses are failures of the warming *attempt*,
+not of the SHA: mathlib master always builds, so `build_failed` is
+runner trouble (OOM, disk, toolchain download) just as `push_failed`
+and `verify_failed` are Azure trouble. The planner re-attempts each of
+them on the backoff schedule described under "Plan job".
 
 `no_result` is synthesised by the finalize job for any SHA that was
 in the plan but didn't upload a `warm-result-<sha>` artifact —
@@ -309,11 +371,16 @@ allowed-failure jobs in the matrix.
 After rendering the summary, the job runs
 `scripts/record_warm_shas.py --backend sql ... --summary summary.json`
 which upserts `(upstream, sha)` rows into `cache_warmth` for every
-entry whose status is `already_warm` or `warmed`. Mathlib's olean
-cache is content-hashed and immutable per SHA, so once a SHA is
-recorded as warm it is dropped from future plans indefinitely. The
-recording step has `if: always()` so partial failures still persist
-the SHAs that did succeed.
+entry whose status is terminal (`already_warm`, `warmed`,
+`build_failed`, `push_failed`, `verify_failed`), storing the status
+verbatim, stamping the attempt time, and incrementing the row's
+attempt counter. A verified-warm row is dropped from future plans
+indefinitely (the olean cache is content-hashed and immutable per
+SHA); a failed row re-enters the plan on the backoff schedule.
+`no_result` entries and the planner's own skip statuses are never
+recorded — neither represents an attempt that ran. The recording step
+has `if: always()` so partial failures still persist the SHAs that
+did report.
 
 `record_warm_shas.py` takes the write-capable `POSTGRES_DSN`, so `finalize`
 runs in the main-only `publish` GitHub Environment and the whole job is gated
@@ -398,7 +465,7 @@ python3 scripts/plan_cache_warm_jobs.py \
   --backend dry-run \
   --inventory ci/inventory/downstreams.json \
   --output /tmp/plan.json
-cat /tmp/plan.json   # → {"include": []} if no warm_cache=true entries
+cat /tmp/plan.json   # → {"include": [], "skipped": []} off SQL (dry-run reads no statuses)
 ```
 
 With manual SHAs:
@@ -445,8 +512,14 @@ data) the in-job verify can't.
 
 ## Failure modes
 
-- **`build_failed`** — mathlib didn't build at the SHA. Probably a
-  legitimately broken master commit (rare). Workflow does not fail.
+All three per-SHA failure statuses are retried on the backoff
+schedule; a SHA that exhausts its retry budget surfaces as
+`retry_exhausted` in the finalize summary with a `::warning::`
+annotation.
+
+- **`build_failed`** — mathlib didn't build at the SHA. Master always
+  builds, so this is runner trouble (OOM, disk pressure, toolchain
+  download flake). Workflow does not fail.
 - **`push_failed`** — mint succeeded but the put-staged call errored.
   Look at the push step's logs and Azure storage account health.
   The upload_cache job goes red (allowed failure); the run stays
