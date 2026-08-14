@@ -50,6 +50,9 @@ concurrency:
   group: mathlib-downstream-${{ github.ref }}
   cancel-in-progress: false
 
+env:
+  MATHLIB_CACHE_GET_URL: https://cache.mathlib.org/mathlib4
+
 jobs:
   plan:
     runs-on: ubuntu-latest

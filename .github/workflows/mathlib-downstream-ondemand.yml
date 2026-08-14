@@ -35,6 +35,9 @@ concurrency:
   group: mathlib-downstream-ondemand-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  MATHLIB_CACHE_GET_URL: https://cache.mathlib.org/mathlib4
+
 jobs:
   plan:
     runs-on: ubuntu-latest
