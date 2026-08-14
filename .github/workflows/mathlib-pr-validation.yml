@@ -65,6 +65,9 @@ concurrency:
   cancel-in-progress: false
 
 env:
+  # cache.mathlib.org is an internal endpoint with no reliability
+  # guarantee; a miss only costs a rebuild, because the fetch is
+  # best-effort.
   MATHLIB_CACHE_GET_URL: https://cache.mathlib.org/mathlib4
 
 jobs:
