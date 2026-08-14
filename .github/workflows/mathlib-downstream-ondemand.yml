@@ -36,6 +36,8 @@ concurrency:
   cancel-in-progress: true
 
 env:
+  # cache.mathlib.org is an internal endpoint with no reliability
+  # guarantee; a miss makes the probe build that revision from source.
   MATHLIB_CACHE_GET_URL: https://cache.mathlib.org/mathlib4
 
 jobs:
