@@ -7,7 +7,9 @@ Coverage scope:
       → versioned JSON-shaped dict.  Tests pin every documented field
       (``schema_version``, ``upstream``, ``exported_at``, ``source_run``,
       ``downstreams[*].{repo, dependency_name, last_known_good_commit,
-      first_known_bad_commit, last_good_release, last_good_release_commit}``).
+      last_known_good_commit_warm, first_known_bad_commit,
+      first_known_bad_commit_warm, last_good_release,
+      last_good_release_commit}``).
     - ``main`` (CLI) — argv → output file.  Integration-style: writes a
       real temp file and re-reads it.
     - ``_fetch_source_run`` — DB lookup that resolves the regression run
@@ -25,9 +27,10 @@ Why this matters
 ----------------
 ``lkg/latest.json`` is the public contract that downstream Lean
 projects' bump actions read every time they open a PR.  A wrong
-``last_known_good_commit`` field would advertise a SHA whose Azure
-olean cache is cold (the warming pipeline is the gate against this; the
-snapshot is the artefact users see).  ``schema_version`` is the
+``last_known_good_commit`` sends a project to a SHA that does not
+build; a wrong ``*_warm`` flag sends it to one whose Azure oleans are
+missing, which costs it a full mathlib build it was told to expect for
+free.  ``schema_version`` is the
 forward-compatibility lever — pinning it here means a maintainer who
 bumps it has to update the test in lockstep, which forces them to
 think about whether existing consumers can still read the new shape.
@@ -112,6 +115,14 @@ def _make_backend(
 def _warmth(status: str) -> CacheWarmthRecord:
     """A minimal warmth record; the exporter only reads ``is_warm``."""
     return CacheWarmthRecord(status=status, attempts=1, last_attempt_at="2026-08-12T00:00:00Z")
+
+
+# A downstream mid-regression: both endpoints recorded, so one status covers
+# the LKG and FKB warmth fields at once.
+_BOTH_ENDPOINTS = DownstreamStatusRecord(
+    last_known_good_commit="goodabc",
+    first_known_bad_commit="bad222",
+)
 
 
 # ---------------------------------------------------------------------------
@@ -228,36 +239,58 @@ class TestBuildSnapshotCommitField:
         assert snap["downstreams"]["physlib"]["first_known_bad_commit"] is None
 
     @pytest.mark.parametrize(
-        "warmth,expected",
+        "status,warmth,expected_lkg_warm,expected_fkb_warm",
         [
-            pytest.param({}, None, id="no_warmth_record_pending"),
-            pytest.param({"goodabc": _warmth("warmed")}, "goodabc", id="warmed"),
-            pytest.param({"goodabc": _warmth("already_warm")}, "goodabc", id="already_warm"),
-            pytest.param({"goodabc": _warmth("push_failed")}, None, id="failed_attempt"),
-            pytest.param({"othersha": _warmth("warmed")}, None, id="different_sha_warm"),
+            pytest.param(_BOTH_ENDPOINTS, {}, False, False, id="never_attempted"),
+            pytest.param(
+                _BOTH_ENDPOINTS, {"goodabc": _warmth("warmed")}, True, False, id="lkg_warmed"
+            ),
+            pytest.param(
+                _BOTH_ENDPOINTS,
+                {"goodabc": _warmth("already_warm"), "bad222": _warmth("warmed")},
+                True,
+                True,
+                id="both_endpoints_warm",
+            ),
+            pytest.param(
+                _BOTH_ENDPOINTS, {"bad222": _warmth("warmed")}, False, True, id="fkb_warmed_alone"
+            ),
+            pytest.param(
+                _BOTH_ENDPOINTS, {"goodabc": _warmth("push_failed")}, False, False, id="attempt_failed"
+            ),
+            pytest.param(
+                _BOTH_ENDPOINTS, {"othersha": _warmth("warmed")}, False, False, id="unrelated_sha_warm"
+            ),
+            pytest.param(None, {"goodabc": _warmth("warmed")}, False, False, id="no_commits_to_warm"),
         ],
     )
-    def test_recommended_bump_commit_gated_on_verified_warmth(
-        self, warmth: dict[str, CacheWarmthRecord], expected: str | None
+    def test_warm_flags_report_verified_cache_warmth_per_commit(
+        self,
+        status: DownstreamStatusRecord | None,
+        warmth: dict[str, CacheWarmthRecord],
+        expected_lkg_warm: bool,
+        expected_fkb_warm: bool,
     ) -> None:
         """
-        Scenario: recommended_bump_commit carries the LKG commit only when
-        its cache_warmth record is verified warm; pending, failed, or
-        unrelated warmth leaves it null.  This per-downstream gate — not
-        the workflow chaining — is what keeps bump consumers off cold SHAs.
+        Scenario: each published commit carries a boolean saying whether its
+        oleans are verified in mathlib's cache.  Only ``warmed`` /
+        ``already_warm`` records count as warm; a never-attempted SHA, a
+        failed attempt, an unrelated warm SHA, and an absent commit all read
+        false.  The commit fields themselves are unaffected — the snapshot
+        states the warmth and leaves the bump decision to the consumer.
         """
-        statuses = {
-            "physlib": DownstreamStatusRecord(last_known_good_commit="goodabc")
-        }
+        statuses = {"physlib": status} if status else {}
         snap = build_snapshot(_make_backend(statuses, warmth), _INVENTORY, _UPSTREAM)
-        assert snap["downstreams"]["physlib"]["recommended_bump_commit"] == expected
-
-    def test_recommended_bump_commit_null_without_lkg(self) -> None:
-        """Scenario: no LKG means nothing to recommend, even with warmth rows present."""
-        snap = build_snapshot(
-            _make_backend(warmth={"goodabc": _warmth("warmed")}), _INVENTORY, _UPSTREAM
+        entry = snap["downstreams"]["physlib"]
+        assert entry["last_known_good_commit_warm"] is expected_lkg_warm
+        assert entry["first_known_bad_commit_warm"] is expected_fkb_warm
+        # Warmth annotates the commits; it never withholds them.
+        assert entry["last_known_good_commit"] == (
+            status.last_known_good_commit if status else None
         )
-        assert snap["downstreams"]["physlib"]["recommended_bump_commit"] is None
+        assert entry["first_known_bad_commit"] == (
+            status.first_known_bad_commit if status else None
+        )
 
     def test_status_present_for_only_one_downstream(self) -> None:
         """Scenario: downstream with status gets populated fields; other gets nulls."""

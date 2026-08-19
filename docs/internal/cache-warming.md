@@ -5,9 +5,9 @@ that does not opt out via `warm_cache: false`, and pushes the
 resulting oleans to mathlib's shared Azure cache, so external
 consumers of `lkg/latest.json` (e.g. the `bump-to-latest` action) hit
 a warm cache instead of having to rebuild mathlib from scratch. The
-snapshot's `recommended_bump_commit` field is gated on the warmth this
-workflow verifies: it carries the LKG commit only once its cache is
-confirmed present, and stays null for downstreams that don't warm.
+snapshot reports the warmth this workflow verifies: each published
+commit carries a `*_warm` flag. A cold commit is still published, and
+a consumer that bumps onto it gets a warning on the PR it opens.
 
 ## Why
 
@@ -60,24 +60,31 @@ warm-mathlib-cache.yml         (orchestrator; also: cron every 6h, dispatch)
         (refresh lkg/latest.json, runs/latest.json, and the Pages site)
 ```
 
-**Where the warmth contract lives.** Per downstream, in the snapshot
-itself: `export_lkg_snapshot.py` publishes `recommended_bump_commit` —
-the LKG commit, but only when its `cache_warmth` row is verified warm
-(`already_warm` / `warmed`). Bump consumers (`bump-to-latest`'s default
-`recommended-bump` query type) read that field and skip cleanly while
-it is null, so a failed or pending warming attempt for one SHA never
-sends a consumer to a cold cache and never blocks the snapshot refresh
-that serves every other downstream. A downstream not opted into
-warming publishes a permanently-null recommendation — narrowed scope,
-same honesty. `last_known_good_commit` /
-`first_known_bad_commit` keep meaning the compatibility boundary,
-regardless of warmth — redefining them would break the LKG/FKB
-adjacency invariant.
+**Where the warmth shows up.** In the snapshot, beside each commit:
+`export_lkg_snapshot.py` publishes `last_known_good_commit_warm` and
+`first_known_bad_commit_warm`, each true only when that SHA's
+`cache_warmth` row is verified warm (`already_warm` / `warmed`).
+
+The snapshot reports warmth; it never acts on it. There is no second
+"which commit" field to keep in sync, and `last_known_good_commit` /
+`first_known_bad_commit` keep meaning exactly the compatibility
+boundary — redefining them would break the LKG/FKB adjacency
+invariant. A cold SHA is published like any other, and the consumer
+decides: `bump-to-latest` bumps to it and puts a warning in the PR
+body naming the cost and where to ask for warming. That keeps the
+feedback where someone can act on it. A project that repeatedly pays
+for a from-source mathlib build has a concrete thing to point at, and
+the fix is to enable warming for it rather than to have the snapshot
+quietly withhold its target.
+
+Warmth is published per commit rather than per downstream because it
+is a fact about a SHA in mathlib's cache, shared by every downstream
+that happens to sit on it.
 
 **Why publish-lkg / generate-pages chain off warming, not off the
 report directly.** Ordering: a freshly-reported LKG gets its warming
 attempt before the snapshot refresh, so in the common case the same
-cycle that reported it also recommends it. If warming is skipped or
+cycle that reported it also publishes it warm. If warming is skipped or
 fails outright, the snapshot and the rendered status page do not
 refresh — consumers continue to see the previous cycle.
 
@@ -99,7 +106,9 @@ DB state and republish.
 | `scripts/test_plan_cache_warm_jobs.py` | Unit tests for the planner. |
 | `scripts/record_warm_shas.py` | CLI used by the finalize job: reads `summary.json`, upserts `(upstream, sha)` rows into `cache_warmth` with each attempted SHA's terminal status. |
 | `scripts/test_record_warm_shas.py` | Unit tests for the warmth-recording filter. |
-| `scripts/export_lkg_snapshot.py` | Publishes `recommended_bump_commit` gated on verified warmth. |
+| `scripts/export_lkg_snapshot.py` | Publishes the `last_known_good_commit_warm` / `first_known_bad_commit_warm` flags beside each commit. |
+| `.github/scripts/fetch-latest.sh` | Reads the flag for the requested query type and exposes it as the `cache_warm` output. |
+| `.github/actions/bump-to-latest/action.yml` | Turns a `cache_warm=false` target into a step warning and a warning block in `bump-description`. |
 | `scripts/models.py` | `DownstreamConfig.warm_cache: bool = True` opt-out flag. |
 | `scripts/storage.py` | `cache_warmth` table (`status`, `attempts`, `last_attempt_at`) + `load_cache_warmth` / `record_warmth_results` on the storage backends. |
 
@@ -150,17 +159,15 @@ Azure olean container is ever cleared.
 ## Opt-out
 
 `DownstreamConfig.warm_cache: bool = True`. Warming is on by default
-so a newly-added downstream gets a warm `recommended_bump_commit`
-automatically — TauCeti's cold pins in issue #77 came from consuming
-bumps without being warmed.
+so a newly-added downstream's SHAs are warm by the time anything bumps
+to them — TauCeti's cold pins in issue #77 came from consuming bumps
+without being warmed.
 
 Set `"warm_cache": false` in `ci/inventory/downstreams.json` for
-downstreams that don't consume hopscotch bumps (`bump-to-latest` or
-anything else reading `recommended_bump_commit`): warming them is
-wasted compute, and the snapshot gate keeps the contract honest on
-their behalf by publishing a permanently-null
-`recommended_bump_commit` (a bump job pointed at them would skip
-cleanly rather than land on a cold SHA).
+downstreams that don't consume hopscotch bumps: warming them is wasted
+compute. Their commits are still published; the snapshot simply reports
+them cold. If such a project later starts bumping, its first bump PR
+carries the cold-cache warning, which is the signal to flip the flag.
 
 Deduplication by SHA keeps the default's marginal cost low: passing
 downstreams share master push tips (which mathlib's own CI already
@@ -351,8 +358,9 @@ Steps:
 and emits an `::error::` annotation, but the workflow_run conclusion
 stays `success`, so the publish-lkg + generate-pages chain still
 fires and a failed SHA never blocks the snapshot refresh that serves
-every downstream. (The failed SHA's own downstreams are protected by
-the `recommended_bump_commit` gate, which stays null for them.)
+every downstream. (The failed SHA is published with its `*_warm` flag
+false, so a consumer that bumps onto it is warned rather than
+surprised.)
 
 All three `*_failed` statuses are failures of the warming *attempt*,
 not of the SHA: mathlib master always builds, so `build_failed` is

@@ -837,7 +837,7 @@ class TestSqlBackendCacheWarmthRoundTrip:
 
     The ``cache_warmth`` row is the contract between the warming
     workflow's finalize job (writer) and both the planner (retry
-    schedule) and the LKG exporter (``recommended_bump_commit`` gate).
+    schedule) and the LKG exporter (the snapshot's ``*_warm`` flags).
     The attempt counter must accumulate across runs — it is what caps
     the retry schedule.
     """

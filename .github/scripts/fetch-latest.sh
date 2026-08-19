@@ -12,18 +12,19 @@
 #                    first-known-bad            — first_known_bad_commit
 #                    last-good-release          — last_good_release (tag) +
 #                                                 last_good_release_commit
-#                    recommended-bump           — recommended_bump_commit (the
-#                                                 LKG commit, published only
-#                                                 once its mathlib cache is
-#                                                 verified warm; empty while
-#                                                 warming is pending)
 #
 # Writes to GITHUB_OUTPUT:
-#   rev, commit, downstream_name, repo, dependency_name, upstream
-#   rev      — the human-readable ref (tag name for last-good-release, SHA otherwise)
-#   commit   — commit SHA (resolved from the tag for last-good-release)
-#   upstream — the upstream repo slug the snapshot tracks (top-level `.upstream`),
-#              empty if the snapshot predates the field
+#   rev, commit, cache_warm, downstream_name, repo, dependency_name, upstream
+#   rev        — the human-readable ref (tag name for last-good-release, SHA otherwise)
+#   commit     — commit SHA (resolved from the tag for last-good-release)
+#   cache_warm — "true"/"false": whether the snapshot verified the target
+#                commit's mathlib oleans are in the Azure cache. Empty when
+#                unknown — a last-good-release target (the snapshot publishes
+#                no warmth for release commits) or a snapshot predating the
+#                `*_warm` fields. Empty is not "cold": callers warn on an
+#                explicit "false" only.
+#   upstream   — the upstream repo slug the snapshot tracks (top-level `.upstream`),
+#                empty if the snapshot predates the field
 #
 # Exits non-zero with a diagnostic message if the downstream is not found.
 
@@ -82,24 +83,34 @@ DEP_NAME=$(printf '%s' "$ENTRY" | jq -r '.dependency_name')
 # snapshots that predate the field so consumers can fall back gracefully.
 UPSTREAM=$(jq -r '.upstream // empty' /tmp/downstream-snapshot.json)
 
+# Read a published warmth flag as "true"/"false", or empty when the snapshot
+# does not carry it. `// empty` is wrong here: jq treats `false` as null-ish,
+# so a cold commit would read the same as a missing field.
+warm_flag() {
+  printf '%s' "$ENTRY" | jq -r --arg field "$1" \
+    'if (.[$field] | type) == "boolean" then (.[$field] | tostring) else "" end'
+}
+
 # Select the commit field based on QUERY_TYPE.
 RESOLVED_TYPE="${QUERY_TYPE:-last-known-good}"
 case "$RESOLVED_TYPE" in
   first-known-bad)
     TARGET_COMMIT=$(printf '%s' "$ENTRY" | jq -r '.first_known_bad_commit // empty')
     TARGET_SHA="$TARGET_COMMIT"
+    TARGET_WARM=$(warm_flag first_known_bad_commit_warm)
     COMMIT_LABEL="FKB commit" ;;
   last-good-release)
     TARGET_COMMIT=$(printf '%s' "$ENTRY" | jq -r '.last_good_release // empty')
     TARGET_SHA=$(printf '%s' "$ENTRY" | jq -r '.last_good_release_commit // empty')
+    # The snapshot publishes warmth for the LKG/FKB endpoints only. A release
+    # commit is a master commit mathlib's own CI caches, so leave it unknown
+    # rather than reporting a warmth nobody verified.
+    TARGET_WARM=""
     COMMIT_LABEL="Release tag" ;;
-  recommended-bump)
-    TARGET_COMMIT=$(printf '%s' "$ENTRY" | jq -r '.recommended_bump_commit // empty')
-    TARGET_SHA="$TARGET_COMMIT"
-    COMMIT_LABEL="Recommended bump commit" ;;
   *)  # last-known-good (default)
     TARGET_COMMIT=$(printf '%s' "$ENTRY" | jq -r '.last_known_good_commit // empty')
     TARGET_SHA="$TARGET_COMMIT"
+    TARGET_WARM=$(warm_flag last_known_good_commit_warm)
     COMMIT_LABEL="LKG commit" ;;
 esac
 
@@ -114,9 +125,11 @@ echo "Dependency:   $DEP_NAME"
 echo "Upstream:     ${UPSTREAM:-<none>}"
 echo "Commit type:  $RESOLVED_TYPE"
 echo "$COMMIT_LABEL: ${TARGET_COMMIT:-<none>}"
+echo "Cache warm:   ${TARGET_WARM:-<unknown>}"
 
 echo "rev=$TARGET_COMMIT"             >> "$GITHUB_OUTPUT"
 echo "commit=$TARGET_SHA"             >> "$GITHUB_OUTPUT"
+echo "cache_warm=$TARGET_WARM"        >> "$GITHUB_OUTPUT"
 echo "downstream_name=$DS_NAME"       >> "$GITHUB_OUTPUT"
 echo "repo=$REPO"                     >> "$GITHUB_OUTPUT"
 echo "dependency_name=$DEP_NAME"      >> "$GITHUB_OUTPUT"

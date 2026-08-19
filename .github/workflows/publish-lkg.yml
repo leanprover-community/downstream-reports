@@ -19,15 +19,13 @@ name: publish-lkg
 # mathlib-downstream-report. The full chain is:
 # mathlib-downstream-report → warm-mathlib-cache → publish-lkg.
 #
-# The warmth contract lives in the snapshot itself, per downstream: the
-# `recommended_bump_commit` field carries the LKG commit only once the
-# warming workflow has verified its cache (cache_warmth status), so bump
-# consumers never land on a cold SHA even when an individual warming
-# attempt failed. `last_known_good_commit` / `first_known_bad_commit`
-# keep meaning the compatibility boundary regardless of warmth. Chaining
-# off warm-mathlib-cache (not the report directly) keeps the snapshot
-# refresh ordered after the warming pass, so a freshly-warmed LKG is
-# recommended on the same cycle that warmed it.
+# The snapshot reports warmth per commit rather than acting on it: each
+# published SHA carries a `*_warm` flag saying whether the warming
+# workflow verified its oleans (cache_warmth status). A cold SHA is still
+# published — a consumer that bumps to it gets a warning on the PR, not a
+# silent skip. Chaining off warm-mathlib-cache (not the report directly)
+# keeps the snapshot refresh ordered after the warming pass, so a
+# freshly-warmed LKG is reported warm on the same cycle that warmed it.
 #
 # Required GitHub configuration (one-time setup):
 #   Secrets:   AZURE_CLIENT_ID, AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID, POSTGRES_DSN

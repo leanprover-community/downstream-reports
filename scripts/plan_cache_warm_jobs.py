@@ -7,11 +7,10 @@ Two modes:
   ``downstream_status`` rows for every inventory entry except those that
   opt out via ``warm_cache: false``, collects every non-null
   ``last_known_good_commit`` and ``first_known_bad_commit``, and
-  deduplicates by SHA. Warming defaults on so a newly-added downstream
-  gets a warm ``recommended_bump_commit`` automatically; downstreams
-  that don't consume hopscotch bumps opt out, and simply publish a null
-  ``recommended_bump_commit`` — the published warmth contract stays
-  honest without paying the warming cost for non-consumers.
+  deduplicates by SHA. Warming defaults on so a newly-added downstream's
+  SHAs are warm by the time anything bumps to them; downstreams that
+  don't consume hopscotch bumps opt out, and the snapshot simply reports
+  their SHAs cold — honest at zero warming cost for non-consumers.
 
 * **Manual mode** (``--manual-shas a,b,c``): bypasses inventory + DB and
   emits one matrix entry per supplied SHA. Used by ``workflow_dispatch``

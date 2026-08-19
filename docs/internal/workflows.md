@@ -167,14 +167,14 @@ at the LKG / FKB SHAs reported for every downstream that does not opt out, and
 pushes the oleans to mathlib's shared Azure cache. External consumers of
 `lkg/latest.json` (e.g. the `bump-to-latest` action) hit a warm cache instead
 of having to rebuild mathlib from scratch when our reported SHAs land between
-bors merges. The snapshot's `recommended_bump_commit` field carries a
-downstream's LKG only once this workflow has verified its cache; failed
-warming attempts are retried with backoff.
+bors merges. The warmth this workflow verifies is what the snapshot's
+`*_warm` flags report, per published commit; failed warming attempts are
+retried with backoff.
 
 Warming defaults on (`DownstreamConfig.warm_cache: bool = True`); set
 `"warm_cache": false` in the inventory for downstreams that don't consume
-hopscotch bumps — they publish a null `recommended_bump_commit` and are
-never warmed.
+hopscotch bumps. Their commits are still published — the snapshot reports
+them cold, so anything that does bump onto one is warned first.
 
 `workflow_dispatch` accepts an optional comma-separated `shas` input that
 bypasses the inventory + DB lookup, useful for one-off backfills and for

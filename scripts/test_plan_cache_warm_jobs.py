@@ -30,10 +30,11 @@ The matrix is the contract with ``warm-mathlib-cache.yml``: a SHA listed
 in ``include`` will be cloned, built, and pushed to the shared Azure
 cache.  A SHA listed in ``skipped`` will be reported under its skip
 status (``cache_warmth_hit`` / ``retry_backoff`` / ``retry_exhausted``)
-in the finalize summary.  Misclassifying a cold SHA as warm causes
-``publish-lkg`` to advertise a ``recommended_bump_commit`` whose Azure
-cache is empty — exactly the cold-SHA contract violation the warming
-pipeline is designed to prevent.  See ``docs/internal/cache-warming.md``.
+in the finalize summary.  Misclassifying a cold SHA as warm both skips
+the build that would have warmed it and makes ``publish-lkg`` report it
+warm, so a consumer bumps onto an empty Azure cache with no warning —
+the exact outcome the warming pipeline exists to avoid.  See
+``docs/internal/cache-warming.md``.
 """
 
 from __future__ import annotations
@@ -225,8 +226,8 @@ class TestBuildMatrixFromDbOptOut:
         ``warm_cache: false`` marks a downstream that does not consume
         hopscotch bumps, so the warming cost is not paid for it.  An
         opted-out downstream with a populated LKG/FKB pair must
-        contribute zero entries — its published
-        ``recommended_bump_commit`` stays null instead.
+        contribute zero entries — the snapshot reports its SHAs cold
+        instead.
         """
         # Arrange
         inventory = {"physlib": _config("physlib", warm_cache=False)}

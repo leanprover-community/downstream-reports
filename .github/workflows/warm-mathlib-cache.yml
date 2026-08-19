@@ -3,9 +3,10 @@ name: warm-mathlib-cache
 # Builds mathlib at the LKG / FKB SHAs reported for every downstream not
 # opted out via `warm_cache: false` and pushes the resulting oleans to
 # the shared mathlib cache, so future consumers of `lkg/latest.json` hit
-# a warm cache. The published `recommended_bump_commit` field is gated on
-# the warmth this workflow verifies and records; opted-out downstreams
-# publish a null recommendation instead of an unwarmed SHA.
+# a warm cache. The warmth this workflow verifies and records is what the
+# snapshot's `*_warm` flags report, so a consumer bumping to a SHA nobody
+# warmed — an opted-out downstream, or a warming attempt still retrying —
+# is told as much on the PR it opens.
 #
 # Triggered after each successful regression report on main, plus
 # workflow_dispatch for manual backfills (with optional `shas` input that
@@ -282,7 +283,7 @@ jobs:
           # for every downstream over one SHA.
           if jq -e 'any(.[]; .status == "retry_exhausted")' \
                summary.json >/dev/null; then
-            echo "::warning::At least one SHA is out of warming retry budget (see the summary table); its downstreams keep a stale or empty recommended_bump_commit until it is warmed manually."
+            echo "::warning::At least one SHA is out of warming retry budget (see the summary table); the snapshot reports it cold, and bumps onto it warn, until it is warmed manually."
           fi
 
           # `no_result` is the only status that fails finalize: it
@@ -294,9 +295,9 @@ jobs:
           # the planner retries them with backoff, and they don't fail
           # the workflow_run because publish-lkg + generate-pages gate
           # on this workflow's success and they serve every downstream
-          # (per-SHA warmth gating happens in the snapshot's
-          # recommended_bump_commit field instead). `cache_warmth_hit`
-          # is the steady-state "everything is fine" case.
+          # (per-SHA warmth is reported in the snapshot's `*_warm` flags
+          # instead). `cache_warmth_hit` is the steady-state "everything
+          # is fine" case.
           if jq -e 'any(.[]; .status == "no_result")' \
                summary.json >/dev/null; then
             echo "::error::At least one SHA didn't report a result (runner timeout / matrix dropout)."
