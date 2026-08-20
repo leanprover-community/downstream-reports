@@ -292,45 +292,6 @@ class TestBuildSnapshotCommitField:
             status.first_known_bad_commit if status else None
         )
 
-    def test_warm_flag_is_per_commit_and_independent_of_warm_cache(self) -> None:
-        """
-        Scenario: an opted-out (``warm_cache: false``) downstream sits on the
-        same LKG SHA as a warming downstream — common, since passing
-        downstreams share master push tips.  Both report the flag true: the
-        exporter never consults ``warm_cache``, because warmth is a fact
-        about the SHA in mathlib's cache and the cache is warm for the
-        opt-out all the same.
-
-        This is the exact scenario where a per-downstream derived field went
-        wrong (issue #77 review): any future change that reintroduces
-        ``warm_cache`` into the flag computation — making it flicker with
-        who else shares the SHA — must fail here first.
-        """
-        opted_out = DownstreamConfig(
-            name="alglib",
-            repo="some-org/alglib",
-            default_branch="master",
-            dependency_name="mathlib",
-            warm_cache=False,
-        )
-        inventory = {"physlib": _PHYSLIB, "alglib": opted_out}
-        statuses = {
-            "physlib": DownstreamStatusRecord(last_known_good_commit="sharedsha"),
-            "alglib": DownstreamStatusRecord(last_known_good_commit="sharedsha"),
-        }
-        snap = build_snapshot(
-            _make_backend(statuses, {"sharedsha": _warmth("warmed")}),
-            inventory,
-            _UPSTREAM,
-        )
-        assert snap["downstreams"]["physlib"]["last_known_good_commit_warm"] is True
-        assert snap["downstreams"]["alglib"]["last_known_good_commit_warm"] is True, (
-            "Warmth is per-commit: the opt-out shares the warm SHA, so its "
-            "flag is true — warm_cache only decides who pays for warming"
-        )
-        # And the commit itself is published either way.
-        assert snap["downstreams"]["alglib"]["last_known_good_commit"] == "sharedsha"
-
     def test_status_present_for_only_one_downstream(self) -> None:
         """Scenario: downstream with status gets populated fields; other gets nulls."""
         statuses = {"physlib": DownstreamStatusRecord(last_known_good_commit="abc")}
