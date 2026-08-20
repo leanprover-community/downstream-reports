@@ -80,6 +80,11 @@ def build_snapshot(
         attempt recorded yet, an attempt still working through the retry
         schedule, a downstream opted out of warming, and a commit the
         snapshot has nothing to say about (``None``).
+
+        Warmth is a fact about a SHA in mathlib's cache, so the flag is
+        deliberately independent of ``warm_cache``: an opted-out downstream
+        whose commit was warmed for another downstream's sake reports
+        ``True`` — the cache is warm for it all the same.
         """
         if not commit:
             return False
