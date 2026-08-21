@@ -1776,14 +1776,19 @@ def render_chart(
 
     # Release landmarks: one labelled vertical line per release tag on the
     # anchored axis, on-axis only. Each scale keeps its own crowd-free
-    # subset, walking the tags from master outward so the nearer release of
-    # a crowded pair keeps its label — for release tags on master's history
-    # that is the newer one (the log scale bunches old releases, the linear
-    # scale can bunch recent ones).
+    # subset. Finals are walked before prereleases, each group from master
+    # outward: a final ships only days before the next cycle's rc1 lands on
+    # master, so the two nearly coincide on the axis and the final — the
+    # landmark readers navigate by — must win that slot; prereleases then
+    # fill whatever space remains (the log scale bunches old releases, the
+    # linear scale can bunch recent ones).
     def _kept_releases(x_of) -> list[tuple[str, int]]:
         kept: list[tuple[str, int]] = []
         positions: list[float] = []
-        for rtag, rgap in sorted((release_gaps or {}).items(), key=lambda kv: kv[1]):
+        for rtag, rgap in sorted(
+            (release_gaps or {}).items(),
+            key=lambda kv: ("-rc" in kv[0], kv[1]),
+        ):
             if not (dmin <= rgap <= dmax):
                 continue
             p = x_of(rgap)
@@ -2817,8 +2822,8 @@ def main() -> None:
     # Release-tag landmarks for the advance map: release tags (finals and
     # prereleases — targets step through both) that sit on master's history,
     # newest first, up to the axis extent. Ancestry filters patched re-tags
-    # out; when an rc bunches beside its final, the chart's crowding filter
-    # keeps the final.
+    # out; when an rc and a final bunch on the axis, the chart's crowding
+    # filter keeps the final.
     release_gaps: dict[str, int] = {}
     if master_sha:
         axis_extent = max(

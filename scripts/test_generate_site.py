@@ -338,18 +338,18 @@ class AdvanceMapTests(unittest.TestCase):
 
     def test_release_lines_mark_on_axis_releases_only(self) -> None:
         """Scenario: an on-axis release tag renders a labelled vertical line at
-        its distance behind master; off-axis tags drop, a crowded pair keeps
-        the tag nearer master (an rc beside its final loses to the final),
-        prereleases carry the fainter rc class, and the per-target fallback
-        renders no release lines at all."""
-        releases = {"v4.34.0": 6, "v4.34.0-rc2": 7, "v4.33.0-rc1": 13, "v4.32.0": 999}
+        its distance behind master; off-axis tags drop, a crowded final/rc
+        pair keeps the final even when the rc is nearer master, prereleases
+        carry the fainter rc class, and the per-target fallback renders no
+        release lines at all."""
+        releases = {"v4.35.0-rc1": 5, "v4.34.0": 6, "v4.33.0-rc1": 13, "v4.32.0": 999}
         html = self._chart([_make_row()], release_gaps=releases)
-        # dmax = gap + age = 15: v4.32.0 is off-axis; v4.34.0-rc2 sits within
-        # the crowding threshold of its final on both scales, so the final
-        # keeps the slot. v4.34.0 and v4.33.0-rc1 render one label and one
-        # line per scale each.
+        # dmax = gap + age = 15: v4.32.0 is off-axis; v4.35.0-rc1 sits within
+        # the crowding threshold of the v4.34.0 final on both scales, and the
+        # final wins the slot despite the rc being nearer master. v4.34.0 and
+        # v4.33.0-rc1 render one label and one line per scale each.
         assert html.count(">v4.34.0</span>") == 2
-        assert "v4.34.0-rc2" not in html
+        assert "v4.35.0-rc1" not in html
         assert html.count(">v4.33.0-rc1</span>") == 2
         assert "v4.32.0" not in html
         assert html.count("chart-release-line") == 4  # one row, two tags, one line per scale
