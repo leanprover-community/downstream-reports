@@ -153,10 +153,9 @@ jobs:
       # A cold cache is the normal reason this workflow runs, so the
       # probe is a router, not a check: it always exits 0 and reports
       # warm/cold through `outputs.status`, keeping ##[error]
-      # annotations (and lake's ANSI-red miss lines, via --no-ansi)
-      # out of the expected path — red in this job marks a real
-      # failure. The retry absorbs transient flakes (Azure 503,
-      # network blip) so a download hiccup on a complete cache
+      # annotations out of the expected path — red in this job marks
+      # a real failure. The retry absorbs transient flakes (Azure
+      # 503, network blip) so a download hiccup on a complete cache
       # doesn't trigger a needless full build.
       - name: Probe cache completeness
         id: probe
@@ -164,7 +163,7 @@ jobs:
         run: |
           probe() {
             lake exe cache get \
-              && lake build --no-build --no-ansi -v Mathlib
+              && lake build --no-build -v Mathlib
           }
           STATUS=cold
           if probe; then

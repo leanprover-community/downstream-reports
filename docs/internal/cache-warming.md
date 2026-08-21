@@ -268,15 +268,15 @@ Steps:
    (nightly-2026-03-09): the cache tool resolves `leantar` strictly
    from the sysroot, never from PATH.
 8. **Probe:** `lake exe cache get` then
-   `lake build --no-build --no-ansi -v Mathlib` (both in
-   `mathlib4/`). This runs the target SHA's own in-tree cache tool,
-   so completeness is measured exactly as a consumer at that SHA
-   sees it. The probe is a router, not a check: the step always
-   exits 0 and reports `warm`/`cold` through `outputs.status`, so a
-   cold cache (the normal reason the workflow runs) leaves no
-   `##[error]` annotation — red in this job marks a real failure.
-   If the probe reports `warm`, status becomes `already_warm` and
-   the chain ends.
+   `lake build --no-build -v Mathlib` (both in `mathlib4/`). This
+   runs the target SHA's own in-tree cache tool, so completeness is
+   measured exactly as a consumer at that SHA sees it. The probe is
+   a router, not a check: the step always exits 0 and reports
+   `warm`/`cold` through `outputs.status`, so a cold cache (the
+   normal reason the workflow runs) leaves no `##[error]`
+   annotation — red in this job marks a real failure. If the probe
+   reports `warm`, status becomes `already_warm` and the chain
+   ends.
 9. `lake build Mathlib` (in `mathlib4/`, only runs when the probe
    reports `cold`). The cache is content-hashed, so anything `cache get`
    already pulled is reused; only files whose hashes weren't in the
