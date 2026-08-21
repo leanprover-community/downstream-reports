@@ -115,7 +115,7 @@ commit introduced the breakage?*
    send) whenever the run is a dry run.
 
 **Dry-run / branch runs.** The `dry_run` flag (forced on for every non-main
-branch, and available as a dispatch input on main) no longer suppresses reads:
+branch, and available as a dispatch input on main) gates writes only:
 a dry run reads real prior state and runs the full select → probe → report
 pipeline exactly like a live run — only the `publish` write and the Zulip send
 are gated off. This makes a branch run a faithful rehearsal of production while

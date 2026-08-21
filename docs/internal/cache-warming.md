@@ -112,13 +112,11 @@ DB state and republish.
 | `scripts/models.py` | `DownstreamConfig.warm_cache: bool = True` opt-out flag. |
 | `scripts/storage.py` | `cache_warmth` table (`status`, `attempts`, `last_attempt_at`) + `load_cache_warmth` / `record_warmth_results` on the storage backends. |
 
-## Schema migration (status column)
+## Rebuilding the table
 
-`cache_warmth` carries `status`, `attempts`, and `last_attempt_at`
-(formerly just `warmed_at`). Rows written before the status column
-existed cannot be classified — membership used to conflate "verified
-warm" with "gave up" — so the migration is drop-and-rebuild rather
-than backfill:
+The `cache_warmth` table is a rebuildable cache of warming state, not
+a system of record. When its rows stop matching reality — for example
+after the Azure olean container is cleared — drop and re-create it:
 
 ```sql
 DROP TABLE cache_warmth;
@@ -133,12 +131,12 @@ CREATE TABLE cache_warmth (
 );
 ```
 
-This is cheap: the planner only consults rows for SHAs that are
+The rebuild is cheap: the planner only consults rows for SHAs that are
 *currently* someone's LKG/FKB, so the live set is small and the next
 scheduled tick re-probes it — a genuinely warm SHA takes the
 `already_warm` fast path (cache get + `--no-build` check, no build).
-Historical rows were dead weight. The same rebuild applies if the
-Azure olean container is ever cleared.
+Until that tick completes, the snapshot reports the re-probed SHAs
+cold.
 
 ## Trigger
 
