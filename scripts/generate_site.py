@@ -46,6 +46,10 @@ STALE_AFTER_HOURS = 36
 # a thin slice of axis (with softness 1, the final commit alone would span as
 # much as the 1→2 doubling — a wide, mostly empty stripe).
 CHART_LOG_SOFTNESS = 10
+# At most this many release-tag lines on the advance map. Release-stepped
+# targets walk these landmarks, but the log scale bunches old releases at the
+# left edge; newest-first, the cap also bounds per-tag distance lookups.
+MAX_RELEASE_LINES = 8
 
 
 # ---------------------------------------------------------------------------
@@ -270,6 +274,41 @@ def fetch_commit_distances(
     return result
 
 
+def fetch_ancestor_distance(
+    repo: str,
+    base: str,
+    head: str,
+    token: str | None,
+) -> int | None:
+    """Return how many commits *head* is ahead of *base* when *base* is an
+    ancestor of *head* (0 when identical); None when it is not an ancestor
+    (e.g. a patched re-tag off the main history) or on any API error.
+    """
+    if base == head:
+        return 0
+    headers: dict[str, str] = {
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+        "User-Agent": "downstream-reports/generate_site",
+    }
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+
+    url = f"{GITHUB_API}/repos/{repo}/compare/{base}...{head}"
+    req = urllib.request.Request(url, headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read())
+        if data.get("status") == "identical":
+            return 0
+        if data.get("status") == "ahead":
+            return data.get("ahead_by") or 0
+        return None
+    except Exception as exc:
+        print(f"  warning: could not fetch ancestor distance {base[:7]}…{head[:7]}: {exc}")
+        return None
+
+
 def fetch_branch_head(repo: str, branch: str, token: str | None) -> str | None:
     """Return the head commit SHA of *branch* in *repo*, or None on error."""
     headers: dict[str, str] = {
@@ -366,6 +405,29 @@ def git_tag_map(repo_dir: Path) -> dict[str, str]:
         if commit_sha and name:
             result[commit_sha] = _prefer_release_tag(result.get(commit_sha), name)
     return result
+
+
+def git_ancestor_distance(repo_dir: Path, base: str, head: str) -> int | None:
+    """Return how many commits *head* is ahead of *base* when *base* is an
+    ancestor of *head* (0 when identical); None when it is not an ancestor
+    (e.g. a patched re-tag off the main history) or on any git error.
+    """
+    if base == head:
+        return 0
+    try:
+        behind = int(subprocess.check_output(
+            ["git", "rev-list", "--count", f"{head}..{base}"],
+            cwd=repo_dir, text=True, stderr=subprocess.DEVNULL,
+        ).strip())
+        if behind:
+            return None
+        return int(subprocess.check_output(
+            ["git", "rev-list", "--count", f"{base}..{head}"],
+            cwd=repo_dir, text=True, stderr=subprocess.DEVNULL,
+        ).strip())
+    except (subprocess.CalledProcessError, ValueError) as exc:
+        print(f"  warning: git ancestor distance {base[:7]}…{head[:7]} failed: {exc}")
+        return None
 
 
 def git_rev_parse(repo_dir: Path, ref: str) -> str | None:
@@ -865,6 +927,7 @@ tr.detail-row > td {
 .chart-axis { position: relative; height: 16px; margin-left: 170px; font-size: 11px; color: var(--grey); }
 .chart-axis span { position: absolute; transform: translateX(-50%); white-space: nowrap; }
 .chart-axis span.tick-end { transform: translateX(-100%); }
+.chart-axis-releases { height: 15px; font-size: 10px; color: var(--tag-fg); }
 .chart-row { display: flex; align-items: center; gap: 10px; padding: 6px 0; }
 .chart-row:hover { background: var(--bg); }
 .chart-label {
@@ -874,6 +937,7 @@ tr.detail-row > td {
 .chart-track { position: relative; flex: 1; height: 16px; }
 .chart-baseline { position: absolute; left: 0; right: 0; top: 50%; height: 1px; background: var(--border); }
 .chart-gridline { position: absolute; top: -3px; bottom: -3px; width: 1px; background: var(--border); opacity: .55; }
+.chart-release-line { background: var(--tag-fg); opacity: .3; }
 .chart-bar { position: absolute; top: 5px; height: 6px; border-radius: 3px; z-index: 1; }
 .chart-bar-good { background: var(--green); opacity: .75; }
 .chart-bar-bad  { background: var(--red); opacity: .75; }
@@ -911,6 +975,7 @@ tr.detail-row > td {
 }
 .chart-marker-demo.chart-shape-fkb { border-radius: 2px; transform: rotate(45deg); }
 .chart-marker-demo.chart-shape-target { width: 3px; height: 12px; border: none; border-radius: 1.5px; }
+.legend-release-line { display: inline-block; width: 1px; height: 12px; background: var(--tag-fg); opacity: .6; }
 .chart-callouts {
   margin-top: 12px; font-size: 12px; color: var(--fg-muted);
   display: flex; flex-direction: column; gap: 4px;
@@ -1573,9 +1638,14 @@ def render_chart(
     sha_to_tag: dict[str, str],
     master_sha: str | None = None,
     master_gaps: dict[str, int | None] | None = None,
+    release_gaps: dict[str, int] | None = None,
 ) -> str:
     """Render the advance map: one track per downstream on a shared
     commits-behind-master axis (log scale).
+
+    *release_gaps* maps release tag names to their distance behind master;
+    each entry renders as a labelled vertical line through all rows — the
+    landmarks release-stepped targets walk. Anchored mode only.
 
     When *master_sha* is known, the right edge is the latest upstream master
     commit: each row's validation target sits ``master_gaps[target]`` commits
@@ -1688,6 +1758,45 @@ def render_chart(
         + "".join(f'<div class="chart-gridline scale-linear" style="left:{x_lin(c):.2f}%"></div>' for c in lin_ticks)
     )
 
+    # Release landmarks: one labelled vertical line per release tag on the
+    # anchored axis. Each scale keeps its own newest-first subset so labels
+    # never crowd (the log scale bunches old releases, the linear scale can
+    # bunch recent ones); on-axis only.
+    def _kept_releases(x_of) -> list[tuple[str, int]]:
+        kept: list[tuple[str, int]] = []
+        positions: list[float] = []
+        for rtag, rgap in sorted((release_gaps or {}).items(), key=lambda kv: kv[1]):
+            if not (dmin <= rgap <= dmax):
+                continue
+            p = x_of(rgap)
+            if all(abs(p - q) >= 7.0 for q in positions):
+                kept.append((rtag, rgap))
+                positions.append(p)
+        return kept
+
+    releases_log = _kept_releases(x_log) if anchored else []
+    releases_lin = _kept_releases(x_lin) if anchored else []
+    has_releases = bool(releases_log or releases_lin)
+
+    def release_span(rtag: str, rgap: int, pos: float, scale_cls: str) -> str:
+        tip = f"{esc(rtag)}&#10;{rgap} commit{'s' if rgap != 1 else ''} behind latest master"
+        return (
+            f'<span class="{scale_cls}" style="left:{pos:.2f}%" '
+            f'data-tooltip="{tip}">{esc(rtag)}</span>'
+        )
+
+    release_axis_html = (
+        '<div class="chart-axis chart-axis-releases">'
+        + "".join(release_span(t, g, x_log(g), "scale-log") for t, g in releases_log)
+        + "".join(release_span(t, g, x_lin(g), "scale-linear") for t, g in releases_lin)
+        + "</div>"
+    ) if has_releases else ""
+
+    gridlines += (
+        "".join(f'<div class="chart-gridline chart-release-line scale-log" style="left:{x_log(g):.2f}%"></div>' for _t, g in releases_log)
+        + "".join(f'<div class="chart-gridline chart-release-line scale-linear" style="left:{x_lin(g):.2f}%"></div>' for _t, g in releases_lin)
+    )
+
     def _scale_attrs(d_far: int, d_near: int | None = None) -> str:
         """Inline log position plus data attributes for both scales."""
         attrs = (
@@ -1792,6 +1901,10 @@ def render_chart(
         '<span><span class="chart-marker-demo chart-shape-target"></span>validation target</span>'
         if anchored else ""
     )
+    release_legend = (
+        '<span><span class="legend-release-line"></span>release tag</span>'
+        if has_releases else ""
+    )
     legend_html = (
         '<div class="chart-legend">'
         '<span><span class="legend-swatch" style="background:var(--green)"></span>safe to advance (pinned → last known good)</span>'
@@ -1802,6 +1915,7 @@ def render_chart(
         '<span><span class="chart-marker-demo chart-shape-lkg"></span>last known good</span>'
         '<span><span class="chart-marker-demo chart-shape-fkb"></span>first known bad</span>'
         f'{target_legend}'
+        f'{release_legend}'
         '</div>'
     )
 
@@ -1840,11 +1954,15 @@ def render_chart(
     )
     if anchored:
         master_link = commit_link(UPSTREAM_REPO, master_sha, ct(master_sha), tg(master_sha))
+        release_note = (
+            ' Labelled vertical lines mark Mathlib release tags.' if has_releases else ""
+        )
         caption = (
             f'Commits behind the latest Mathlib master commit {master_link} '
             '(the <strong>master</strong> tick on the right edge). '
             'Each project&#39;s bars end at its own validation target (the vertical tick); '
             'the stretch between a target and master has not been validated yet.'
+            f'{release_note}'
         )
     else:
         caption = (
@@ -1860,6 +1978,7 @@ def render_chart(
         f'<div class="chart-caption">{caption}</div>'
         f'{scale_toggle}'
         '</div>'
+        f'{release_axis_html}'
         f'{axis_html}'
         f'<div class="chart-rows">{"".join(row_divs)}</div>'
         f'{legend_html}'
@@ -2276,6 +2395,7 @@ def render(
     history: dict[str, list[dict]] | None = None,
     master_sha: str | None = None,
     master_gaps: dict[str, int | None] | None = None,
+    release_gaps: dict[str, int] | None = None,
 ) -> str:
     col_glossary_items = "".join(
         f'<div class="col-glossary-item">'
@@ -2434,6 +2554,7 @@ def render(
         sha_to_tag=sha_to_tag,
         master_sha=master_sha,
         master_gaps=master_gaps,
+        release_gaps=release_gaps,
     )
 
     # Hidden shell for the live pipeline-status layer: client-side JS asks
@@ -2670,6 +2791,46 @@ def main() -> None:
             )
             master_gaps = {t: pair_distances.get((t, master_sha)) for t in target_shas}
 
+    # Release-tag landmarks for the advance map: final release tags (no
+    # prereleases — targets step through rcs, but as landmarks they would
+    # bunch beside their final) that sit on master's history, newest first,
+    # up to the axis extent. Ancestry filters patched re-tags out.
+    release_gaps: dict[str, int] = {}
+    if master_sha:
+        axis_extent = max(
+            (
+                master_gaps[r["target_commit"]] + r["age_commits"]
+                for r in rows
+                if r.get("age_commits") is not None
+                and master_gaps.get(r.get("target_commit")) is not None
+            ),
+            default=0,
+        )
+        release_tags = sorted(
+            (
+                (tag, sha)
+                for sha, tag in sha_to_tag.items()
+                if RELEASE_TAG_RE.fullmatch(tag) and "-rc" not in tag
+            ),
+            key=lambda ts: tuple(int(p) for p in RELEASE_TAG_RE.fullmatch(ts[0]).groups()),
+            reverse=True,
+        )
+        if axis_extent and release_tags:
+            print("Placing release tags on the advance-map axis…")
+            for tag, sha in release_tags:
+                if len(release_gaps) >= MAX_RELEASE_LINES:
+                    break
+                if upstream_dir is not None:
+                    gap = git_ancestor_distance(upstream_dir, sha, master_sha)
+                else:
+                    gap = fetch_ancestor_distance(UPSTREAM_REPO, sha, master_sha, args.github_token)
+                if gap is None:
+                    continue
+                if gap > axis_extent:
+                    break
+                release_gaps[tag] = gap
+            print(f"  {len(release_gaps)} release(s) on the axis.")
+
     # Downstream commit titles always come from the API (we only clone the upstream).
     ds_by_repo: dict[str, set[str]] = defaultdict(set)
     for r in rows:
@@ -2694,6 +2855,7 @@ def main() -> None:
         history=history,
         master_sha=master_sha,
         master_gaps=master_gaps,
+        release_gaps=release_gaps,
     )
 
     out = Path(args.output)
