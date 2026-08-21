@@ -10,13 +10,21 @@
 #   QUERY_TYPE    Which commit field to extract. One of:
 #                    last-known-good  (default) — last_known_good_commit
 #                    first-known-bad            — first_known_bad_commit
+#                    last-good-release          — last_good_release (tag) +
+#                                                 last_good_release_commit
 #
 # Writes to GITHUB_OUTPUT:
-#   rev, commit, downstream_name, repo, dependency_name, upstream
-#   rev      — the human-readable ref (tag name for last-good-release, SHA otherwise)
-#   commit   — commit SHA (resolved from the tag for last-good-release)
-#   upstream — the upstream repo slug the snapshot tracks (top-level `.upstream`),
-#              empty if the snapshot predates the field
+#   rev, commit, cache_warm, downstream_name, repo, dependency_name, upstream
+#   rev        — the human-readable ref (tag name for last-good-release, SHA otherwise)
+#   commit     — commit SHA (resolved from the tag for last-good-release)
+#   cache_warm — "true"/"false": whether the snapshot verified the target
+#                commit's mathlib oleans are in the Azure cache. Empty when
+#                unknown — a last-good-release target (the snapshot publishes
+#                warmth for LKG/FKB commits only) or a snapshot without the
+#                `*_warm` fields. Empty means unknown, not cold: callers
+#                warn on an explicit "false" only.
+#   upstream   — the upstream repo slug the snapshot tracks (top-level `.upstream`),
+#                empty when the snapshot does not carry the field
 #
 # Exits non-zero with a diagnostic message if the downstream is not found.
 
@@ -75,20 +83,34 @@ DEP_NAME=$(printf '%s' "$ENTRY" | jq -r '.dependency_name')
 # snapshots that predate the field so consumers can fall back gracefully.
 UPSTREAM=$(jq -r '.upstream // empty' /tmp/downstream-snapshot.json)
 
+# Read a published warmth flag as "true"/"false", or empty when the snapshot
+# does not carry the field. The type check keeps a stored `false` distinct
+# from a missing field; jq's `//` operator treats `false` the same as null.
+warm_flag() {
+  printf '%s' "$ENTRY" | jq -r --arg field "$1" \
+    'if (.[$field] | type) == "boolean" then (.[$field] | tostring) else "" end'
+}
+
 # Select the commit field based on QUERY_TYPE.
 RESOLVED_TYPE="${QUERY_TYPE:-last-known-good}"
 case "$RESOLVED_TYPE" in
   first-known-bad)
     TARGET_COMMIT=$(printf '%s' "$ENTRY" | jq -r '.first_known_bad_commit // empty')
     TARGET_SHA="$TARGET_COMMIT"
+    TARGET_WARM=$(warm_flag first_known_bad_commit_warm)
     COMMIT_LABEL="FKB commit" ;;
   last-good-release)
     TARGET_COMMIT=$(printf '%s' "$ENTRY" | jq -r '.last_good_release // empty')
     TARGET_SHA=$(printf '%s' "$ENTRY" | jq -r '.last_good_release_commit // empty')
+    # The snapshot publishes warmth for the LKG/FKB endpoints only. A release
+    # commit is a master commit that mathlib's own CI caches, so its warmth
+    # here is unknown and the output stays empty.
+    TARGET_WARM=""
     COMMIT_LABEL="Release tag" ;;
   *)  # last-known-good (default)
     TARGET_COMMIT=$(printf '%s' "$ENTRY" | jq -r '.last_known_good_commit // empty')
     TARGET_SHA="$TARGET_COMMIT"
+    TARGET_WARM=$(warm_flag last_known_good_commit_warm)
     COMMIT_LABEL="LKG commit" ;;
 esac
 
@@ -103,9 +125,11 @@ echo "Dependency:   $DEP_NAME"
 echo "Upstream:     ${UPSTREAM:-<none>}"
 echo "Commit type:  $RESOLVED_TYPE"
 echo "$COMMIT_LABEL: ${TARGET_COMMIT:-<none>}"
+echo "Cache warm:   ${TARGET_WARM:-<unknown>}"
 
 echo "rev=$TARGET_COMMIT"             >> "$GITHUB_OUTPUT"
 echo "commit=$TARGET_SHA"             >> "$GITHUB_OUTPUT"
+echo "cache_warm=$TARGET_WARM"        >> "$GITHUB_OUTPUT"
 echo "downstream_name=$DS_NAME"       >> "$GITHUB_OUTPUT"
 echo "repo=$REPO"                     >> "$GITHUB_OUTPUT"
 echo "dependency_name=$DEP_NAME"      >> "$GITHUB_OUTPUT"

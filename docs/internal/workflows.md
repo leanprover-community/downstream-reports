@@ -115,7 +115,7 @@ commit introduced the breakage?*
    send) whenever the run is a dry run.
 
 **Dry-run / branch runs.** The `dry_run` flag (forced on for every non-main
-branch, and available as a dispatch input on main) no longer suppresses reads:
+branch, and available as a dispatch input on main) gates writes only:
 a dry run reads real prior state and runs the full select → probe → report
 pipeline exactly like a live run — only the `publish` write and the Zulip send
 are gated off. This makes a branch run a faithful rehearsal of production while
@@ -163,12 +163,19 @@ the database and sends a compact Markdown table to Zulip.
 See [`docs/internal/cache-warming.md`](cache-warming.md) for a full description.
 
 After each successful regression report on main, this workflow builds mathlib
-at the LKG / FKB SHAs reported for opted-in downstreams and pushes the oleans
-to mathlib's shared Azure cache. External consumers of `lkg/latest.json`
-(e.g. the `bump-to-latest` action) hit a warm cache instead of having to
-rebuild mathlib from scratch when our reported SHAs land between bors merges.
+at the LKG / FKB SHAs reported for every downstream that does not opt out, and
+pushes the oleans to mathlib's shared Azure cache. External consumers of
+`lkg/latest.json` (e.g. the `bump-to-latest` action) hit a warm cache instead
+of having to rebuild mathlib from scratch when our reported SHAs land between
+bors merges. The warmth this workflow verifies is what the snapshot's
+`*_warm` flags report, per published commit; failed warming attempts are
+retried with backoff.
 
-Per-downstream opt-in via `DownstreamConfig.warm_cache` in the inventory.
+Warming defaults on (`DownstreamConfig.warm_cache: bool = True`); set
+`"warm_cache": false` in the inventory for downstreams that don't consume
+hopscotch bumps. Their commits are still published — the snapshot reports
+them cold, so anything that does bump onto one is warned first.
+
 `workflow_dispatch` accepts an optional comma-separated `shas` input that
 bypasses the inventory + DB lookup, useful for one-off backfills and for
 testing on a feature branch. The build_stage_push job refuses SHAs that

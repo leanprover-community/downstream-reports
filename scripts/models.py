@@ -63,7 +63,13 @@ class DownstreamConfig:
     # try_skip_known_bad_bisect never fires because downstream_commit moves
     # between runs.
     revalidate_boundary: bool = False
-    warm_cache: bool = False
+    # When True (the default), the cache-warming workflow builds and pushes
+    # mathlib oleans for this downstream's LKG/FKB SHAs, and the snapshot
+    # reports those SHAs warm.  Set `"warm_cache": false` for downstreams
+    # that do not consume hopscotch bumps; warming them wastes compute.
+    # The snapshot still publishes their commits and reports them cold, so
+    # a bump onto one carries a warning.
+    warm_cache: bool = True
     # When True, the probe step sets HOPSCOTCH_DEBUG_NUKE_LAKEDIR=1 in the
     # hopscotch subprocess environment.  Hopscotch then wipes <projectDir>/.lake
     # (preserving .lake/hopscotch/) before every probe and forces the bump step

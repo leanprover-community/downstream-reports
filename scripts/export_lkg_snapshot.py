@@ -66,15 +66,43 @@ def build_snapshot(
     statuses: dict[str, DownstreamStatusRecord] = backend.load_all_statuses(
         "regression", upstream
     )
+    warmth = backend.load_cache_warmth(upstream)
+
+    def _is_warm(commit: str | None) -> bool:
+        """Whether *commit*'s mathlib oleans are verified in the Azure cache.
+
+        Published beside each commit so a consumer knows what a bump onto it
+        costs before it starts.  The snapshot publishes every commit and
+        states warmth beside it; the consumer decides (the bump actions
+        turn a ``False`` into a warning on the PR they open).
+
+        ``False`` covers every case short of verified warm: no warming
+        attempt recorded yet, an attempt still working through the retry
+        schedule, a downstream opted out of warming, and a ``None``
+        commit.
+
+        Warmth is a fact about a SHA in mathlib's cache, so the flag is
+        deliberately independent of ``warm_cache``: an opted-out downstream
+        whose commit was warmed for another downstream's sake reports
+        ``True`` — the cache is warm for it all the same.
+        """
+        if not commit:
+            return False
+        record = warmth.get(commit)
+        return record is not None and record.is_warm
 
     downstreams: dict[str, dict[str, Any]] = {}
     for name, config in inventory.items():
         status = statuses.get(name)
+        last_known_good = status.last_known_good_commit if status else None
+        first_known_bad = status.first_known_bad_commit if status else None
         downstreams[name] = {
             "repo": config.repo,
             "dependency_name": config.dependency_name,
-            "last_known_good_commit": status.last_known_good_commit if status else None,
-            "first_known_bad_commit": status.first_known_bad_commit if status else None,
+            "last_known_good_commit": last_known_good,
+            "last_known_good_commit_warm": _is_warm(last_known_good),
+            "first_known_bad_commit": first_known_bad,
+            "first_known_bad_commit_warm": _is_warm(first_known_bad),
             "last_good_release": status.last_good_release if status else None,
             "last_good_release_commit": status.last_good_release_commit if status else None,
         }

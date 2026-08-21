@@ -402,7 +402,7 @@ jobs:
       - name: Fail job on push failure
         if: steps.push.outcome == 'failure'
         run: |
-          echo "::error::Cache push failed for ${{ inputs.sha }} after one retry; recorded as push_failed and skipped on future ticks."
+          echo "::error::Cache push failed for ${{ inputs.sha }} after one retry; recorded as push_failed and re-attempted with backoff on future ticks."
           exit 1
 
   verify:
@@ -472,5 +472,5 @@ jobs:
       - name: Fail job on verify failure
         if: steps.verify.outcome == 'failure'
         run: |
-          echo "::error::Cache verification failed for ${{ inputs.sha }} after one retry; recorded as verify_failed and skipped on future ticks."
+          echo "::error::Cache verification failed for ${{ inputs.sha }} after one retry; recorded as verify_failed and re-attempted with backoff on future ticks."
           exit 1

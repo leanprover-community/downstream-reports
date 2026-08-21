@@ -32,6 +32,13 @@ outputs:
   commit:
     description: 'The resolved commit SHA (same as rev for non-release query types)'
     value: ${{ steps.lookup.outputs.commit }}
+  cache-warm:
+    description: >
+      Whether the snapshot verified this commit's mathlib oleans are in the
+      Azure cache: "true", "false", or empty when unknown (a last-good-release
+      target, or a snapshot predating the warmth fields). A "false" target
+      still builds — it just builds mathlib from source first.
+    value: ${{ steps.lookup.outputs.cache_warm }}
   downstream-name:
     description: 'The downstream name key as registered in the snapshot'
     value: ${{ steps.lookup.outputs.downstream_name }}

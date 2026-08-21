@@ -4,9 +4,13 @@
 Two modes:
 
 * **DB / inventory mode** (default): reads the regression-workflow
-  ``downstream_status`` rows for the inventory entries that opt in via
-  ``warm_cache: true``, collects every non-null ``last_known_good_commit``
-  and ``first_known_bad_commit``, and deduplicates by SHA.
+  ``downstream_status`` rows for every inventory entry except those that
+  opt out via ``warm_cache: false``, collects every non-null
+  ``last_known_good_commit`` and ``first_known_bad_commit``, and
+  deduplicates by SHA. Warming defaults on, so a newly-added downstream's
+  SHAs are warm by the time anything bumps to them. Downstreams that do
+  not consume hopscotch bumps opt out; the snapshot reports their SHAs
+  cold, at zero warming cost.
 
 * **Manual mode** (``--manual-shas a,b,c``): bypasses inventory + DB and
   emits one matrix entry per supplied SHA. Used by ``workflow_dispatch``
@@ -20,18 +24,29 @@ Output JSON shape::
          "downstreams": ["physlib", "FLT"]},
         ...
       ],
-      "skipped_warm": [
+      "skipped": [
         {"sha": "<40-hex>", "tag": "lkg|fkb|both",
-         "downstreams": ["physlib", "FLT"]},
+         "downstreams": ["physlib", "FLT"],
+         "status": "cache_warmth_hit|retry_backoff|retry_exhausted",
+         "detail": "<human-readable reason>"},
         ...
       ]
     }
 
 Empty matrices are valid (``include: []``); the orchestrator workflow
-gates downstream jobs on a separate ``has_jobs`` boolean. ``skipped_warm``
-mirrors the ``include`` entry shape for SHAs that the planner dropped via
-the ``cache_warmth`` filter, so the orchestrator's summary can list them
-alongside the SHAs that actually went through the matrix this run.
+gates downstream jobs on a separate ``has_jobs`` boolean. ``skipped``
+lists the SHAs the planner dropped this tick — verified warm, waiting
+out a retry backoff, or out of retry budget — so the orchestrator's
+summary can list them alongside the SHAs that actually went through
+the matrix.
+
+Retry policy: mathlib master always builds, so every failed warming
+attempt (``build_failed`` / ``push_failed`` / ``verify_failed``) is
+infrastructure trouble, not a property of the SHA. A failed SHA is
+re-planned once its backoff has elapsed (``BACKOFF_BASE_HOURS`` doubling
+per recorded attempt) until ``MAX_WARM_ATTEMPTS`` is reached; after that
+the SHA is reported as ``retry_exhausted`` and needs operator attention
+(or a ``--manual-shas`` backfill, which bypasses the filter entirely).
 """
 
 from __future__ import annotations
@@ -40,6 +55,7 @@ import argparse
 import json
 import re
 import sys
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -47,12 +63,26 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from scripts.models import DownstreamConfig, load_inventory
 from scripts.storage import (
+    CacheWarmthRecord,
     DownstreamStatusRecord,
     add_backend_args,
     create_backend,
 )
 
 _SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+
+# Warming attempts recorded per SHA before the planner stops rescheduling
+# it. A SHA that exhausts this budget is surfaced as `retry_exhausted`.
+MAX_WARM_ATTEMPTS = 5
+
+# Backoff before re-attempting a failed SHA: 6h (one scheduled tick) after
+# the first recorded attempt, doubling per attempt (6h, 12h, 24h, 48h).
+BACKOFF_BASE_HOURS = 6.0
+
+
+def retry_delay(attempts: int) -> timedelta:
+    """Return how long a SHA with *attempts* recorded failures must wait."""
+    return timedelta(hours=BACKOFF_BASE_HOURS * 2 ** (max(attempts, 1) - 1))
 
 
 def _parse_manual_shas(raw: str) -> list[str]:
@@ -78,28 +108,54 @@ def _parse_manual_shas(raw: str) -> list[str]:
     return out
 
 
+def _classify(
+    record: CacheWarmthRecord | None, now: datetime
+) -> tuple[str | None, str]:
+    """Classify one SHA against its warmth record.
+
+    Returns ``(skip_status, detail)``. ``skip_status`` is ``None`` when the
+    SHA should enter the matrix this tick.
+    """
+    if record is None:
+        return None, ""
+    if record.is_warm:
+        return "cache_warmth_hit", f"verified {record.status}"
+    detail = f"{record.status}, attempt {record.attempts}/{MAX_WARM_ATTEMPTS}"
+    if record.attempts >= MAX_WARM_ATTEMPTS:
+        return "retry_exhausted", detail
+    try:
+        last_attempt = datetime.fromisoformat(record.last_attempt_at)
+    except ValueError:
+        return None, detail
+    due_at = last_attempt.astimezone(timezone.utc) + retry_delay(record.attempts)
+    if now < due_at:
+        return "retry_backoff", f"{detail}, retry after {due_at.isoformat()}"
+    return None, detail
+
+
 def build_matrix_from_db(
     inventory: dict[str, DownstreamConfig],
     statuses: dict[str, DownstreamStatusRecord],
-    known_warm_shas: set[str] | None = None,
+    warmth: dict[str, CacheWarmthRecord] | None = None,
+    now: datetime | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Build the matrix include list from inventory + DB statuses.
 
-    Considers only inventory entries with ``warm_cache=True``. Each
-    SHA's ``tag`` reflects the union of roles across downstreams: a
-    SHA that's LKG for one project and FKB for another is tagged
-    ``both``.
+    Considers every inventory entry except those with
+    ``warm_cache=False``. Each SHA's ``tag`` reflects the union of
+    roles across downstreams: a SHA that's LKG for one project and FKB
+    for another is tagged ``both``.
 
-    Returns ``(include, skipped_warm)``: the first list is the matrix
-    of cold SHAs to probe this run, the second is candidate SHAs that
-    were dropped via *known_warm_shas*. Both lists share the same entry
-    shape, so the orchestrator can render a unified summary of "what we
+    Returns ``(include, skipped)``: the first list is the matrix of SHAs
+    to probe this run, the second is candidate SHAs the *warmth* records
+    dropped this tick — verified warm (skipped forever: mathlib's olean
+    cache is content-hashed and immutable per SHA), in retry backoff, or
+    out of retry budget. Skipped entries carry ``status`` and ``detail``
+    fields so the orchestrator can render a unified summary of "what we
     considered" rather than just "what we ran".
-
-    Mathlib's olean cache is content-hashed and immutable per SHA, so a
-    SHA confirmed warm by a previous run never needs to be re-probed.
     """
-    warm = known_warm_shas or set()
+    warmth = warmth or {}
+    now = now or datetime.now(timezone.utc)
 
     # sha -> {"downstreams": ordered list, "roles": set of "lkg"/"fkb"}
     by_sha: dict[str, dict[str, Any]] = {}
@@ -139,7 +195,11 @@ def build_matrix_from_db(
     include: list[dict[str, Any]] = []
     skipped: list[dict[str, Any]] = []
     for sha in sorted(by_sha):
-        (skipped if sha in warm else include).append(_entry(sha))
+        skip_status, detail = _classify(warmth.get(sha), now)
+        if skip_status is None:
+            include.append(_entry(sha))
+        else:
+            skipped.append({**_entry(sha), "status": skip_status, "detail": detail})
     return include, skipped
 
 
@@ -194,16 +254,17 @@ def main() -> int:
         inventory = load_inventory(Path(args.inventory), include_disabled=False)
         backend = create_backend(args.backend, dsn=args.dsn)
         statuses = backend.load_all_statuses("regression", args.upstream)
-        known_warm = backend.load_known_warm_shas(args.upstream)
-        include, skipped = build_matrix_from_db(inventory, statuses, known_warm)
+        warmth = backend.load_cache_warmth(args.upstream)
+        include, skipped = build_matrix_from_db(inventory, statuses, warmth)
         mode = "inventory+DB"
 
-    payload = {"include": include, "skipped_warm": skipped}
+    payload = {"include": include, "skipped": skipped}
     Path(args.output).write_text(json.dumps(payload, indent=2))
+    exhausted = [e for e in skipped if e["status"] == "retry_exhausted"]
     print(
         f"Cache-warming plan: {len(include)} SHA(s) to warm, "
-        f"{len(skipped)} already warm (cache_warmth filter) "
-        f"({mode})",
+        f"{len(skipped)} skipped via cache_warmth "
+        f"({len(exhausted)} out of retry budget) ({mode})",
         file=sys.stderr,
     )
     return 0

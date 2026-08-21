@@ -1,8 +1,10 @@
 name: 'Bump to Latest'
 description: >
-  Look up the target commit (last-known-good or first-known-bad) for a
-  downstream and bump the mathlib dependency to it via hopscotch. On success
-  the working tree contains the updated dependency files ready to commit.
+  Look up the target commit (last-known-good, first-known-bad or
+  last-good-release) for a downstream and bump the mathlib dependency to it
+  via hopscotch. On success the working tree contains the updated dependency
+  files ready to commit. When the snapshot reports the target's mathlib cache
+  is not warm, the bump still runs and the PR body says so.
 
 inputs:
   downstream:
@@ -55,11 +57,11 @@ inputs:
     default: 'last-known-good'
     description: >
       Which commit to bump to. One of:
-        last-known-good  (default) — the last commit known to build successfully
-        first-known-bad            — the first commit known to break the build
-                                     (null when no active regression)
-        last-good-release          — the latest semver release tag (e.g. v4.13.0)
-                                     reachable from the last-known-good commit
+        last-known-good (default) — the last commit known to build successfully
+        first-known-bad           — the first commit known to break the build
+                                    (null when no active regression)
+        last-good-release         — the latest semver release tag (e.g. v4.13.0)
+                                    reachable from the last-known-good commit
   branch:
     required: false
     default: 'hopscotch/lkg-bump'
@@ -116,10 +118,21 @@ outputs:
     description: >
       "true" if no bump was performed — because the project's manifest is
       already at the target commit, because an open bump PR's branch already
-      pins the dependency at it (Step 1.5 probe), or (query-type=last-good-release
-      only) because the latest release tag is behind or diverged from the
-      current pin. When "true", the working tree is unmodified.
+      pins the dependency at it (Step 1.5 probe), because the target field is
+      empty (e.g. a first-known-bad query with no active regression), or
+      (query-type=last-good-release) because the target is behind or diverged
+      from the current pin. When "true", the working tree is unmodified.
     value: ${{ steps.resolve-outputs.outputs.skipped }}
+  cache-warm:
+    description: >
+      What the snapshot says about the target commit's mathlib olean cache:
+      "true" (verified in the Azure cache), "false" (not verified — the build
+      may compile mathlib from source), or empty when unknown (a
+      last-good-release target, or a snapshot predating the warmth fields).
+      Warmth never blocks the bump; a "false" adds a note to bump-description
+      and a step warning. Read this to word your own PR body when you pass
+      `body` to open-bump-pr instead of `message`.
+    value: ${{ steps.fetch-snapshot.outputs.cache_warm }}
   build-failed:
     description: '"true" if hopscotch ran but the build failed'
     value: ${{ steps.resolve-outputs.outputs.build_failed }}
@@ -464,7 +477,7 @@ runs:
             ;;
           behind)
             if [ "$QUERY_TYPE" = "last-good-release" ]; then
-              echo "Latest release tag ${TARGET_REV} (${TARGET_COMMIT}) is behind the current pin ${CURRENT_PIN} in ${UPSTREAM} — the project is already past it. Nothing to do."
+              echo "Target ${TARGET_REV} (${TARGET_COMMIT}) is behind the current pin ${CURRENT_PIN} in ${UPSTREAM} — the project is already past it. Nothing to do."
               echo "skipped=true" >> "$GITHUB_OUTPUT"
               exit 0
             fi
@@ -474,7 +487,7 @@ runs:
             ;;
           diverged)
             if [ "$QUERY_TYPE" = "last-good-release" ]; then
-              echo "::warning::Latest release tag ${TARGET_REV} (${TARGET_COMMIT}) has DIVERGED from the current pin ${CURRENT_PIN} in ${UPSTREAM} (neither is an ancestor of the other) — not a forward move. Nothing to do."
+              echo "::warning::Target ${TARGET_REV} (${TARGET_COMMIT}) has DIVERGED from the current pin ${CURRENT_PIN} in ${UPSTREAM} (neither is an ancestor of the other) — not a forward move. Nothing to do."
               echo "skipped=true" >> "$GITHUB_OUTPUT"
               exit 0
             fi
@@ -487,10 +500,58 @@ runs:
         esac
 
     # ------------------------------------------------------------------
+    # Step 3.6: Note when the target commit's mathlib cache is not warm.
+    #
+    # The snapshot states warmth as a fact beside each commit, and the
+    # bump proceeds either way. The note makes the cost visible: a step
+    # warning in the log, and a block in the PR body where a maintainer
+    # reads it. A project that pays for a from-source mathlib build has a
+    # concrete place to request warming.
+    #
+    # Only an explicit "false" warns. Empty means unknown: a
+    # last-good-release target, or a snapshot without the warmth fields.
+    # An unknown value is not evidence of a cold cache, so it does not
+    # warn.
+    # ------------------------------------------------------------------
+    - name: Note when the target cache is not warm
+      id: cache-warmth
+      if: steps.compare.outputs.skipped != 'true' && steps.guard.outputs.skipped != 'true'
+      shell: bash
+      env:
+        CACHE_WARM: ${{ steps.fetch-snapshot.outputs.cache_warm }}
+        TARGET_REV: ${{ steps.relabel.outputs.rev }}
+        DOWNSTREAM_NAME: ${{ steps.fetch-snapshot.outputs.downstream_name }}
+      run: |
+        set -euo pipefail
+
+        if [ "${CACHE_WARM:-}" != "false" ]; then
+          echo "Target cache warmth: ${CACHE_WARM:-unknown} — no note needed."
+          echo "note=" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+
+        REPORTS_URL="https://github.com/leanprover-community/downstream-reports"
+        echo "::warning::The mathlib cache is not warm for ${TARGET_REV}; this build may compile mathlib from source."
+        # Use printf, not a heredoc: a heredoc body must start at column 0,
+        # and a line at column 0 closes this YAML block scalar.
+        {
+          echo "note<<CACHE_NOTE_EOF"
+          printf '> [!WARNING]\n'
+          printf '> The mathlib build cache is not warm for this commit. CI on this PR may\n'
+          printf '> compile mathlib from source, which takes hours, instead of downloading\n'
+          printf '> prebuilt oleans. Cache warming for `%s` did not cover this commit —\n' "$DOWNSTREAM_NAME"
+          printf '> open an issue at %s/issues.\n' "$REPORTS_URL"
+          echo "CACHE_NOTE_EOF"
+        } >> "$GITHUB_OUTPUT"
+
+    # ------------------------------------------------------------------
     # Step 4: Fetch one-line commit descriptions for the target commit and
     # the current pin, and compose the PR title, body snippet, and git
     # commit message. Runs whenever a bump is needed; outputs are empty
     # when the project is already at the target commit (skipped=true).
+    # The cold-cache note from step 3.6 travels inside bump-description. A
+    # caller that forwards bump-description to open-bump-pr shows the note
+    # with no extra wiring.
     # ------------------------------------------------------------------
     - name: Fetch commit descriptions
       id: fetch-descriptions
@@ -503,6 +564,7 @@ runs:
         CURRENT_PIN: ${{ steps.read-manifest.outputs.current_pin }}
         DEPENDENCY_NAME: ${{ inputs.dependency-name }}
         DEPENDENCY_REPO: ${{ steps.resolve-upstream.outputs.effective }}
+        CACHE_NOTE: ${{ steps.cache-warmth.outputs.note }}
       run: |
         set -euo pipefail
 
@@ -559,6 +621,10 @@ runs:
           # When the target is a tag (rev != SHA), note it pins a named release.
           if [ "$TARGET_COMMIT" != "$TARGET_SHA" ]; then
             printf '\nThis pins the named release `%s`.\n' "$TARGET_LABEL"
+          fi
+          # Append the cold-cache note when step 3.6 produced one.
+          if [ -n "${CACHE_NOTE:-}" ]; then
+            printf '\n%s\n' "$CACHE_NOTE"
           fi
           echo "BUMP_EOF"
         } >> "$GITHUB_OUTPUT"

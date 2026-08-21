@@ -1,15 +1,19 @@
 #!/usr/bin/env python3
-"""Record terminal-status SHAs from the cache-warming workflow into ``cache_warmth``.
+"""Record terminal warming statuses from the cache-warming workflow into ``cache_warmth``.
 
 Reads the summary JSON produced by ``warm-mathlib-cache.yml``'s ``finalize``
-job and upserts every entry whose ``status`` is in ``TERMINAL_STATUSES`` so that
-future ``plan_cache_warm_jobs.py`` invocations skip them.
+job and upserts every entry whose ``status`` is in ``TERMINAL_STATUSES``,
+so that future ``plan_cache_warm_jobs.py`` invocations can skip verified-warm
+SHAs and schedule backoff retries for failed ones.
 
-A *terminal* status is one where we don't want the next planning tick to
-re-attempt the SHA: either we succeeded (``already_warm`` / ``warmed``)
-or we tried twice in-job and gave up (``build_failed`` / ``push_failed`` /
-``verify_failed``).  ``no_result`` (runner died, no signal) is excluded so
-those SHAs get a fresh attempt next tick.
+A *terminal* status is the outcome of a warming attempt that ran this
+tick: the job verified the cache (``already_warm`` / ``warmed``), or the
+job tried twice and stopped (``build_failed`` / ``push_failed`` /
+``verify_failed``). Mathlib master always builds, so the failure statuses
+are infrastructure trouble, not properties of the SHA; the planner
+re-attempts them with backoff until its retry budget runs out.
+``no_result`` (runner died, no signal) is excluded, so those SHAs get a
+fresh attempt next tick without consuming retry budget.
 """
 
 from __future__ import annotations
@@ -32,49 +36,49 @@ TERMINAL_STATUSES = frozenset({
 })
 
 
-def collect_terminal_shas(summary: list[dict]) -> list[str]:
-    """Return the deduplicated SHAs whose status is in ``TERMINAL_STATUSES``.
+def collect_terminal_results(summary: list[dict]) -> dict[str, str]:
+    """Return ``{sha: status}`` for entries whose status is in ``TERMINAL_STATUSES``.
 
-    Terminal statuses include both the success path (``already_warm``,
-    ``warmed``) and the post-retry give-up path (``build_failed``,
-    ``push_failed``, ``verify_failed``).  Recording both classes makes
-    the warm-cache workflow best-effort: a SHA that fails build/push/
-    verify twice gets entered into ``cache_warmth`` and will not be
-    re-attempted on the next 6h tick.
+    Terminal statuses include both the verified-warm path (``already_warm``,
+    ``warmed``) and the failed-attempt path (``build_failed``,
+    ``push_failed``, ``verify_failed``). Each recorded row carries its
+    status verbatim and increments the SHA's attempt counter, which
+    drives the planner's backoff retry schedule.
 
-    Non-terminal statuses (``no_result``, intermediate states like
-    ``staged``) are excluded.  ``no_result`` in particular MUST be
-    retried — it means the runner died mid-flight and we have no
-    information about the SHA, distinct from "we tried and gave up."
+    Non-terminal statuses are excluded. ``no_result`` in particular MUST
+    be dropped: it means the runner died and the SHA's state is unknown,
+    distinct from a completed attempt that failed. The planner's own
+    skip statuses (``cache_warmth_hit``, ``retry_backoff``,
+    ``retry_exhausted``) appear in the summary for reporting but
+    describe SHAs that did NOT run this tick; recording them would
+    inflate attempt counters for attempts that never happened.
 
     Entries whose ``sha`` field is missing, ``None``, or empty are
     silently skipped.  This is defensive against malformed summary
-    rows: the schema *should* always carry a SHA, but if the
-    ``warm-mathlib-cache.yml`` shell-level summary builder ever emits
-    a bad row we prefer to skip it rather than crash the
-    ``finalize`` job and lose the rest of the recording.
+    rows: a bad row from the ``warm-mathlib-cache.yml`` shell-level
+    summary builder is skipped, so the ``finalize`` job records the
+    rest instead of crashing.
 
-    Dedup is "first occurrence wins" — preserving input order keeps
-    the recorded list deterministic for log readability.
+    Dedup is "first occurrence wins": preserved input order keeps
+    the recorded mapping deterministic for log readability.
 
     Pinned end-to-end by ``test_record_warm_shas.py``.
     """
-    seen: set[str] = set()
-    out: list[str] = []
+    out: dict[str, str] = {}
     for entry in summary:
         sha = entry.get("sha")
-        if not sha or entry.get("status") not in TERMINAL_STATUSES:
+        status = entry.get("status")
+        if not sha or status not in TERMINAL_STATUSES:
             continue
-        if sha in seen:
+        if sha in out:
             continue
-        seen.add(sha)
-        out.append(sha)
+        out[sha] = status
     return out
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Record warm SHAs from a cache-warming summary into the database."
+        description="Record warming statuses from a cache-warming summary into the database."
     )
     add_backend_args(parser)
     parser.add_argument(
@@ -102,16 +106,16 @@ def main() -> int:
     if not isinstance(summary, list):
         raise SystemExit(f"Expected a JSON list at {summary_path}, got {type(summary).__name__}")
 
-    terminal_shas = collect_terminal_shas(summary)
-    if not terminal_shas:
-        print("No terminal SHAs to record.", file=sys.stderr)
+    results = collect_terminal_results(summary)
+    if not results:
+        print("No terminal statuses to record.", file=sys.stderr)
         return 0
 
     backend = create_backend(args.backend, dsn=args.dsn)
-    backend.record_warm_shas(args.upstream, terminal_shas)
+    backend.record_warmth_results(args.upstream, results)
     print(
-        f"Recorded {len(terminal_shas)} terminal SHA(s) for {args.upstream}: "
-        f"{', '.join(sha[:7] for sha in terminal_shas)}",
+        f"Recorded {len(results)} terminal status(es) for {args.upstream}: "
+        + ", ".join(f"{sha[:7]}={status}" for sha, status in results.items()),
         file=sys.stderr,
     )
     return 0
