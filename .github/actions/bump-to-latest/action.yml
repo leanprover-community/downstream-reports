@@ -540,7 +540,7 @@ runs:
           printf '> The mathlib build cache is not warm for this commit. CI on this PR may\n'
           printf '> compile mathlib from source, which takes hours, instead of downloading\n'
           printf '> prebuilt oleans. Cache warming for `%s` did not cover this commit —\n' "$DOWNSTREAM_NAME"
-          printf '> ask for it at %s/issues.\n' "$REPORTS_URL"
+          printf '> open an issue at %s/issues.\n' "$REPORTS_URL"
           echo "CACHE_NOTE_EOF"
         } >> "$GITHUB_OUTPUT"
 
