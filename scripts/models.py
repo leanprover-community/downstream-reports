@@ -66,9 +66,9 @@ class DownstreamConfig:
     # When True (the default), the cache-warming workflow builds and pushes
     # mathlib oleans for this downstream's LKG/FKB SHAs, and the snapshot
     # reports those SHAs warm.  Set `"warm_cache": false` for downstreams
-    # that don't consume hopscotch bumps — warming them would be wasted
-    # compute.  The snapshot still publishes their commits; it just reports
-    # them cold, so anything that does bump onto one is warned first.
+    # that do not consume hopscotch bumps; warming them wastes compute.
+    # The snapshot still publishes their commits and reports them cold, so
+    # a bump onto one carries a warning.
     warm_cache: bool = True
     # When True, the probe step sets HOPSCOTCH_DEBUG_NUKE_LAKEDIR=1 in the
     # hopscotch subprocess environment.  Hopscotch then wipes <projectDir>/.lake

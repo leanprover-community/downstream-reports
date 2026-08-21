@@ -1,12 +1,12 @@
 name: warm-mathlib-cache
 
-# Builds mathlib at the LKG / FKB SHAs reported for every downstream not
-# opted out via `warm_cache: false` and pushes the resulting oleans to
-# the shared mathlib cache, so future consumers of `lkg/latest.json` hit
-# a warm cache. The warmth this workflow verifies and records is what the
-# snapshot's `*_warm` flags report, so a consumer bumping to a SHA nobody
-# warmed — an opted-out downstream, or a warming attempt still retrying —
-# is told as much on the PR it opens.
+# Builds mathlib at the LKG / FKB SHAs of every downstream that does not
+# opt out via `warm_cache: false`, and pushes the resulting oleans to the
+# shared mathlib cache, so consumers of `lkg/latest.json` hit a warm
+# cache. The snapshot's `*_warm` flags report the warmth this workflow
+# verifies and records. A bump onto an unwarmed SHA — an opted-out
+# downstream, or a warming attempt still in retry — carries a warning on
+# the PR it opens.
 #
 # Triggered after each successful regression report on main, plus
 # workflow_dispatch for manual backfills (with optional `shas` input that
@@ -226,14 +226,14 @@ jobs:
           fi
 
           # SHAs the planner filtered out before the matrix ran. Each
-          # entry already carries its own status (`cache_warmth_hit` for
-          # verified-warm SHAs — distinct from `already_warm`, which is
-          # what the per-SHA build job reports when it probes and finds
-          # the cache already populated — plus `retry_backoff` /
-          # `retry_exhausted` for failed SHAs the planner is pacing) and
-          # a human-readable `detail`. `record_warm_shas.py` ignores all
-          # of these statuses — they describe SHAs that did not run this
-          # tick, so there is no attempt to record.
+          # entry carries its own status and a human-readable `detail`.
+          # `cache_warmth_hit` marks a verified-warm SHA (distinct from
+          # `already_warm`, which the per-SHA build job reports when it
+          # probes and finds the cache populated). `retry_backoff` and
+          # `retry_exhausted` mark failed SHAs the planner paces.
+          # `record_warm_shas.py` skips all of these statuses: they
+          # describe SHAs that did not run this tick, so there is no
+          # attempt to record.
           jq 'map({sha, tag, downstreams, status, detail})' \
             <<<"$SKIPPED_JSON" > skipped.json
 
@@ -275,41 +275,40 @@ jobs:
           # Print to job log too, for inline visibility.
           cat summary.json
 
-          # A SHA that exhausted its retry budget needs operator attention
-          # (mathlib master always builds, so repeated failures mean the
-          # warming infra is unhealthy — or needs a --manual-shas backfill,
-          # which bypasses the planner's filter). Warn loudly without
-          # failing: failing finalize would freeze snapshot publication
-          # for every downstream over one SHA.
+          # A SHA that exhausted its retry budget needs operator
+          # attention. Mathlib master always builds, so repeated failures
+          # point to the warming infrastructure, or call for a
+          # --manual-shas backfill (which bypasses the planner's filter).
+          # The step warns and stays green: snapshot publication gates on
+          # this workflow's success and serves every downstream.
           if jq -e 'any(.[]; .status == "retry_exhausted")' \
                summary.json >/dev/null; then
             echo "::warning::At least one SHA is out of warming retry budget (see the summary table); the snapshot reports it cold, and bumps onto it warn, until it is warmed manually."
           fi
 
           # `no_result` is the only status that fails finalize: it
-          # means a matrix entry didn't reach a terminal upload
-          # (runner / timeout / matrix dropout worth investigating).
-          # Per-SHA build_failed / push_failed / verify_failed already
-          # surfaced as red allowed-failure jobs in _warm-one-sha.yml;
-          # they're recorded into `cache_warmth` with their status so
-          # the planner retries them with backoff, and they don't fail
-          # the workflow_run because publish-lkg + generate-pages gate
-          # on this workflow's success and they serve every downstream
-          # (per-SHA warmth is reported in the snapshot's `*_warm` flags
-          # instead). `cache_warmth_hit` is the steady-state "everything
-          # is fine" case.
+          # means a matrix entry did not reach a terminal upload (a
+          # runner loss, a timeout, or a matrix dropout worth
+          # investigating). The per-SHA failures build_failed /
+          # push_failed / verify_failed surface as red allowed-failure
+          # jobs in _warm-one-sha.yml and land in `cache_warmth`, so
+          # the planner retries them with backoff. They keep finalize
+          # green: publish-lkg and generate-pages gate on this
+          # workflow's success and serve every downstream, and the
+          # snapshot's `*_warm` flags report per-SHA warmth.
+          # `cache_warmth_hit` is the steady-state "everything is
+          # fine" case.
           if jq -e 'any(.[]; .status == "no_result")' \
                summary.json >/dev/null; then
-            echo "::error::At least one SHA didn't report a result (runner timeout / matrix dropout)."
+            echo "::error::At least one SHA did not report a result (runner timeout / matrix dropout)."
             exit 1
           fi
 
       # The remaining steps record each attempted SHA's terminal status
-      # into `cache_warmth` so future plan ticks skip verified-warm SHAs
-      # and pace the failed ones. Skipped on pure-skipped runs: there is
-      # nothing to record (every entry is a planner skip status, which
-      # `record_warm_shas.py` ignores anyway, so the round-trip would be
-      # pure overhead).
+      # into `cache_warmth`, so future plan ticks skip verified-warm SHAs
+      # and pace the failed ones. On pure-skipped runs the steps do not
+      # run: every entry is a planner skip status, and there is nothing
+      # to record.
       - name: Set up Python (for cache_warmth recording)
         if: always() && needs.plan.outputs.has_jobs == 'true' && hashFiles('summary.json') != ''
         uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
@@ -322,11 +321,11 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r scripts/requirements.txt
 
-      # Persist every attempted SHA's terminal status to cache_warmth —
-      # already_warm / warmed rows are skipped forever, failed rows enter
-      # the planner's backoff retry schedule. Runs even when the summary
-      # step exited red, so that the statuses from a partially-failed run
-      # still get recorded (each row is per-SHA and independent).
+      # Persist every attempted SHA's terminal status to cache_warmth.
+      # The planner skips already_warm / warmed rows forever; failed rows
+      # enter the backoff retry schedule. The step runs even when the
+      # summary step failed, so a partially-failed run still records its
+      # statuses (each row is per-SHA and independent).
       - name: Record warming statuses
         if: always() && needs.plan.outputs.has_jobs == 'true' && hashFiles('summary.json') != ''
         env:

@@ -56,7 +56,7 @@ from scripts.storage import CacheWarmthRecord, DownstreamStatusRecord
 
 # Fixed "current time" for the retry-schedule tests: the planner compares
 # `now` against `last_attempt_at + retry_delay(attempts)`, so tests pin
-# both sides instead of racing the wall clock.
+# both sides and stay independent of the wall clock.
 _NOW = datetime(2026, 8, 12, 12, 0, 0, tzinfo=timezone.utc)
 
 

@@ -20,11 +20,11 @@
 #   cache_warm — "true"/"false": whether the snapshot verified the target
 #                commit's mathlib oleans are in the Azure cache. Empty when
 #                unknown — a last-good-release target (the snapshot publishes
-#                no warmth for release commits) or a snapshot predating the
-#                `*_warm` fields. Empty is not "cold": callers warn on an
-#                explicit "false" only.
+#                warmth for LKG/FKB commits only) or a snapshot without the
+#                `*_warm` fields. Empty means unknown, not cold: callers
+#                warn on an explicit "false" only.
 #   upstream   — the upstream repo slug the snapshot tracks (top-level `.upstream`),
-#                empty if the snapshot predates the field
+#                empty when the snapshot does not carry the field
 #
 # Exits non-zero with a diagnostic message if the downstream is not found.
 
@@ -84,8 +84,8 @@ DEP_NAME=$(printf '%s' "$ENTRY" | jq -r '.dependency_name')
 UPSTREAM=$(jq -r '.upstream // empty' /tmp/downstream-snapshot.json)
 
 # Read a published warmth flag as "true"/"false", or empty when the snapshot
-# does not carry it. `// empty` is wrong here: jq treats `false` as null-ish,
-# so a cold commit would read the same as a missing field.
+# does not carry the field. The type check keeps a stored `false` distinct
+# from a missing field; jq's `//` operator treats `false` the same as null.
 warm_flag() {
   printf '%s' "$ENTRY" | jq -r --arg field "$1" \
     'if (.[$field] | type) == "boolean" then (.[$field] | tostring) else "" end'
@@ -103,8 +103,8 @@ case "$RESOLVED_TYPE" in
     TARGET_COMMIT=$(printf '%s' "$ENTRY" | jq -r '.last_good_release // empty')
     TARGET_SHA=$(printf '%s' "$ENTRY" | jq -r '.last_good_release_commit // empty')
     # The snapshot publishes warmth for the LKG/FKB endpoints only. A release
-    # commit is a master commit mathlib's own CI caches, so leave it unknown
-    # rather than reporting a warmth nobody verified.
+    # commit is a master commit that mathlib's own CI caches, so its warmth
+    # here is unknown and the output stays empty.
     TARGET_WARM=""
     COMMIT_LABEL="Release tag" ;;
   *)  # last-known-good (default)

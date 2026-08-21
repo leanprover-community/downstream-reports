@@ -284,7 +284,7 @@ class TestBuildSnapshotCommitField:
         entry = snap["downstreams"]["physlib"]
         assert entry["last_known_good_commit_warm"] is expected_lkg_warm
         assert entry["first_known_bad_commit_warm"] is expected_fkb_warm
-        # Warmth annotates the commits; it never withholds them.
+        # Warmth annotates the commits; every commit stays published.
         assert entry["last_known_good_commit"] == (
             status.last_known_good_commit if status else None
         )

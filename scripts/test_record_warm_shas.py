@@ -179,9 +179,9 @@ class TestCollectTerminalResultsDedup:
 class TestCollectTerminalResultsMissingSha:
     """Tests for entries that arrive without a usable SHA field."""
 
-    # The production docstring on collect_terminal_results spells out the
+    # The docstring on collect_terminal_results states the
     # silent-skip-on-missing-sha contract; this class is its executable
-    # form so any future loosening of that contract fails here first.
+    # form, so a loosening of that contract fails here first.
 
     @pytest.mark.parametrize(
         "summary",

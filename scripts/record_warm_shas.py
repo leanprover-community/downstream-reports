@@ -6,14 +6,14 @@ job and upserts every entry whose ``status`` is in ``TERMINAL_STATUSES``,
 so that future ``plan_cache_warm_jobs.py`` invocations can skip verified-warm
 SHAs and schedule backoff retries for failed ones.
 
-A *terminal* status is the outcome of a warming attempt that ran this tick:
-either we verified the cache (``already_warm`` / ``warmed``) or we tried
-twice in-job and gave up (``build_failed`` / ``push_failed`` /
+A *terminal* status is the outcome of a warming attempt that ran this
+tick: the job verified the cache (``already_warm`` / ``warmed``), or the
+job tried twice and stopped (``build_failed`` / ``push_failed`` /
 ``verify_failed``). Mathlib master always builds, so the failure statuses
-are infra trouble, not properties of the SHA — the planner re-attempts
-them with backoff until its retry budget runs out. ``no_result`` (runner
-died, no signal) is excluded so those SHAs get a fresh attempt next tick
-without consuming retry budget.
+are infrastructure trouble, not properties of the SHA; the planner
+re-attempts them with backoff until its retry budget runs out.
+``no_result`` (runner died, no signal) is excluded, so those SHAs get a
+fresh attempt next tick without consuming retry budget.
 """
 
 from __future__ import annotations
@@ -42,25 +42,24 @@ def collect_terminal_results(summary: list[dict]) -> dict[str, str]:
     Terminal statuses include both the verified-warm path (``already_warm``,
     ``warmed``) and the failed-attempt path (``build_failed``,
     ``push_failed``, ``verify_failed``). Each recorded row carries its
-    status verbatim and increments the SHA's attempt counter, which is
-    what the planner's backoff retry schedule keys off.
+    status verbatim and increments the SHA's attempt counter, which
+    drives the planner's backoff retry schedule.
 
     Non-terminal statuses are excluded. ``no_result`` in particular MUST
-    be dropped — it means the runner died mid-flight and we have no
-    information about the SHA, distinct from "we tried and gave up."
-    The planner's own skip statuses (``cache_warmth_hit``,
-    ``retry_backoff``, ``retry_exhausted``) appear in the summary for
-    reporting but describe SHAs that did NOT run this tick; recording
-    them would inflate attempt counters for attempts that never happened.
+    be dropped: it means the runner died and the SHA's state is unknown,
+    distinct from a completed attempt that failed. The planner's own
+    skip statuses (``cache_warmth_hit``, ``retry_backoff``,
+    ``retry_exhausted``) appear in the summary for reporting but
+    describe SHAs that did NOT run this tick; recording them would
+    inflate attempt counters for attempts that never happened.
 
     Entries whose ``sha`` field is missing, ``None``, or empty are
     silently skipped.  This is defensive against malformed summary
-    rows: the schema *should* always carry a SHA, but if the
-    ``warm-mathlib-cache.yml`` shell-level summary builder ever emits
-    a bad row we prefer to skip it rather than crash the
-    ``finalize`` job and lose the rest of the recording.
+    rows: a bad row from the ``warm-mathlib-cache.yml`` shell-level
+    summary builder is skipped, so the ``finalize`` job records the
+    rest instead of crashing.
 
-    Dedup is "first occurrence wins" — preserving input order keeps
+    Dedup is "first occurrence wins": preserved input order keeps
     the recorded mapping deterministic for log readability.
 
     Pinned end-to-end by ``test_record_warm_shas.py``.

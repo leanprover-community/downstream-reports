@@ -139,8 +139,8 @@ class ManifestWatcherLedgerRow:
 
 # Terminal statuses that mean the SHA's olean cache is confirmed present in
 # mathlib's Azure container. Every other terminal status is a failed warming
-# attempt: mathlib master always builds, so failures are infra trouble and
-# the planner retries them with backoff rather than trusting them forever.
+# attempt: mathlib master always builds, so a failure points to the warming
+# infrastructure, and the planner retries it with backoff.
 CACHE_WARMTH_WARM_STATUSES = frozenset({"already_warm", "warmed"})
 
 

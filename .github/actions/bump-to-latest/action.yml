@@ -500,18 +500,18 @@ runs:
         esac
 
     # ------------------------------------------------------------------
-    # Step 3.6: Say so when the target commit's mathlib cache is not warm.
+    # Step 3.6: Note when the target commit's mathlib cache is not warm.
     #
-    # The snapshot states warmth as a fact beside each commit and never
-    # withholds a commit over it, so the bump proceeds either way. What
-    # changes is that the cost stops being invisible: a step warning in the
-    # log, and a note in the PR body where a maintainer reads it. A project
-    # that keeps paying for a from-source mathlib build has something
-    # concrete to point at when asking for warming.
+    # The snapshot states warmth as a fact beside each commit, and the
+    # bump proceeds either way. The note makes the cost visible: a step
+    # warning in the log, and a block in the PR body where a maintainer
+    # reads it. A project that pays for a from-source mathlib build has a
+    # concrete place to request warming.
     #
-    # Only an explicit "false" warns. Empty means unknown (a
-    # last-good-release target, or a snapshot predating the warmth fields);
-    # treating that as cold would cry wolf on every release bump.
+    # Only an explicit "false" warns. Empty means unknown: a
+    # last-good-release target, or a snapshot without the warmth fields.
+    # An unknown value is not evidence of a cold cache, so it does not
+    # warn.
     # ------------------------------------------------------------------
     - name: Note when the target cache is not warm
       id: cache-warmth
@@ -532,8 +532,8 @@ runs:
 
         REPORTS_URL="https://github.com/leanprover-community/downstream-reports"
         echo "::warning::The mathlib cache is not warm for ${TARGET_REV}; this build may compile mathlib from source."
-        # printf, not a heredoc: a heredoc body has to start at column 0,
-        # which would close this YAML block scalar.
+        # Use printf, not a heredoc: a heredoc body must start at column 0,
+        # and a line at column 0 closes this YAML block scalar.
         {
           echo "note<<CACHE_NOTE_EOF"
           printf '> [!WARNING]\n'
@@ -549,8 +549,9 @@ runs:
     # the current pin, and compose the PR title, body snippet, and git
     # commit message. Runs whenever a bump is needed; outputs are empty
     # when the project is already at the target commit (skipped=true).
-    # The cold-cache note from step 3.6 rides along in bump-description, so
-    # a caller that already forwards it to open-bump-pr needs no new wiring.
+    # The cold-cache note from step 3.6 travels inside bump-description. A
+    # caller that forwards bump-description to open-bump-pr shows the note
+    # with no extra wiring.
     # ------------------------------------------------------------------
     - name: Fetch commit descriptions
       id: fetch-descriptions
@@ -621,7 +622,7 @@ runs:
           if [ "$TARGET_COMMIT" != "$TARGET_SHA" ]; then
             printf '\nThis pins the named release `%s`.\n' "$TARGET_LABEL"
           fi
-          # The cold-cache warning, when step 3.6 raised one.
+          # Append the cold-cache note when step 3.6 produced one.
           if [ -n "${CACHE_NOTE:-}" ]; then
             printf '\n%s\n' "$CACHE_NOTE"
           fi

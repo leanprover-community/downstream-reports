@@ -72,14 +72,14 @@ def build_snapshot(
         """Whether *commit*'s mathlib oleans are verified in the Azure cache.
 
         Published beside each commit so a consumer knows what a bump onto it
-        costs before it starts.  The snapshot never withholds a commit over
-        warmth — it states the fact and lets the consumer decide (the bump
-        actions turn a ``False`` into a warning on the PR they open).
+        costs before it starts.  The snapshot publishes every commit and
+        states warmth beside it; the consumer decides (the bump actions
+        turn a ``False`` into a warning on the PR they open).
 
         ``False`` covers every case short of verified warm: no warming
         attempt recorded yet, an attempt still working through the retry
-        schedule, a downstream opted out of warming, and a commit the
-        snapshot has nothing to say about (``None``).
+        schedule, a downstream opted out of warming, and a ``None``
+        commit.
 
         Warmth is a fact about a SHA in mathlib's cache, so the flag is
         deliberately independent of ``warm_cache``: an opted-out downstream

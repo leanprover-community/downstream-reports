@@ -44,11 +44,13 @@ permissions:
 
 jobs:
   publish-lkg:
-    # On workflow_run: only publish when the upstream warm-mathlib-cache run
-    # ran on main and succeeded. A failed warming pass means we cannot
-    # promise the SHAs are cache-warm; refuse to refresh the snapshot.
-    # On workflow_dispatch: always run (dispatching from main is enforced
-    # by the OIDC federated credential).
+    # On workflow_run: publish only when the upstream warm-mathlib-cache
+    # run was on main and succeeded. That workflow fails only when a SHA
+    # ends with `no_result` (a warming leg died before it reported), so
+    # the tick's warmth recording is incomplete. The previous snapshot
+    # stays published, and the next successful tick refreshes it.
+    # On workflow_dispatch: always run (the OIDC federated credential
+    # enforces dispatch from main).
     if: github.event_name != 'workflow_run' || (github.event.workflow_run.head_branch == 'main' && github.event.workflow_run.conclusion == 'success')
     runs-on: ubuntu-latest
     steps:

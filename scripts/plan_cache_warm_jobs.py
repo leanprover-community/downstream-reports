@@ -7,10 +7,10 @@ Two modes:
   ``downstream_status`` rows for every inventory entry except those that
   opt out via ``warm_cache: false``, collects every non-null
   ``last_known_good_commit`` and ``first_known_bad_commit``, and
-  deduplicates by SHA. Warming defaults on so a newly-added downstream's
-  SHAs are warm by the time anything bumps to them; downstreams that
-  don't consume hopscotch bumps opt out, and the snapshot simply reports
-  their SHAs cold — honest at zero warming cost for non-consumers.
+  deduplicates by SHA. Warming defaults on, so a newly-added downstream's
+  SHAs are warm by the time anything bumps to them. Downstreams that do
+  not consume hopscotch bumps opt out; the snapshot reports their SHAs
+  cold, at zero warming cost.
 
 * **Manual mode** (``--manual-shas a,b,c``): bypasses inventory + DB and
   emits one matrix entry per supplied SHA. Used by ``workflow_dispatch``
@@ -41,12 +41,12 @@ summary can list them alongside the SHAs that actually went through
 the matrix.
 
 Retry policy: mathlib master always builds, so every failed warming
-attempt (``build_failed`` / ``push_failed`` / ``verify_failed``) is infra
-trouble, not a property of the SHA. A failed SHA is re-planned once its
-backoff has elapsed (``BACKOFF_BASE_HOURS`` doubling per recorded
-attempt) until ``MAX_WARM_ATTEMPTS`` is reached; after that the SHA is
-reported as ``retry_exhausted`` and needs operator attention (or a
-``--manual-shas`` backfill, which bypasses the filter entirely).
+attempt (``build_failed`` / ``push_failed`` / ``verify_failed``) is
+infrastructure trouble, not a property of the SHA. A failed SHA is
+re-planned once its backoff has elapsed (``BACKOFF_BASE_HOURS`` doubling
+per recorded attempt) until ``MAX_WARM_ATTEMPTS`` is reached; after that
+the SHA is reported as ``retry_exhausted`` and needs operator attention
+(or a ``--manual-shas`` backfill, which bypasses the filter entirely).
 """
 
 from __future__ import annotations
