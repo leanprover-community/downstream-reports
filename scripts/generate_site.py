@@ -46,10 +46,11 @@ STALE_AFTER_HOURS = 36
 # a thin slice of axis (with softness 1, the final commit alone would span as
 # much as the 1→2 doubling — a wide, mostly empty stripe).
 CHART_LOG_SOFTNESS = 10
-# At most this many release-tag lines on the advance map. Release-stepped
-# targets walk these landmarks, but the log scale bunches old releases at the
-# left edge; newest-first, the cap also bounds per-tag distance lookups.
-MAX_RELEASE_LINES = 8
+# At most this many release-tag lines (finals and prereleases) on the advance
+# map. Release-stepped targets walk these landmarks, but the log scale bunches
+# old releases at the left edge; newest-first, the cap also bounds per-tag
+# distance lookups.
+MAX_RELEASE_LINES = 12
 
 
 # ---------------------------------------------------------------------------
@@ -194,6 +195,19 @@ def _prefer_release_tag(current: str | None, candidate: str) -> str:
     if RELEASE_TAG_RE.match(candidate) and not RELEASE_TAG_RE.match(current):
         return candidate
     return current
+
+
+def _release_sort_key(tag: str) -> tuple[int, ...]:
+    """Version-sort key for a ``RELEASE_TAG_RE``-shaped tag.
+
+    A final sorts after its prereleases: v4.33.0 > v4.33.0-rc2 > v4.33.0-rc1.
+    """
+    version, _, rc = tag.partition("-rc")
+    return (
+        *(int(p) for p in version.lstrip("v").split(".")),
+        0 if rc else 1,
+        int(rc) if rc else 0,
+    )
 
 
 def fetch_tags(
@@ -928,6 +942,7 @@ tr.detail-row > td {
 .chart-axis span { position: absolute; transform: translateX(-50%); white-space: nowrap; }
 .chart-axis span.tick-end { transform: translateX(-100%); }
 .chart-axis-releases { height: 15px; font-size: 10px; color: var(--tag-fg); }
+.chart-axis-releases span.release-rc { opacity: .65; }
 .chart-row { display: flex; align-items: center; gap: 10px; padding: 6px 0; }
 .chart-row:hover { background: var(--bg); }
 .chart-label {
@@ -938,6 +953,7 @@ tr.detail-row > td {
 .chart-baseline { position: absolute; left: 0; right: 0; top: 50%; height: 1px; background: var(--border); }
 .chart-gridline { position: absolute; top: -3px; bottom: -3px; width: 1px; background: var(--border); opacity: .55; }
 .chart-release-line { background: var(--tag-fg); opacity: .3; }
+.chart-release-line.release-rc { opacity: .16; }
 .chart-bar { position: absolute; top: 5px; height: 6px; border-radius: 3px; z-index: 1; }
 .chart-bar-good { background: var(--green); opacity: .75; }
 .chart-bar-bad  { background: var(--red); opacity: .75; }
@@ -1771,7 +1787,7 @@ def render_chart(
             if not (dmin <= rgap <= dmax):
                 continue
             p = x_of(rgap)
-            if all(abs(p - q) >= 7.0 for q in positions):
+            if all(abs(p - q) >= 8.0 for q in positions):
                 kept.append((rtag, rgap))
                 positions.append(p)
         return kept
@@ -1780,10 +1796,15 @@ def render_chart(
     releases_lin = _kept_releases(x_lin) if anchored else []
     has_releases = bool(releases_log or releases_lin)
 
+    def _rc_cls(rtag: str) -> str:
+        # Prereleases render fainter than finals so the release cadence
+        # stays the dominant pattern.
+        return " release-rc" if "-rc" in rtag else ""
+
     def release_span(rtag: str, rgap: int, pos: float, scale_cls: str) -> str:
         tip = f"{esc(rtag)}&#10;{rgap} commit{'s' if rgap != 1 else ''} behind latest master"
         return (
-            f'<span class="{scale_cls}" style="left:{pos:.2f}%" '
+            f'<span class="{scale_cls}{_rc_cls(rtag)}" style="left:{pos:.2f}%" '
             f'data-tooltip="{tip}">{esc(rtag)}</span>'
         )
 
@@ -1795,8 +1816,8 @@ def render_chart(
     ) if has_releases else ""
 
     gridlines += (
-        "".join(f'<div class="chart-gridline chart-release-line scale-log" style="left:{x_log(g):.2f}%"></div>' for _t, g in releases_log)
-        + "".join(f'<div class="chart-gridline chart-release-line scale-linear" style="left:{x_lin(g):.2f}%"></div>' for _t, g in releases_lin)
+        "".join(f'<div class="chart-gridline chart-release-line{_rc_cls(t)} scale-log" style="left:{x_log(g):.2f}%"></div>' for t, g in releases_log)
+        + "".join(f'<div class="chart-gridline chart-release-line{_rc_cls(t)} scale-linear" style="left:{x_lin(g):.2f}%"></div>' for t, g in releases_lin)
     )
 
     def _scale_attrs(d_far: int, d_near: int | None = None) -> str:
@@ -2793,10 +2814,11 @@ def main() -> None:
             )
             master_gaps = {t: pair_distances.get((t, master_sha)) for t in target_shas}
 
-    # Release-tag landmarks for the advance map: final release tags (no
-    # prereleases — targets step through rcs, but as landmarks they would
-    # bunch beside their final) that sit on master's history, newest first,
-    # up to the axis extent. Ancestry filters patched re-tags out.
+    # Release-tag landmarks for the advance map: release tags (finals and
+    # prereleases — targets step through both) that sit on master's history,
+    # newest first, up to the axis extent. Ancestry filters patched re-tags
+    # out; when an rc bunches beside its final, the chart's crowding filter
+    # keeps the final.
     release_gaps: dict[str, int] = {}
     if master_sha:
         axis_extent = max(
@@ -2812,9 +2834,9 @@ def main() -> None:
             (
                 (tag, sha)
                 for sha, tag in sha_to_tag.items()
-                if RELEASE_TAG_RE.fullmatch(tag) and "-rc" not in tag
+                if RELEASE_TAG_RE.fullmatch(tag)
             ),
-            key=lambda ts: tuple(int(p) for p in RELEASE_TAG_RE.fullmatch(ts[0]).groups()),
+            key=lambda ts: _release_sort_key(ts[0]),
             reverse=True,
         )
         if axis_extent and release_tags:

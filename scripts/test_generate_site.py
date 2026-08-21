@@ -339,17 +339,21 @@ class AdvanceMapTests(unittest.TestCase):
     def test_release_lines_mark_on_axis_releases_only(self) -> None:
         """Scenario: an on-axis release tag renders a labelled vertical line at
         its distance behind master; off-axis tags drop, a crowded pair keeps
-        the tag nearer master (the newer release), and the per-target fallback
+        the tag nearer master (an rc beside its final loses to the final),
+        prereleases carry the fainter rc class, and the per-target fallback
         renders no release lines at all."""
-        releases = {"v4.33.0": 6, "v4.32.0": 7, "v4.31.0": 999}
+        releases = {"v4.34.0": 6, "v4.34.0-rc2": 7, "v4.33.0-rc1": 13, "v4.32.0": 999}
         html = self._chart([_make_row()], release_gaps=releases)
-        # dmax = gap + age = 15: v4.31.0 is off-axis; v4.32.0 sits within the
-        # crowding threshold of v4.33.0 on both scales, so only the newer
-        # v4.33.0 keeps its label and line (one per scale).
-        assert html.count(">v4.33.0</span>") == 2
+        # dmax = gap + age = 15: v4.32.0 is off-axis; v4.34.0-rc2 sits within
+        # the crowding threshold of its final on both scales, so the final
+        # keeps the slot. v4.34.0 and v4.33.0-rc1 render one label and one
+        # line per scale each.
+        assert html.count(">v4.34.0</span>") == 2
+        assert "v4.34.0-rc2" not in html
+        assert html.count(">v4.33.0-rc1</span>") == 2
         assert "v4.32.0" not in html
-        assert "v4.31.0" not in html
-        assert html.count("chart-release-line") == 2  # one row, one line per scale
+        assert html.count("chart-release-line") == 4  # one row, two tags, one line per scale
+        assert html.count("release-rc") == 4          # the rc's two labels and two lines
         assert "release tag" in html  # legend entry
         fallback = render_chart(
             [_make_row()], commit_titles={}, sha_to_tag={}, release_gaps=releases,
