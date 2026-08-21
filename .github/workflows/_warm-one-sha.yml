@@ -150,28 +150,41 @@ jobs:
       # `lake exe cache` builds and runs the target checkout's own
       # cache tool, exactly what a consumer at this SHA runs — the
       # probe therefore measures completeness as consumers see it.
-      # Each retryable step gets one extra attempt to absorb transient
-      # flakes (Azure 503, network blip, runner hiccup). After the
-      # second failure the step reports failure to its `outcome:` and
-      # the per-SHA result captures it as build_failed / push_failed /
-      # verify_failed.
+      # A cold cache is the normal reason this workflow runs, so the
+      # probe is a router, not a check: it always exits 0 and reports
+      # warm/cold through `outputs.status`, keeping ##[error]
+      # annotations out of the expected path — red in this job marks
+      # a real failure. The retry absorbs transient flakes (Azure
+      # 503, network blip) so a download hiccup on a complete cache
+      # doesn't trigger a needless full build.
       - name: Probe cache completeness
         id: probe
         working-directory: mathlib4
-        continue-on-error: true
         run: |
           probe() {
             lake exe cache get \
               && lake build --no-build -v Mathlib
           }
-          if ! probe; then
-            echo "::warning::Probe attempt 1 failed, retrying once..."
-            probe
+          STATUS=cold
+          if probe; then
+            STATUS=warm
+          else
+            echo "Probe attempt 1 found the cache incomplete; retrying once to rule out a transient flake..."
+            if probe; then
+              STATUS=warm
+            else
+              echo "::notice::Cache incomplete for this SHA; proceeding to build."
+            fi
           fi
+          echo "status=$STATUS" >> "$GITHUB_OUTPUT"
 
+      # The build/stage/push/verify steps get one extra attempt to
+      # absorb transient flakes; after the second failure the step
+      # reports failure to its `outcome:` and the per-SHA result
+      # captures it as build_failed / push_failed / verify_failed.
       - name: Build Mathlib
         id: build
-        if: steps.probe.outcome != 'success'
+        if: steps.probe.outputs.status != 'warm'
         working-directory: mathlib4
         continue-on-error: true
         run: |
@@ -215,11 +228,11 @@ jobs:
           SHA: ${{ inputs.sha }}
           TAG: ${{ inputs.tag }}
           DOWNSTREAMS_JSON: ${{ inputs.downstreams_json }}
-          PROBE_OUTCOME: ${{ steps.probe.outcome }}
+          PROBE_STATUS: ${{ steps.probe.outputs.status }}
           BUILD_OUTCOME: ${{ steps.build.outcome }}
           STAGE_OUTCOME: ${{ steps.stage.outcome }}
         run: |
-          if   [ "$PROBE_OUTCOME" = "success" ];   then STATUS=already_warm
+          if   [ "$PROBE_STATUS" = "warm" ];       then STATUS=already_warm
           elif [ "$BUILD_OUTCOME" != "success" ];  then STATUS=build_failed
           elif [ "$STAGE_OUTCOME" != "success" ];  then STATUS=build_failed
           else                                          STATUS=staged
