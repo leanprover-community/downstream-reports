@@ -244,11 +244,11 @@ class WindowStripTests(unittest.TestCase):
 class AdvanceMapTests(unittest.TestCase):
     _MASTER = "m" * 40
 
-    def _chart(self, rows: list[dict], gap: int = 5) -> str:
+    def _chart(self, rows: list[dict], gap: int = 5, **kwargs) -> str:
         """Render anchored to a master commit *gap* commits past the fixture target."""
         return render_chart(
             rows, commit_titles={}, sha_to_tag={},
-            master_sha=self._MASTER, master_gaps={"t" * 40: gap},
+            master_sha=self._MASTER, master_gaps={"t" * 40: gap}, **kwargs,
         )
 
     def test_excluded_rows_are_listed_not_dropped(self) -> None:
@@ -335,6 +335,26 @@ class AdvanceMapTests(unittest.TestCase):
         )
         assert bad is not None
         assert abs(float(bad.group(1)) + float(bad.group(2)) - target_x) < 0.01
+
+    def test_release_lines_mark_on_axis_releases_only(self) -> None:
+        """Scenario: an on-axis release tag renders a labelled vertical line at
+        its distance behind master; off-axis tags drop, a crowded pair keeps
+        the tag nearer master (the newer release), and the per-target fallback
+        renders no release lines at all."""
+        releases = {"v4.33.0": 6, "v4.32.0": 7, "v4.31.0": 999}
+        html = self._chart([_make_row()], release_gaps=releases)
+        # dmax = gap + age = 15: v4.31.0 is off-axis; v4.32.0 sits within the
+        # crowding threshold of v4.33.0 on both scales, so only the newer
+        # v4.33.0 keeps its label and line (one per scale).
+        assert html.count(">v4.33.0</span>") == 2
+        assert "v4.32.0" not in html
+        assert "v4.31.0" not in html
+        assert html.count("chart-release-line") == 2  # one row, one line per scale
+        assert "release tag" in html  # legend entry
+        fallback = render_chart(
+            [_make_row()], commit_titles={}, sha_to_tag={}, release_gaps=releases,
+        )
+        assert "chart-release-line" not in fallback
 
 
 class HistoryStripTests(unittest.TestCase):
