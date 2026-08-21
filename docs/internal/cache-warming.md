@@ -268,12 +268,17 @@ Steps:
    (nightly-2026-03-09): the cache tool resolves `leantar` strictly
    from the sysroot, never from PATH.
 8. **Probe:** `lake exe cache get` then
-   `lake build --no-build -v Mathlib` (both in `mathlib4/`). This
-   runs the target SHA's own in-tree cache tool, so completeness is
-   measured exactly as a consumer at that SHA sees it. If both
-   succeed, status becomes `already_warm` and the chain ends.
+   `lake build --no-build --no-ansi -v Mathlib` (both in
+   `mathlib4/`). This runs the target SHA's own in-tree cache tool,
+   so completeness is measured exactly as a consumer at that SHA
+   sees it. The probe is a router, not a check: the step always
+   exits 0 and reports `warm`/`cold` through `outputs.status`, so a
+   cold cache (the normal reason the workflow runs) leaves no
+   `##[error]` annotation — red in this job marks a real failure.
+   If the probe reports `warm`, status becomes `already_warm` and
+   the chain ends.
 9. `lake build Mathlib` (in `mathlib4/`, only runs when the probe
-   failed). The cache is content-hashed, so anything `cache get`
+   reports `cold`). The cache is content-hashed, so anything `cache get`
    already pulled is reused; only files whose hashes weren't in the
    cache get rebuilt.
 10. `lake exe cache stage --staging-dir=../cache-staging`. Staging
@@ -342,7 +347,7 @@ Steps:
 
 | Status | Where set | Terminal | Surfaces as |
 |---|---|---|---|
-| `already_warm` | build_and_stage (probe succeeded) | yes | green job |
+| `already_warm` | build_and_stage (probe found the cache complete) | yes | green job |
 | `build_failed` | build_and_stage (`lake build Mathlib` failed) | yes | green job, recorded in summary |
 | `staged` | build_and_stage (build + stage succeeded) | no — hands off to upload_cache | green job |
 | `push_failed` | upload_cache (cache push errored) | yes | red job (allowed failure — run stays green) |
@@ -585,6 +590,6 @@ annotation.
   refused.
 - **Probe is best-effort.** `lake build --no-build -v Mathlib` after
   `cache get` is the canonical way to check completeness. False
-  negatives (cache present but probe failed) waste a build but are
-  harmless. False positives are not really possible — if lake says
-  every olean is present and valid, they are.
+  negatives (cache present but probe reported `cold`) waste a build
+  but are harmless. False positives are not really possible — if
+  lake says every olean is present and valid, they are.
