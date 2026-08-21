@@ -11,9 +11,10 @@ Coverage scope:
     - ``render_window_strip`` — node merging, the adjacent junction, the
       unknown-break segment, and segment commit-distance labels derived from
       age/bump.
-    - ``render_chart`` — row inclusion/exclusion, dual log/linear coordinates,
-      vertical alignment of shared first-known-bad commits, and the
-      shared-culprit callout.
+    - ``render_chart`` — row inclusion/exclusion, the master-anchored axis
+      and its per-target fallback, dual log/linear coordinates, vertical
+      alignment of shared first-known-bad commits, and the shared-culprit
+      callout.
     - ``render_history_strip`` / ``storage.load_recent_outcomes`` — the
       run-history strip and its data source.
     - ``render_table_row`` — the single-CI-link policy (validation job with
@@ -241,20 +242,30 @@ class WindowStripTests(unittest.TestCase):
 
 
 class AdvanceMapTests(unittest.TestCase):
-    def _chart(self, rows: list[dict]) -> str:
-        return render_chart(rows, commit_titles={}, sha_to_tag={})
+    _MASTER = "m" * 40
+
+    def _chart(self, rows: list[dict], gap: int = 5) -> str:
+        """Render anchored to a master commit *gap* commits past the fixture target."""
+        return render_chart(
+            rows, commit_titles={}, sha_to_tag={},
+            master_sha=self._MASTER, master_gaps={"t" * 40: gap},
+        )
 
     def test_excluded_rows_are_listed_not_dropped(self) -> None:
-        """Scenario: detached pins and distance-less rows appear in callouts."""
+        """Scenario: detached pins, distance-less rows, and rows whose target
+        has no master gap appear in callouts."""
         html = self._chart([
             _make_row(),
             _make_row(downstream="detachedlib", search_base_not_ancestor=True),
             _make_row(downstream="nodatalib", age_commits=None),
+            _make_row(downstream="gaplesslib", target_commit="u" * 40),
         ])
         assert "detachedlib" in html
         assert "not part of the target" in html
         assert "nodatalib" in html
         assert "no commit-distance data" in html
+        assert "gaplesslib" in html
+        assert "no distance data between its target and master" in html
 
     def test_shared_fkb_markers_align_and_get_a_callout(self) -> None:
         """Scenario: two projects with the same FKB distance-behind-target get
@@ -284,8 +295,8 @@ class AdvanceMapTests(unittest.TestCase):
 
     def test_linear_bar_width_is_proportional(self) -> None:
         """Scenario: in linear coordinates, a bump of half the age yields a
-        bar of half the track width."""
-        html = self._chart([_make_row(age_commits=10, bump_commits=5)])
+        bar of half the track width (target at master, so gap is 0)."""
+        html = self._chart([_make_row(age_commits=10, bump_commits=5)], gap=0)
         m = re.search(r'chart-bar chart-bar-good"[^>]*data-lin-width="([\d.]+)"', html)
         assert m is not None
         assert abs(float(m.group(1)) - 50.0) < 0.01
@@ -300,10 +311,30 @@ class AdvanceMapTests(unittest.TestCase):
         assert anchor is not None
         assert re.search(r'<span class="[^"]*chart-shape-fkb[^"]*"', anchor.group(1))
 
-    def test_axis_has_target_tick_for_both_scales(self) -> None:
-        """Scenario: both tick sets anchor at the target on the right edge."""
+    def test_axis_anchors_at_master_or_falls_back_to_target(self) -> None:
+        """Scenario: with a resolved master, both tick sets anchor at master on
+        the right edge; without one, each row anchors on its own target."""
         html = self._chart([_make_row()])
-        assert html.count(">target</span>") == 2  # one per scale
+        assert html.count(">master</span>") == 2  # one per scale
+        fallback = render_chart([_make_row()], commit_titles={}, sha_to_tag={})
+        assert fallback.count(">target</span>") == 2
+        assert "chart-marker-target" not in fallback
+
+    def test_bars_end_at_the_target_tick_not_the_right_edge(self) -> None:
+        """Scenario: anchored to master, the bad bar stops at the target's
+        distance behind master, where the target tick marker sits."""
+        html = self._chart([_make_row(age_commits=10, bump_commits=7)], gap=5)
+        # dmax = gap + age = 15; the target sits at d = 5.
+        target_x = 100 * (1 - 5 / 15)
+        target = re.search(r'chart-marker-target[^>]*data-lin-left="([\d.]+)"', html)
+        assert target is not None
+        assert abs(float(target.group(1)) - target_x) < 0.01
+        bad = re.search(
+            r'chart-bar chart-bar-bad"[^>]*data-lin-left="([\d.]+)"[^>]*data-lin-width="([\d.]+)"',
+            html,
+        )
+        assert bad is not None
+        assert abs(float(bad.group(1)) + float(bad.group(2)) - target_x) < 0.01
 
 
 class HistoryStripTests(unittest.TestCase):
