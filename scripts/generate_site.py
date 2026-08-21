@@ -1759,9 +1759,11 @@ def render_chart(
     )
 
     # Release landmarks: one labelled vertical line per release tag on the
-    # anchored axis. Each scale keeps its own newest-first subset so labels
-    # never crowd (the log scale bunches old releases, the linear scale can
-    # bunch recent ones); on-axis only.
+    # anchored axis, on-axis only. Each scale keeps its own crowd-free
+    # subset, walking the tags from master outward so the nearer release of
+    # a crowded pair keeps its label — for release tags on master's history
+    # that is the newer one (the log scale bunches old releases, the linear
+    # scale can bunch recent ones).
     def _kept_releases(x_of) -> list[tuple[str, int]]:
         kept: list[tuple[str, int]] = []
         positions: list[float] = []

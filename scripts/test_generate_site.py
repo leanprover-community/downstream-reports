@@ -338,8 +338,9 @@ class AdvanceMapTests(unittest.TestCase):
 
     def test_release_lines_mark_on_axis_releases_only(self) -> None:
         """Scenario: an on-axis release tag renders a labelled vertical line at
-        its distance behind master; off-axis and crowding tags drop (newest
-        wins), and the per-target fallback renders no release lines at all."""
+        its distance behind master; off-axis tags drop, a crowded pair keeps
+        the tag nearer master (the newer release), and the per-target fallback
+        renders no release lines at all."""
         releases = {"v4.33.0": 6, "v4.32.0": 7, "v4.31.0": 999}
         html = self._chart([_make_row()], release_gaps=releases)
         # dmax = gap + age = 15: v4.31.0 is off-axis; v4.32.0 sits within the
