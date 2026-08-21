@@ -40,6 +40,12 @@ SNAPSHOT_BASE = "https://downstreamreports.z13.web.core.windows.net"
 HISTORY_LIMIT = 18
 # Client-side warning threshold for an out-of-date report.
 STALE_AFTER_HOURS = 36
+# Advance-map log scale: positions go as log(1 + d/CHART_LOG_SOFTNESS), so the
+# axis is roughly linear over the first ~CHART_LOG_SOFTNESS commits and
+# logarithmic beyond. This keeps the last few commits before the right edge in
+# a thin slice of axis (with softness 1, the final commit alone would span as
+# much as the 1→2 doubling — a wide, mostly empty stripe).
+CHART_LOG_SOFTNESS = 10
 
 
 # ---------------------------------------------------------------------------
@@ -264,6 +270,27 @@ def fetch_commit_distances(
     return result
 
 
+def fetch_branch_head(repo: str, branch: str, token: str | None) -> str | None:
+    """Return the head commit SHA of *branch* in *repo*, or None on error."""
+    headers: dict[str, str] = {
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+        "User-Agent": "downstream-reports/generate_site",
+    }
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+
+    url = f"{GITHUB_API}/repos/{repo}/commits/{branch}"
+    req = urllib.request.Request(url, headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read())
+        return data.get("sha") or None
+    except Exception as exc:
+        print(f"  warning: could not fetch head of {repo}@{branch}: {exc}")
+        return None
+
+
 # ---------------------------------------------------------------------------
 # Local git helpers (used when --upstream-dir is provided)
 # ---------------------------------------------------------------------------
@@ -339,6 +366,19 @@ def git_tag_map(repo_dir: Path) -> dict[str, str]:
         if commit_sha and name:
             result[commit_sha] = _prefer_release_tag(result.get(commit_sha), name)
     return result
+
+
+def git_rev_parse(repo_dir: Path, ref: str) -> str | None:
+    """Resolve *ref* to a full commit SHA in a local clone, or None on error."""
+    try:
+        out = subprocess.check_output(
+            ["git", "rev-parse", ref],
+            cwd=repo_dir, text=True, stderr=subprocess.DEVNULL,
+        ).strip()
+        return out or None
+    except subprocess.CalledProcessError as exc:
+        print(f"  warning: git rev-parse {ref} failed: {exc}")
+        return None
 
 
 def git_signed_distance(repo_dir: Path, base: str, head: str) -> int | None:
@@ -851,6 +891,12 @@ tr.detail-row > td {
 .chart-shape-pin { background: var(--grey); }
 .chart-shape-lkg { background: var(--green); }
 .chart-shape-fkb { background: var(--red); border-radius: 2px; transform: rotate(45deg); }
+/* Validation target: a vertical tick, so the dot markers stay unambiguous. */
+.chart-marker-target { width: 9px; height: 15px; }
+.chart-shape-target {
+  width: 3px; margin: 0 auto; border: none; border-radius: 1.5px;
+  background: var(--link); opacity: .85;
+}
 .chart-legend {
   display: flex; gap: 16px; flex-wrap: wrap; align-items: center;
   margin-top: 14px; font-size: 11px; color: var(--fg-muted);
@@ -864,6 +910,7 @@ tr.detail-row > td {
   border: 1.5px solid var(--surface);
 }
 .chart-marker-demo.chart-shape-fkb { border-radius: 2px; transform: rotate(45deg); }
+.chart-marker-demo.chart-shape-target { width: 3px; height: 12px; border: none; border-radius: 1.5px; }
 .chart-callouts {
   margin-top: 12px; font-size: 12px; color: var(--fg-muted);
   display: flex; flex-direction: column; gap: 4px;
@@ -1524,16 +1571,28 @@ def render_chart(
     *,
     commit_titles: dict[str, dict[str, str | None]],
     sha_to_tag: dict[str, str],
+    master_sha: str | None = None,
+    master_gaps: dict[str, int | None] | None = None,
 ) -> str:
     """Render the advance map: one track per downstream on a shared
-    commits-behind-target axis (log scale).
+    commits-behind-master axis (log scale).
 
-    Each row's distances are measured from its own target, which can differ
-    per downstream (release-stepping), so first-known-bad markers only align
-    across rows that happen to share a target. A target that sits behind a
-    known break gives that row commits *beyond* its target (negative distance);
-    the axis is extended so the furthest such commit is the right edge.
+    When *master_sha* is known, the right edge is the latest upstream master
+    commit: each row's validation target sits ``master_gaps[target]`` commits
+    behind it (drawn as a tick marker), every other distance is offset by that
+    gap, and the target→master stretch stays blank — the run validated nothing
+    there. Positions are then directly comparable across rows.
+
+    Without *master_sha* (upstream lookup failed) each row anchors on its own
+    target instead, so positions are only approximately comparable when
+    targets differ (release-stepping). A target that sits behind a known break
+    gives that row commits *beyond* its anchor (negative distance); the axis
+    is extended so the furthest such commit is the right edge.
     """
+    master_gaps = master_gaps or {}
+    anchored = master_sha is not None
+    anchor_label = "master" if anchored else "target"
+    anchor_phrase = "latest master" if anchored else "target"
 
     def ct(sha: str | None) -> str | None:
         info = commit_titles.get(sha) if sha else None
@@ -1550,30 +1609,46 @@ def render_chart(
             excluded.append((name, "pinned revision is not part of the target's history"))
         elif r.get("age_commits") is None or not r.get("pinned_commit"):
             excluded.append((name, "no commit-distance data"))
+        elif anchored and master_gaps.get(r.get("target_commit")) is None:
+            excluded.append((name, "no distance data between its target and master"))
         else:
             included.append(r)
     if not included:
         return ""
 
-    dmax = max(r["age_commits"] for r in included) or 1
+    # Every distance is measured from the shared anchor: gap (target→master,
+    # 0 when anchoring on the row's own target) plus the run's per-target
+    # distances from the database.
+    def _gap(r: dict) -> int:
+        return master_gaps[r["target_commit"]] if anchored else 0
 
-    # A release-stepped target can sit behind a known break, so some rows have a
-    # commit *beyond* their target (a negative "commits behind target"). Extend
-    # the axis to the furthest-ahead commit across all rows so those points fit;
-    # the right edge becomes that commit rather than always the target. dmin == 0
-    # (no beyond-target points) reduces to the old target-at-the-right-edge axis.
+    def _d_pin(r: dict) -> int:
+        return _gap(r) + r["age_commits"]
+
+    dmax = max(_d_pin(r) for r in included) or 1
+
+    # A release-stepped target can sit behind a known break, giving that row a
+    # commit *beyond* its anchor (a negative distance — only reachable in the
+    # per-target fallback, since everything is behind master). Extend the axis
+    # to the furthest-ahead point across all rows so those points fit; dmin == 0
+    # reduces to the anchor-at-the-right-edge axis.
     dmin = 0
     for _r in included:
+        dmin = min(dmin, _gap(_r))
         _b = _r.get("bump_commits")
         if _r.get("outcome") == "failed" and _r.get("first_known_bad") and _b is not None:
-            dmin = min(dmin, _r["age_commits"] - _b - 1)
+            dmin = min(dmin, _gap(_r) + _r["age_commits"] - _b - 1)
     span = (dmax - dmin) or 1
 
     # Both scales are rendered: log positions inline (the default), linear in
-    # data attributes that the scale toggle swaps in client-side. d is shifted by
-    # dmin so the furthest-ahead commit is the right edge and log1p stays defined.
+    # data attributes that the scale toggle swaps in client-side. d is shifted
+    # by dmin so the furthest-ahead commit is the right edge and the softened
+    # log (see CHART_LOG_SOFTNESS) stays defined.
+    def _soft_log(x: float) -> float:
+        return math.log1p(x / CHART_LOG_SOFTNESS)
+
     def x_log(d: int) -> float:
-        return 100.0 * (1.0 - math.log1p(d - dmin) / math.log1p(span))
+        return 100.0 * (1.0 - _soft_log(d - dmin) / _soft_log(span))
 
     def x_lin(d: int) -> float:
         return 100.0 * (1.0 - (d - dmin) / span)
@@ -1596,10 +1671,10 @@ def render_chart(
     lin_ticks = list(range(0, dmax + 1, lin_step))
 
     def axis_span(c: int, pos: float, scale_cls: str) -> str:
-        # "target" (c == 0) is the right edge only when nothing reaches beyond a
-        # target (dmin == 0); otherwise the furthest-ahead commit is the edge.
+        # The anchor (c == 0) is the right edge only when nothing reaches beyond
+        # it (dmin == 0); otherwise the furthest-ahead commit is the edge.
         cls = f"{scale_cls} tick-end" if (c == 0 and dmin == 0) else scale_cls
-        label = "target" if c == 0 else f"-{c}"
+        label = anchor_label if c == 0 else f"-{c}"
         return f'<span class="{cls}" style="left:{pos:.2f}%">{label}</span>'
 
     axis_html = (
@@ -1635,11 +1710,11 @@ def render_chart(
         if title:
             parts.append(title)
         if not d:
-            parts.append("= target")
+            parts.append(f"= {anchor_phrase}")
         elif d > 0:
-            parts.append(f"{d} commit{'s' if d != 1 else ''} behind target")
+            parts.append(f"{d} commit{'s' if d != 1 else ''} behind {anchor_phrase}")
         else:
-            parts.append(f"{-d} commit{'s' if d != -1 else ''} beyond target")
+            parts.append(f"{-d} commit{'s' if d != -1 else ''} beyond {anchor_phrase}")
         tip = "&#10;".join(esc(p) for p in parts)
         url = f"{GITHUB}/{UPSTREAM_REPO}/commit/{sha}"
         # The visual shape lives in an inner span so the FKB diamond's
@@ -1659,7 +1734,7 @@ def render_chart(
     group_order = {"failed": 0, "error": 1, "passed": 2}
     included.sort(key=lambda r: (
         group_order.get(r.get("outcome"), 3),
-        -(r.get("age_commits") or 0),
+        -_d_pin(r),
         r.get("downstream", "").lower(),
     ))
 
@@ -1668,28 +1743,35 @@ def render_chart(
         name = r.get("downstream", "")
         repo = r.get("repo", "")
         outcome = r.get("outcome", "")
-        age = r["age_commits"]
+        target = r.get("target_commit")
+        gap = _gap(r)
         bump = r.get("bump_commits")
         pin = r.get("pinned_commit")
         lkg = r.get("last_known_good")
         fkb = r.get("first_known_bad")
-        d_lkg = (age - bump) if bump is not None else None
+        d_pin = _d_pin(r)
+        d_lkg = (d_pin - bump) if bump is not None else None
 
+        # Bars end at the row's target (d == gap): the target→master stretch
+        # is unvalidated, so only the target tick marker occupies it.
         track = ['<div class="chart-baseline"></div>', gridlines]
         if outcome == "passed":
-            track.append(bar("chart-bar-good", age, 0))
+            track.append(bar("chart-bar-good", d_pin, gap))
         elif outcome == "failed" and lkg and fkb and d_lkg is not None:
             d_fkb = d_lkg - 1
-            track.append(bar("chart-bar-good", age, d_lkg))
-            track.append(bar("chart-bar-bad", d_fkb, 0))
+            track.append(bar("chart-bar-good", d_pin, d_lkg))
+            track.append(bar("chart-bar-bad", d_fkb, gap))
         elif outcome == "failed":
-            track.append(bar("chart-bar-unknown", age, 0))
+            track.append(bar("chart-bar-unknown", d_pin, gap))
         else:
-            track.append(bar("chart-bar-error", age, 0))
+            track.append(bar("chart-bar-error", d_pin, gap))
 
+        # Target first so coinciding pin/LKG/FKB dots draw on top of the tick.
+        if anchored and target:
+            track.append(marker("target", "target", target, gap))
         if pin:
-            track.append(marker("pin", "pinned", pin, age))
-        if lkg and d_lkg:
+            track.append(marker("pin", "pinned", pin, d_pin))
+        if lkg and d_lkg is not None and d_lkg != gap:
             track.append(marker("lkg", "last known good", lkg, d_lkg))
         if outcome == "failed" and fkb and d_lkg is not None:
             track.append(marker("fkb", "first known bad", fkb, d_lkg - 1))
@@ -1706,6 +1788,10 @@ def render_chart(
             f'</div>'
         )
 
+    target_legend = (
+        '<span><span class="chart-marker-demo chart-shape-target"></span>validation target</span>'
+        if anchored else ""
+    )
     legend_html = (
         '<div class="chart-legend">'
         '<span><span class="legend-swatch" style="background:var(--green)"></span>safe to advance (pinned → last known good)</span>'
@@ -1715,6 +1801,7 @@ def render_chart(
         '<span><span class="chart-marker-demo chart-shape-pin"></span>pinned</span>'
         '<span><span class="chart-marker-demo chart-shape-lkg"></span>last known good</span>'
         '<span><span class="chart-marker-demo chart-shape-fkb"></span>first known bad</span>'
+        f'{target_legend}'
         '</div>'
     )
 
@@ -1734,7 +1821,7 @@ def render_chart(
             f"{link}{title_html}: {esc(', '.join(sorted(names)))}</div>"
         )
     targets = {r.get("target_commit") for r in included if r.get("target_commit")}
-    if len(targets) > 1:
+    if not anchored and len(targets) > 1:
         callouts.append(
             "<div>Projects were validated against different target revisions, so "
             "horizontal positions are only approximately comparable across rows.</div>"
@@ -1751,13 +1838,26 @@ def render_chart(
         'title="Linear — bar lengths are proportional to commit counts">linear</button>'
         '</div>'
     )
+    if anchored:
+        master_link = commit_link(UPSTREAM_REPO, master_sha, ct(master_sha), tg(master_sha))
+        caption = (
+            f'Commits behind the latest Mathlib master commit {master_link} '
+            '(the <strong>master</strong> tick on the right edge). '
+            'Each project&#39;s bars end at its own validation target (the vertical tick); '
+            'the stretch between a target and master has not been validated yet.'
+        )
+    else:
+        caption = (
+            'Commits relative to each project&#39;s target Mathlib revision (the <strong>target</strong> tick). '
+            'The right edge is the furthest commit any project reached, so a break beyond a '
+            'release-stepped target sits to the right of its target.'
+        )
     return (
         '<details class="chart-section" open>'
         '<summary>Advance map — how far behind each project stands, and how far it can safely move</summary>'
         '<div class="chart-wrap" data-scale="log">'
         '<div class="chart-head">'
-        '<div class="chart-caption">Commits relative to each project&#39;s target Mathlib revision (the <strong>target</strong> tick). '
-        'The right edge is the furthest commit any project reached, so a break beyond a release-stepped target sits to the right of its target.</div>'
+        f'<div class="chart-caption">{caption}</div>'
         f'{scale_toggle}'
         '</div>'
         f'{axis_html}'
@@ -2174,6 +2274,8 @@ def render(
     sha_to_tag: dict[str, str],
     lgr_distances: dict[tuple[str, str], int | None] | None = None,
     history: dict[str, list[dict]] | None = None,
+    master_sha: str | None = None,
+    master_gaps: dict[str, int | None] | None = None,
 ) -> str:
     col_glossary_items = "".join(
         f'<div class="col-glossary-item">'
@@ -2326,7 +2428,13 @@ def render(
         "No downstream matches the current filters.</td></tr>"
     )
 
-    chart_html = render_chart(rows, commit_titles=commit_titles, sha_to_tag=sha_to_tag)
+    chart_html = render_chart(
+        rows,
+        commit_titles=commit_titles,
+        sha_to_tag=sha_to_tag,
+        master_sha=master_sha,
+        master_gaps=master_gaps,
+    )
 
     # Hidden shell for the live pipeline-status layer: client-side JS asks
     # the GitHub Actions API whether a regression run is in flight (or
@@ -2501,6 +2609,22 @@ def main() -> None:
 
     upstream_dir = Path(args.upstream_dir) if args.upstream_dir else None
 
+    # Latest upstream master anchors the advance map's shared axis; each
+    # target's gap behind it places that row's target tick.
+    if upstream_dir is not None:
+        print("Resolving latest upstream master from local clone…")
+        master_sha = git_rev_parse(upstream_dir, "master")
+    else:
+        print(f"Fetching latest master commit for {UPSTREAM_REPO}…")
+        master_sha = fetch_branch_head(UPSTREAM_REPO, "master", args.github_token)
+    if master_sha:
+        unique_shas.add(master_sha)
+    else:
+        print("  warning: could not resolve upstream master; the advance map anchors on each row's target")
+
+    target_shas = {r["target_commit"] for r in rows if r.get("target_commit")}
+    master_gaps: dict[str, int | None] = {}
+
     if upstream_dir is not None:
         # --- Local git path: all upstream data from the cloned repo ----------
         print(f"Reading upstream commit info from local clone at {upstream_dir}…")
@@ -2518,6 +2642,13 @@ def main() -> None:
                 (base, head): git_signed_distance(upstream_dir, base, head)
                 for base, head in lgr_pairs
             }
+
+        if master_sha and target_shas:
+            print(f"Computing target→master distances for {len(target_shas)} target(s)…")
+            master_gaps = {
+                t: git_signed_distance(upstream_dir, t, master_sha)
+                for t in sorted(target_shas)
+            }
     else:
         # --- GitHub API path (fallback when no local clone is available) -----
         print(f"Fetching commit titles for {len(unique_shas)} unique SHA(s)…")
@@ -2531,6 +2662,13 @@ def main() -> None:
         if lgr_pairs:
             print(f"Fetching pinned→last-good-release distances for {len(lgr_pairs)} pair(s)…")
             lgr_distances = fetch_commit_distances(lgr_pairs, UPSTREAM_REPO, args.github_token)
+
+        if master_sha and target_shas:
+            print(f"Fetching target→master distances for {len(target_shas)} target(s)…")
+            pair_distances = fetch_commit_distances(
+                {(t, master_sha) for t in target_shas}, UPSTREAM_REPO, args.github_token,
+            )
+            master_gaps = {t: pair_distances.get((t, master_sha)) for t in target_shas}
 
     # Downstream commit titles always come from the API (we only clone the upstream).
     ds_by_repo: dict[str, set[str]] = defaultdict(set)
@@ -2554,6 +2692,8 @@ def main() -> None:
         sha_to_tag=sha_to_tag,
         lgr_distances=lgr_distances,
         history=history,
+        master_sha=master_sha,
+        master_gaps=master_gaps,
     )
 
     out = Path(args.output)
