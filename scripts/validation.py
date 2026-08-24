@@ -161,13 +161,26 @@ def render_selection_summary(selection: WindowSelection) -> str:
 # ---------------------------------------------------------------------------
 
 
-def classify_exit_code(exit_code: int) -> Outcome:
-    """Classify a `hopscotch` process exit code into the result schema."""
+# hopscotch's label for the bump step (`lake update`).  A failure here means
+# the dependency bump itself never completed, so no build ran and the probe
+# says nothing about compatibility.  The mathlib cache fetch runs inside this
+# step, so a transport-level cache failure surfaces as a bump failure.
+BUMP_FAILURE_STAGE = "lake update"
+
+
+def classify_exit_code(exit_code: int, failure_stage: str | None = None) -> Outcome:
+    """Classify a `hopscotch` process exit code into the result schema.
+
+    Exit code 1 is hopscotch's "the probe failed" verdict.  It counts as a
+    real incompatibility only when a verify step failed: a failure at the
+    bump stage is an environment problem, and reporting it as ``ERROR``
+    keeps it out of the episode's last-known-good / first-known-bad pair.
+    """
 
     if exit_code == 0:
         return Outcome.PASSED
     if exit_code == 1:
-        return Outcome.FAILED
+        return Outcome.ERROR if failure_stage == BUMP_FAILURE_STAGE else Outcome.FAILED
     return Outcome.ERROR
 
 
@@ -393,12 +406,21 @@ def build_result_from_tool(
             error=None,
         )
     elif tool_run.returncode == 1:
+        failure_stage = state.get("failureStage")
+        bump_failed = failure_stage == BUMP_FAILURE_STAGE
         base.update(
-            outcome=Outcome.FAILED,
-            failure_stage=state.get("failureStage"),
-            first_failing_commit=state.get("firstFailingCommit"),
+            outcome=classify_exit_code(tool_run.returncode, failure_stage),
+            failure_stage=failure_stage,
+            # A bump failure names no culprit: the commit it stopped at is
+            # where the environment broke, not where compatibility did.
+            first_failing_commit=None if bump_failed else state.get("firstFailingCommit"),
             last_successful_commit=state.get("lastSuccessfulCommit"),
-            error=None,
+            error=(
+                f"hopscotch stopped at the {BUMP_FAILURE_STAGE} stage; "
+                "the dependency bump did not complete"
+                if bump_failed
+                else None
+            ),
         )
     else:
         base.update(

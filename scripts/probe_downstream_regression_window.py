@@ -51,6 +51,7 @@ from scripts.models import (
 )
 from scripts.storage import DownstreamStatusRecord
 from scripts.validation import (
+    BUMP_FAILURE_STAGE,
     append_commit_plan_artifact,
     build_result_from_tool,
     build_selection_error_result,
@@ -469,8 +470,10 @@ def main() -> int:
             quiet=args.quiet,
         )
 
-        selection.head_probe_outcome = classify_exit_code(head_probe_run.returncode).value
         selection.head_probe_failure_stage = head_probe_state.get("failureStage")
+        selection.head_probe_outcome = classify_exit_code(
+            head_probe_run.returncode, selection.head_probe_failure_stage
+        ).value
         selection.head_probe_summary = tool_summary_text(head_probe_run, head_probe_summary_text)
 
         head_probe_kwargs: dict = dict(
@@ -508,9 +511,10 @@ def main() -> int:
                 **head_probe_kwargs,
             )
 
-        if head_probe_run.returncode != 1:
-            # Passed or error — no bisect needed.
-            if selection.head_probe_outcome == "passed":
+        # Only a verify-stage failure gives a window worth bisecting.  A pass,
+        # a crash, and a bump-stage failure all end the run here.
+        if selection.head_probe_outcome != Outcome.FAILED.value:
+            if selection.head_probe_outcome == Outcome.PASSED.value:
                 selection.decision_reason = (
                     "The upper endpoint passed, so there is no failing window to bisect."
                 )
@@ -518,6 +522,12 @@ def main() -> int:
                     "Skip the bisect. Report the passing head-only result and store "
                     "this target as the last-known-good."
                 )
+            elif selection.head_probe_failure_stage == BUMP_FAILURE_STAGE:
+                selection.decision_reason = (
+                    f"The head probe stopped at the {BUMP_FAILURE_STAGE} stage, so no "
+                    "build ran and the window holds no evidence of an incompatibility."
+                )
+                selection.next_action = "Skip the bisect and report the current head-only result."
             else:
                 selection.decision_reason = "The head probe did not produce a bisectable failure."
                 selection.next_action = "Skip the bisect and report the current head-only result."

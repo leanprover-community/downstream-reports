@@ -45,6 +45,7 @@ from unittest.mock import Mock, patch
 
 from scripts.models import CommitDetail, DownstreamConfig, Outcome, WindowSelection
 from scripts.validation import (
+    BUMP_FAILURE_STAGE,
     append_commit_plan_artifact,
     build_result_from_tool,
     build_skip_result,
@@ -189,6 +190,19 @@ class TestClassifyExitCode:
         """Exit 1 maps to ``FAILED``.  This is hopscotch's "build broke" signal."""
         # Arrange / Act / Assert
         assert classify_exit_code(1) == Outcome.FAILED
+        assert classify_exit_code(1, "lake build") == Outcome.FAILED
+        assert classify_exit_code(1, "lake test") == Outcome.FAILED
+
+    def test_one_at_the_bump_stage_is_error(self) -> None:
+        """Exit 1 with the bump stage maps to ``ERROR``, not ``FAILED``.
+
+        The bump (``lake update``) runs before any build, and the
+        dependency's cache fetch happens inside it.  A stop here means
+        the environment broke, so the probe carries no verdict on
+        compatibility and must not open or move an episode boundary.
+        """
+        # Arrange / Act / Assert
+        assert classify_exit_code(1, BUMP_FAILURE_STAGE) == Outcome.ERROR
 
     def test_other_codes_are_error(self) -> None:
         """Any non-{0,1} exit is ``ERROR`` — including process-killed signals like 137.
@@ -327,6 +341,33 @@ class TestBuildResultFromToolFixes:
         # No proposedFixes in results.json → empty list.
         absent = self._build(1, {"firstFailingCommit": "b", "failureStage": "lake build"})
         assert absent.proposed_fixes == []
+
+    def test_bump_stage_failure_is_an_error_and_names_no_culprit(self) -> None:
+        """Scenario: exit 1 at the bump stage yields ``ERROR`` and drops the culprit.
+
+        The bump runs ``lake update``, and the dependency's cache fetch
+        happens inside it, so a transport failure there stops hopscotch
+        before any build.  ``ERROR`` is silent in the state machine, so
+        the stored boundary survives untouched.  The commit hopscotch
+        stopped at is dropped: promoting it to ``first_failing_commit``
+        would publish an environment failure as the breaking commit.
+        """
+        # Act
+        result = self._build(
+            1,
+            {
+                "failureStage": "lake update",
+                "firstFailingCommit": "b",
+                "lastSuccessfulCommit": "a",
+            },
+        )
+
+        # Assert
+        assert result.outcome == Outcome.ERROR
+        assert result.failure_stage == "lake update"
+        assert result.first_failing_commit is None
+        assert result.last_successful_commit == "a"
+        assert BUMP_FAILURE_STAGE in result.error
 
 
 class TestCommitPlanArtifact:
