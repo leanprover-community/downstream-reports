@@ -23,39 +23,23 @@ At the moment the service validates the mathlib dependency only.
 builds against the head of mathlib `master`.
 
 **The exact commit that breaks your project.** After a failure the service bisects
-mathlib and records two commits: the last known good (LKG) commit and the first
-known bad (FKB) commit. The two are adjacent, so the FKB commit is the precise
-cause. You get one commit to look at instead of a range to search by hand.
+mathlib and records two commits: the last known good (**LKG**) commit and the first
+known bad (**FKB**) commit. The two are adjacent, so the FKB commit is the precise
+cause of the breakage.
 
-**A safe bump target.** The LKG commit is the newest mathlib commit that builds
-with your project. The composite actions in this repository move your dependency
-pin to that commit, build it to confirm, and open a pull request. Your project
-stays close to master, and it never lands on a mathlib commit that is known to
-break it.
+**A safe bump target.** Conversely, the LKG commit is the newest mathlib commit that builds with your project. The composite actions in this repository move your dependency pin to that commit, build it to confirm, and open a pull request. Your project stays close to master, and it never lands on a mathlib commit that is known to break it.
 
-**A check before a mathlib PR merges.** A mathlib reviewer can comment
-`!downstream-check MyProject` on a mathlib4 pull request. The service builds your
-project against that pull request and posts the verdict back as a comment. The
-break is found before it reaches master.
-
-**Visibility with mathlib maintainers.** The state of your project appears on the
-public status page and in the Zulip alerts that the mathlib community reads.
-
-**Optional issue tracking in your own repository.** The `track-incompatibility`
+**Issue tracking in your own repository.** The `track-incompatibility`
 action opens and maintains an issue while a regression is active, and closes the
 issue when the regression clears.
 
 ## Register your project
 
 > [!IMPORTANT]
-> **A registered project is expected to keep up with mathlib.** The service
-> validates your project against recent mathlib commits. A project whose pin
-> falls far behind produces a report that helps nobody: the search window grows,
-> each run costs more machine time, and the commit it reports comes from old
-> history. Keep your pin close to mathlib master — the actions in
-> [Keep your project current](#keep-your-project-current) do this for you. The
-> maintainers of this repository can disable an entry that stops keeping pace,
-> and can enable it again when the project catches up.
+> **A registered project is expected to reasonably stay up-to-date with mathlib.** The service
+> validates your project against recent mathlib commits. A project whose dependency
+> falls way behind produces a low quality signal for the maintainers of both the upstream and the downstream.
+> Keep your pin close to mathlib master by using the actions described below ([Keep your project up-to-date](#keep-your-project-up-to-date)). 
 
 Add one entry to `ci/inventory/downstreams.json` and open a pull request. These
 fields are required:
@@ -95,23 +79,23 @@ The first run has no prior state for your project, so it reports either a pass o
 a new failure. Your project appears on the status page after that run, and the
 actions can find it from then on.
 
-## Keep your project current
+## Keep your project up to date
 
-The service refreshes the LKG data after every run. You can consume that data in
-three ways, from full automation to a plain lookup.
+The service refreshes the LKG data after every run. You read that data with the
+composite actions of this repository: add one to a workflow in your project. The
+three options below go from full automation to a plain lookup.
+[`docs/actions.md`](docs/actions.md) gives the full input and output reference.
 
-One limit applies to all three. The LKG data describes your project as it was at
-the last validation run. If your project changed since then, the recorded commit
-can fail against the new state. For this reason `bump-to-latest` repeats the
-build and reports success only when the bump still works.
+The default `GITHUB_TOKEN` is enough for these workflows. Use a GitHub App token
+instead if you want your own CI to run on the opened pull requests without a
+per-run approval click. See
+[authentication setup](docs/actions.md#set-up-authentication).
+
 
 ### Option 1 — Bump and open a pull request (recommended)
 
-Compose `bump-to-latest` and `open-bump-pr` to move the pin, build it to
-confirm, and open or update a single pull request. A project already at the LKG
-commit gets a no-op run. A failed build ends the run and touches no pull request.
-Both actions are idempotent on unchanged input, so the workflow is safe on a
-sub-daily cron.
+Compose `bump-to-latest` and `open-bump-pr` to move the pin, build it again to
+confirm, and open or update a single pull request.
 
 ```yaml
 name: Bump mathlib to latest
@@ -145,11 +129,6 @@ jobs:
           message:        ${{ steps.bump.outputs.bump-description }}
           commit-message: ${{ steps.bump.outputs.commit-message }}
 ```
-
-The default `GITHUB_TOKEN` is enough for this workflow. Use a GitHub App token
-instead if you want your own CI to run on the bump pull requests without a
-per-run approval click. See
-[authentication setup](docs/actions.md#set-up-authentication).
 
 ### Option 2 — Bump and push directly
 
@@ -192,9 +171,11 @@ guaranteed to still be good for a project that changed since the last run.
         run: echo "LKG is ${{ steps.latest.outputs.commit }}"
 ```
 
-## Composite actions
+## List of provided actions
 
-Downstream projects can call these four composite actions:
+Downstream projects can call these four composite actions. [`docs/actions.md`](docs/actions.md) holds the full input and output reference,
+the [authentication setup](docs/actions.md#set-up-authentication), a canonical
+example that combines all four actions, and notes on a sub-daily cron cadence.
 
 | Name | Description |
 | --- | --- |
@@ -202,31 +183,3 @@ Downstream projects can call these four composite actions:
 | [`open-bump-pr`](.github/actions/open-bump-pr) | Commits working-tree changes and creates or updates a pull request. |
 | [`query-latest`](.github/actions/query-latest) | Read-only lookup. Returns the target commit without a clone or a build. |
 | [`track-incompatibility`](.github/actions/track-incompatibility) | Opens and maintains an issue, and optionally a fix pull request, while an FKB regression is active. Closes both when the regression clears. |
-
-[`docs/actions.md`](docs/actions.md) holds the full input and output reference,
-the [authentication setup](docs/actions.md#set-up-authentication), a canonical
-example that combines all four actions, and notes on a sub-daily cron cadence.
-
-## How the service works
-
-Four kinds of run produce the data that the actions consume.
-
-**Scheduled validation.** Twice a day the service builds every registered
-project against the newest mathlib commit. On a failure it bisects the mathlib
-history for the commit that breaks the project. A change of state, from healthy
-to broken or back, sends a Zulip alert.
-
-**On-demand runs.** A maintainer can test one project's bumping branch against
-the head of mathlib master. The result shows how far forward that branch can
-move. Every result goes to Zulip, not only a change of state.
-
-**Pull request checks.** A `!downstream-check` comment on a mathlib4 pull
-request builds the named projects against that pull request. The service posts
-one comment with the verdicts. This run is ephemeral: it does not change the
-recorded state of a project.
-
-**Summaries.** A maintainer can send the current state of every project to Zulip
-as a table.
-
-The composite actions read the results of these runs for you. See
-[`docs/actions.md`](docs/actions.md) for what each action reads and reports.
