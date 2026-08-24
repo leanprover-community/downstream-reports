@@ -1,7 +1,7 @@
 # Downstream reports
 
-This repository is a CI service that watches compatibility between
-`leanprover-community/mathlib4` and a curated set of downstream Lean projects.
+This repository hosts a CI service that watches compatibility between
+`mathlib4` and a curated set of downstream Lean projects that depend on it.
 Twice a day it builds every registered project against the newest mathlib
 commit. When a build fails, it bisects the mathlib history and records the first
 commit that breaks the project. It reports the results on a public status page,
@@ -19,14 +19,10 @@ At the moment the service validates the mathlib dependency only.
 
 ## Why register your project
 
-Registration costs one entry in one JSON file — see
-[Register your project](#register-your-project). All validation builds run on
-this repository's runners, not yours. In return your project gets the following.
+**An updated health signal.** Daily runs reports whether your project still
+builds against the head of mathlib `master`.
 
-**A twice-daily health signal.** Each run reports whether your project still
-builds against the head of mathlib master.
-
-**The exact commit that breaks you.** After a failure the service bisects
+**The exact commit that breaks your project.** After a failure the service bisects
 mathlib and records two commits: the last known good (LKG) commit and the first
 known bad (FKB) commit. The two are adjacent, so the FKB commit is the precise
 cause. You get one commit to look at instead of a range to search by hand.
@@ -50,6 +46,16 @@ action opens and maintains an issue while a regression is active, and closes the
 issue when the regression clears.
 
 ## Register your project
+
+> [!IMPORTANT]
+> **A registered project is expected to keep up with mathlib.** The service
+> validates your project against recent mathlib commits. A project whose pin
+> falls far behind produces a report that helps nobody: the search window grows,
+> each run costs more machine time, and the commit it reports comes from old
+> history. Keep your pin close to mathlib master — the actions in
+> [Keep your project current](#keep-your-project-current) do this for you. The
+> maintainers of this repository can disable an entry that stops keeping pace,
+> and can enable it again when the project catches up.
 
 Add one entry to `ci/inventory/downstreams.json` and open a pull request. These
 fields are required:
