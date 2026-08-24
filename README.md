@@ -37,10 +37,6 @@ pin to that commit, build it to confirm, and open a pull request. Your project
 stays close to master, and it never lands on a mathlib commit that is known to
 break it.
 
-**A fast bump build.** The service keeps the mathlib cache warm for the commits
-it reports. A bump build downloads that cache instead of a full mathlib
-compile.
-
 **A check before a mathlib PR merges.** A mathlib reviewer can comment
 `!downstream-check MyProject` on a mathlib4 pull request. The service builds your
 project against that pull request and posts the verdict back as a comment. The
