@@ -4,19 +4,16 @@ This repository is a CI service that watches compatibility between
 `leanprover-community/mathlib4` and a curated set of downstream Lean projects.
 Twice a day it builds every registered project against the newest mathlib
 commit. When a build fails, it bisects the mathlib history and records the first
-commit that breaks the project. It publishes the results as a status page, as
-JSON data, and as GitHub Actions that your own repository can call.
+commit that breaks the project. It reports the results on a public status page,
+and it publishes GitHub Actions that your own repository can call to act on
+them.
 
 The builds run [`hopscotch`](https://github.com/leanprover-community/hopscotch),
 a Lean CLI tool that steps a project through a list of upstream commits to find
 the first failure. This repository is the harness around that tool: the
-schedule, the storage, the alerts, and the published data.
+schedule, the runners, and the reports.
 
-- Status page: <https://leanprover-community.github.io/downstream-reports/>
-- Published data:
-  [`lkg/latest.json`](https://downstreamreports.z13.web.core.windows.net/lkg/latest.json)
-  and
-  [`runs/latest.json`](https://downstreamreports.z13.web.core.windows.net/runs/latest.json)
+Status page: <https://leanprover-community.github.io/downstream-reports/>
 
 At the moment the service validates the mathlib dependency only.
 
@@ -40,9 +37,9 @@ pin to that commit, build it to confirm, and open a pull request. Your project
 stays close to master, and it never lands on a mathlib commit that is known to
 break it.
 
-**A warm mathlib cache.** The service builds mathlib at each published LKG and
-FKB commit and pushes the oleans to the shared mathlib cache. A bump build then
-downloads the cache instead of a full mathlib compile.
+**A fast bump build.** The service keeps the mathlib cache warm for the commits
+it reports. A bump build downloads that cache instead of a full mathlib
+compile.
 
 **A check before a mathlib PR merges.** A mathlib reviewer can comment
 `!downstream-check MyProject` on a mathlib4 pull request. The service builds your
@@ -50,8 +47,7 @@ project against that pull request and posts the verdict back as a comment. The
 break is found before it reaches master.
 
 **Visibility with mathlib maintainers.** The state of your project appears on the
-public status page, in the published JSON data, and in the Zulip alerts that the
-mathlib community reads.
+public status page and in the Zulip alerts that the mathlib community reads.
 
 **Optional issue tracking in your own repository.** The `track-incompatibility`
 action opens and maintains an issue while a regression is active, and closes the
@@ -64,7 +60,7 @@ fields are required:
 
 | Field | Description |
 | --- | --- |
-| `name` | Unique identifier. It appears in job names, artifact names, and the database. |
+| `name` | Unique identifier for your project. The actions accept it as the `downstream` input. |
 | `repo` | GitHub repository in `owner/name` form. |
 | `default_branch` | Branch to clone for validation, for example `main` or `master`. |
 | `dependency_name` | Must match the `name` field of the mathlib `[[require]]` entry in your `lakefile.toml`. For mathlib dependents this is always `"mathlib"`. |
@@ -89,15 +85,13 @@ These optional fields change what a run does:
 | `build_args`, `test_args`, `lint_args` | Extra arguments for the matching `lake` step. |
 | `watch_manifest` | Dispatch a fresh run as soon as your pin moves past the recorded FKB commit. |
 
-The other fields in the file control cost and search heuristics, and the
-maintainers of this repository set them. Do not read this file from outside this
-repository: the schema can change at any time. Read the published JSON data
-instead.
+The other fields in the file control cost and search heuristics. The maintainers
+of this repository set them. Do not read this file from outside this repository:
+the schema can change at any time. Use the composite actions instead.
 
-The first run has no prior state for your project. A pass records the state
-`passing`. A failure opens a `new_failure` episode at once. See
-[`docs/internal/operations.md`](docs/internal/operations.md) for how to read
-episode states.
+The first run has no prior state for your project, so it reports either a pass or
+a new failure. Your project appears on the status page after that run, and the
+actions can find it from then on.
 
 ## Keep your project current
 
@@ -213,54 +207,24 @@ example that combines all four actions, and notes on a sub-daily cron cadence.
 
 ## How the service works
 
-### `mathlib-downstream-report.yml`
+Four kinds of run produce the data that the actions consume.
 
-The main workflow. It runs twice a day against the newest mathlib commit. For
-each registered project it probes that commit and, on a failure, bisects the
-mathlib history for the first bad commit. It writes the results to a database and
-appends a report to the GitHub Actions job summary. A state change
-(`NEW_FAILURE` or `RECOVERED`) sends a Zulip alert.
+**Scheduled validation.** Twice a day the service builds every registered
+project against the newest mathlib commit. On a failure it bisects the mathlib
+history for the commit that breaks the project. A change of state, from healthy
+to broken or back, sends a Zulip alert.
 
-A companion workflow, `manifest-watcher.yml`, runs every 15 minutes. For each
-project with `watch_manifest`, it checks whether the pin moved past the recorded
-FKB commit, and dispatches a targeted run when it did.
+**On-demand runs.** A maintainer can test one project's bumping branch against
+the head of mathlib master. The result shows how far forward that branch can
+move. Every result goes to Zulip, not only a change of state.
 
-See [`docs/internal/workflows.md`](docs/internal/workflows.md) for the job
-structure, the window selection algorithm, and the Zulip configuration.
+**Pull request checks.** A `!downstream-check` comment on a mathlib4 pull
+request builds the named projects against that pull request. The service posts
+one comment with the verdicts. This run is ephemeral: it does not change the
+recorded state of a project.
 
-### `mathlib-downstream-ondemand.yml`
+**Summaries.** A maintainer can send the current state of every project to Zulip
+as a table.
 
-A manual dispatch. It clones one or more projects at their configured
-`bumping_branch` and tests that branch against the head of mathlib master. The
-answer tells you how far forward the branch can move. It skips a project whose
-bumping branch did not move since the last run, and it reports every result to
-Zulip, not only state changes.
-
-See [`docs/internal/ondemand-workflow.md`](docs/internal/ondemand-workflow.md)
-for the deduplication logic, the stored state, and the differences from the
-scheduled workflow.
-
-### `mathlib-pr-validation.yml`
-
-The per-PR check. A `!downstream-check` comment on a mathlib4 pull request
-dispatches this workflow. It builds each named project against the pull request
-and posts one comment with the verdicts. It never writes to the regression
-database.
-
-See
-[`docs/internal/pr-validation-workflow.md`](docs/internal/pr-validation-workflow.md)
-for the two build modes and the token setup.
-
-### `warm-mathlib-cache.yml`, `publish-lkg.yml`, and `generate-pages.yml`
-
-The publication chain. The first workflow builds mathlib at each published LKG
-and FKB commit and pushes the oleans to the shared mathlib cache. The other two
-then upload `lkg/latest.json` and `runs/latest.json` and deploy the status page.
-
-See [`docs/internal/cache-warming.md`](docs/internal/cache-warming.md) and
-[`docs/internal/lkg-pipeline.md`](docs/internal/lkg-pipeline.md).
-
-### `mathlib-downstream-summary.yml`
-
-A manual dispatch. It reads the latest state of every project and sends a compact
-Markdown table to Zulip.
+The composite actions read the results of these runs for you. See
+[`docs/actions.md`](docs/actions.md) for what each action reads and reports.
