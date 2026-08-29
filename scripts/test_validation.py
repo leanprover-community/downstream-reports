@@ -7,6 +7,9 @@ Coverage scope:
       hopscotch binary and a ``lake exe`` fallback build.
     - ``classify_exit_code`` — maps hopscotch's process exit code to a
       semantic ``Outcome``.
+    - ``classify_tool_run`` — the full-run classification that also reads
+      results.json state, downgrading lake-update-stage failures to
+      ``ERROR``.
     - ``build_skip_result`` — synthesises a ``ValidationResult`` for
       skip-heuristic paths that bypass the actual probe.
     - ``append_commit_plan_artifact`` / ``commit_plan_artifact_path``
@@ -49,6 +52,7 @@ from scripts.validation import (
     build_result_from_tool,
     build_skip_result,
     classify_exit_code,
+    classify_tool_run,
     commit_plan_artifact_path,
     invoke_tool,
     load_selection,
@@ -203,6 +207,28 @@ class TestClassifyExitCode:
         assert classify_exit_code(137) == Outcome.ERROR, "Signal-kill codes (128 + signal) map to ERROR, not FAILED"
 
 
+class TestClassifyToolRun:
+    """Full-run classification: exit code plus results.json state."""
+
+    def test_lake_update_stage_failure_is_error_all_else_follows_exit_code(self) -> None:
+        """Scenario: exit 1 at the lake update stage classifies as ``ERROR``;
+        every other (exit code, stage) combination matches ``classify_exit_code``.
+
+        Dependency resolution is a network operation, so a lake-update
+        failure is infrastructure evidence, never commit evidence.  The
+        ``ERROR`` downgrade keeps a service blip from opening episodes or
+        moving stored LKG/FKB boundaries.
+        """
+        # The downgrade case: structured failure at the lake update stage.
+        assert classify_tool_run(1, {"failureStage": "lake update"}) == Outcome.ERROR
+        # Failures at any other stage stay FAILED.
+        assert classify_tool_run(1, {"failureStage": "lake build"}) == Outcome.FAILED
+        assert classify_tool_run(1, {}) == Outcome.FAILED
+        # The stage only matters on exit 1: passes and crashes keep their class.
+        assert classify_tool_run(0, {"failureStage": "lake update"}) == Outcome.PASSED
+        assert classify_tool_run(2, {"failureStage": "lake update"}) == Outcome.ERROR
+
+
 class TestBuildSkipResult:
     """Synthesising a ``ValidationResult`` for skip-heuristic paths."""
 
@@ -327,6 +353,24 @@ class TestBuildResultFromToolFixes:
         # No proposedFixes in results.json → empty list.
         absent = self._build(1, {"firstFailingCommit": "b", "failureStage": "lake build"})
         assert absent.proposed_fixes == []
+
+    def test_lake_update_stage_failure_builds_an_error_result(self) -> None:
+        """Scenario: exit 1 with failureStage "lake update" produces an ERROR
+        result that names no failing commit, so aggregation preserves the
+        prior episode instead of recording a boundary off a service blip.
+        """
+        result = self._build(
+            1,
+            {
+                "firstFailingCommit": "b",
+                "lastSuccessfulCommit": "a",
+                "failureStage": "lake update",
+            },
+        )
+        assert result.outcome == Outcome.ERROR
+        assert result.failure_stage == "lake update"
+        assert result.first_failing_commit is None
+        assert result.error is not None
 
 
 class TestCommitPlanArtifact:

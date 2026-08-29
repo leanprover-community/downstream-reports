@@ -54,8 +54,9 @@ from scripts.validation import (
     append_commit_plan_artifact,
     build_result_from_tool,
     build_selection_error_result,
-    classify_exit_code,
+    classify_tool_run,
     commit_plan_artifact_path,
+    failed_at_lake_update,
     load_selection,
     print_commit_plan_summary,
     run_validation_attempt,
@@ -469,7 +470,9 @@ def main() -> int:
             quiet=args.quiet,
         )
 
-        selection.head_probe_outcome = classify_exit_code(head_probe_run.returncode).value
+        selection.head_probe_outcome = classify_tool_run(
+            head_probe_run.returncode, head_probe_state
+        ).value
         selection.head_probe_failure_stage = head_probe_state.get("failureStage")
         selection.head_probe_summary = tool_summary_text(head_probe_run, head_probe_summary_text)
 
@@ -508,8 +511,9 @@ def main() -> int:
                 **head_probe_kwargs,
             )
 
-        if head_probe_run.returncode != 1:
-            # Passed or error — no bisect needed.
+        if selection.head_probe_outcome != Outcome.FAILED.value:
+            # Passed or error (a lake-update-stage failure classifies as
+            # error) — no bisect needed.
             if selection.head_probe_outcome == "passed":
                 selection.decision_reason = (
                     "The upper endpoint passed, so there is no failing window to bisect."
@@ -553,7 +557,7 @@ def main() -> int:
                 args.workdir, args.min_free_gb, "the stored last-known-good verification build"
             )
             clone_downstream(config, lkg_check_dir, clone_source=lkg_clone_source)
-            lkg_run, _, _ = run_validation_attempt(
+            lkg_run, lkg_state, _ = run_validation_attempt(
                 config=config,
                 from_ref=parent_commit(upstream_dir, candidate),
                 to_ref=candidate,
@@ -564,8 +568,17 @@ def main() -> int:
                 tool_exe=args.tool_exe,
                 quiet=args.quiet,
             )
-            lkg_verification_outcomes[candidate] = lkg_run.returncode == 0
             reclaim_tree(lkg_check_dir, "stored last-known-good verification finished")
+            if failed_at_lake_update(lkg_run.returncode, lkg_state):
+                # No evidence about the commit — abort the tick with an error
+                # result rather than extend the bisect window off a service
+                # blip.  The top-level handler writes the error result.
+                raise RuntimeError(
+                    f"stored last-known-good verification of {candidate[:12]} "
+                    f"failed at the lake update stage; the build gives no "
+                    f"evidence about the commit"
+                )
+            lkg_verification_outcomes[candidate] = lkg_run.returncode == 0
             return lkg_verification_outcomes[candidate]
 
         def probe_first_known_bad(candidate: str) -> int:
@@ -585,7 +598,7 @@ def main() -> int:
                 args.workdir, args.min_free_gb, "the stored first-known-bad re-validation build"
             )
             clone_downstream(config, fkb_check_dir, clone_source=fkb_clone_source)
-            fkb_run, _, _ = run_validation_attempt(
+            fkb_run, fkb_state, _ = run_validation_attempt(
                 config=config,
                 from_ref=parent_commit(upstream_dir, candidate),
                 to_ref=candidate,
@@ -597,6 +610,15 @@ def main() -> int:
                 quiet=args.quiet,
             )
             reclaim_tree(fkb_check_dir, "stored first-known-bad re-validation finished")
+            if failed_at_lake_update(fkb_run.returncode, fkb_state):
+                # No evidence about the commit — abort the tick with an error
+                # result rather than confirm the boundary off a service blip.
+                # The top-level handler writes the error result.
+                raise RuntimeError(
+                    f"stored first-known-bad re-validation of {candidate[:12]} "
+                    f"failed at the lake update stage; the build gives no "
+                    f"evidence about the commit"
+                )
             return fkb_run.returncode
 
         # HEAD probe failed — try the known-bad bisect skip before committing
