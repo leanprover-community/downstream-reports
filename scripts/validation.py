@@ -171,6 +171,33 @@ def classify_exit_code(exit_code: int) -> Outcome:
     return Outcome.ERROR
 
 
+# The results.json failureStage hopscotch reports when `lake update` itself
+# exits nonzero (as opposed to the build/test/lint verify steps).
+LAKE_UPDATE_STAGE = "lake update"
+
+
+def failed_at_lake_update(exit_code: int, state: dict[str, Any]) -> bool:
+    """True when hopscotch reported a structured failure at the lake update stage."""
+
+    return exit_code == 1 and state.get("failureStage") == LAKE_UPDATE_STAGE
+
+
+def classify_tool_run(exit_code: int, state: dict[str, Any]) -> Outcome:
+    """Classify a full `hopscotch` run (exit code plus results.json state).
+
+    A structured failure at the lake update stage classifies as ``ERROR``,
+    not ``FAILED``: dependency resolution is a network operation, so its
+    failure is evidence about infrastructure, never about the tested
+    commits.  ``ERROR`` is silent in the episode state machine, which keeps
+    a registry or service blip from opening episodes or moving stored
+    LKG/FKB boundaries.  Every other run follows ``classify_exit_code``.
+    """
+
+    if failed_at_lake_update(exit_code, state):
+        return Outcome.ERROR
+    return classify_exit_code(exit_code)
+
+
 # ---------------------------------------------------------------------------
 # Tool invocation
 # ---------------------------------------------------------------------------
@@ -384,7 +411,8 @@ def build_result_from_tool(
         proposed_fixes=state.get("proposedFixes") or [],
     )
 
-    if tool_run.returncode == 0:
+    outcome = classify_tool_run(tool_run.returncode, state)
+    if outcome is Outcome.PASSED:
         base.update(
             outcome=Outcome.PASSED,
             failure_stage=None,
@@ -392,13 +420,22 @@ def build_result_from_tool(
             last_successful_commit=state.get("lastSuccessfulCommit", target_commit),
             error=None,
         )
-    elif tool_run.returncode == 1:
+    elif outcome is Outcome.FAILED:
         base.update(
             outcome=Outcome.FAILED,
             failure_stage=state.get("failureStage"),
             first_failing_commit=state.get("firstFailingCommit"),
             last_successful_commit=state.get("lastSuccessfulCommit"),
             error=None,
+        )
+    elif failed_at_lake_update(tool_run.returncode, state):
+        base.update(
+            outcome=Outcome.ERROR,
+            failure_stage=LAKE_UPDATE_STAGE,
+            first_failing_commit=None,
+            last_successful_commit=state.get("lastSuccessfulCommit"),
+            error="lake update failed; dependency resolution is a network "
+                  "operation, so no tested commit is implicated",
         )
     else:
         base.update(
