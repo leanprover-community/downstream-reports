@@ -311,7 +311,7 @@ Steps:
    `azure-create-cache-token` action because that action shells out
    to `az`; the inline mint keeps the workflow self-contained.
 6. **Push** via `lake env .lake/build/bin/cache put-staged
-   --staging-dir=../cache-staging
+   --container=master --staging-dir=../cache-staging
    --repo=leanprover-community/mathlib4` (run from
    `mathlib4-tools/`). `put-staged` uploads the staged `.ltar` files
    under the names staging gave them and computes no hashes, so the
@@ -472,6 +472,19 @@ doesn't have. The exchange itself is the standard OAuth2 flow at
 Until 1–4 are in place, the mint step fails with a clear Azure auth
 error.
 
+### Target container
+
+The push names one container: `--container=master`. These are Mathlib
+oleans at mathlib4 master commits, under the flat `f/<hash>` names
+mathlib master CI writes, and a mathlib4 consumer reads `master` first
+(`defaultContainersForRepo`, mathlib4 `Cache/Infra.lean`).
+
+Each writer identity may write exactly one container, and the storage
+account enforces it, so `MATHLIB_CACHE_WRITER_CLIENT_ID` must hold the
+identity that writes `master`. mathlib4 `Cache/SECURITY.md` holds the
+trust model; mathlib-ci `docs/github-apps/entra-apps.md` lists the
+identities.
+
 ## Token isolation
 
 The mint step is ordered to run only after `lake build Mathlib` has
@@ -550,7 +563,8 @@ annotation.
 - **`push_failed`** — mint succeeded but the put-staged call errored.
   Look at the push step's logs and Azure storage account health.
   The upload_cache job goes red (allowed failure); the run stays
-  green.
+  green. A rejected command line, or a container the credential does
+  not cover, fails every SHA in the tick rather than one.
 - **`verify_failed`** — push reported success but the post-push
   cache get + `lake build --no-build` showed missing oleans.
   Indicates either the push didn't upload everything, or there's a
