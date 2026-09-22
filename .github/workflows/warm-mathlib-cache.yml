@@ -12,15 +12,16 @@ name: warm-mathlib-cache
 # workflow_dispatch for manual backfills (with optional `shas` input that
 # bypasses the inventory + DB lookup).
 #
-# See docs/internal/cache-warming.md (TODO) for the threat model and
-# Azure infra prerequisites; the gist:
+# See docs/internal/cache-warming.md for the threat model and the Azure
+# and R2 prerequisites; the gist:
 #
-#   - The OIDC subject for the cache bearer mint is bound to the
-#     `cache-warming-token` GitHub Environment (per-SHA reusable
-#     workflow's upload_cache job), so a feature-branch dispatch still
-#     warms and uploads oleans.  Recording cache_warmth (the finalize
-#     job) is a DB write bound to the main-only `publish` environment,
-#     so it runs only on main.
+#   - The two cache credentials of the per-SHA reusable workflow's
+#     upload_cache job are granted through the `cache-warming-token`
+#     GitHub Environment, whose deployment branch policy admits `main`
+#     alone. A feature-branch dispatch therefore builds and stages, then
+#     stops at the environment gate before it uploads. Recording
+#     cache_warmth (the finalize job) is a DB write bound to the
+#     main-only `publish` environment, so it runs only on main.
 #   - Production runs are gated to main by the workflow_run filter
 #     below.
 #
@@ -54,7 +55,7 @@ on:
 
 permissions:
   contents: read
-  id-token: write   # required so the reusable workflow can mint the cache bearer
+  id-token: write   # required so the reusable workflow can mint the cache credentials
 
 # Only one warming run at a time across the whole repo. If a manual
 # dispatch lands while a workflow_run-triggered one is in progress, the
@@ -148,11 +149,9 @@ jobs:
   # alongside the ones that ran.
   finalize:
     needs: [plan, warm-sha]
-    # Gated to main (like the report workflows' publish job): a branch
-    # workflow_dispatch backfill still warms and uploads oleans (warm-sha, via
-    # the cache-warming-token env), but recording cache_warmth is a DB write,
-    # so it cleanly SKIPS off main rather than failing red at the environment
-    # gate.
+    # Gated to main (like the report workflows' publish job): recording
+    # cache_warmth is a DB write, so off main it cleanly SKIPS rather than
+    # failing red at the environment gate.
     if: >-
       always() && github.ref == 'refs/heads/main' &&
       (needs.plan.outputs.has_jobs == 'true' ||
