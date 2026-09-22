@@ -353,15 +353,18 @@ jobs:
           echo "::add-mask::$BEARER"
           echo "MATHLIB_CACHE_AZURE_BEARER_TOKEN=$BEARER" >> "$GITHUB_ENV"
 
+      # The upload targets one container. These are Mathlib oleans at
+      # mathlib4 master commits, so they go to `master` — the container
+      # a mathlib4 consumer reads first, and the one the bearer token
+      # grants write to.
       - name: Push staged cache to Azure
         id: push
         continue-on-error: true   # best-effort; push_failed surfaces in result.json
         working-directory: mathlib4-tools
-        env:
-          MATHLIB_CACHE_USE_CLOUDFLARE: "0"
         run: |
           push() {
             lake env .lake/build/bin/cache put-staged \
+              --container=master \
               --staging-dir=../cache-staging \
               --repo=leanprover-community/mathlib4
           }
