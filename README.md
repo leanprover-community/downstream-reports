@@ -69,6 +69,7 @@ These optional fields change what a run does:
 | `bumping_branch` | A branch in your repository where your mathlib bumps land. It lets maintainers test that branch on demand against the head of mathlib master. |
 | `run_test`, `run_lint` | Also run `lake test` or `lake lint` in each validation build. Both default to `false`. |
 | `build_args`, `test_args`, `lint_args` | Extra arguments for the matching `lake` step. |
+| `fail_fast` | Set `false` to keep `lake build --fail-fast` out of the bisect builds. The default is `true`, and the flag reaches only a toolchain that accepts it (v4.35.0-rc1 or later). |
 | `watch_manifest` | Dispatch a fresh run as soon as your pin moves past the recorded FKB commit. |
 
 The other fields in the file control cost and search heuristics. The maintainers

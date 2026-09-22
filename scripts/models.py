@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import math
 import re
 from collections.abc import Sequence
 from dataclasses import asdict, dataclass, field
@@ -19,6 +20,41 @@ from typing import Any
 # trailing anchor is what rejects the patched re-tags.  Groups 1-3 are
 # major/minor/patch for callers that sort by version.
 RELEASE_TAG_RE = re.compile(r"^v(\d+)\.(\d+)\.(\d+)(?:-rc\d+)?$")
+
+
+# The first Lean toolchain whose `lake build` accepts `--fail-fast`
+# (leanprover/lean4#14797, merged 2026-08-22): v4.35.0-rc1, or the nightly of
+# the merge day.  An older `lake` rejects the unknown option and exits
+# non-zero, which hopscotch reads as a failing probe — so the probe step only
+# passes the flag to a toolchain at or above this floor.
+FAIL_FAST_MIN_RELEASE = (4, 35, 0, 1)
+FAIL_FAST_MIN_NIGHTLY = (2026, 8, 22)
+
+_TOOLCHAIN_RELEASE_RE = re.compile(r"^v(\d+)\.(\d+)\.(\d+)(?:-rc(\d+))?$")
+_TOOLCHAIN_NIGHTLY_RE = re.compile(r"^nightly-(\d{4})-(\d{2})-(\d{2})$")
+
+
+def toolchain_supports_fail_fast(toolchain: str) -> bool:
+    """Whether this toolchain's `lake build` accepts `--fail-fast`.
+
+    `toolchain` is a `lean-toolchain` line, with or without its origin prefix
+    (`leanprover/lean4:v4.35.0-rc1`).  A final release sorts after its own
+    release candidates.  Anything else — a `master` or PR toolchain, a local
+    name — returns False: the flag is an optimisation, so an unrecognised
+    toolchain simply goes without it.
+    """
+
+    version = toolchain.strip().rsplit(":", 1)[-1]
+    release = _TOOLCHAIN_RELEASE_RE.match(version)
+    if release is not None:
+        major, minor, patch, candidate = release.groups()
+        # A final release carries no -rc suffix and follows every candidate.
+        rank = math.inf if candidate is None else int(candidate)
+        return (int(major), int(minor), int(patch), rank) >= FAIL_FAST_MIN_RELEASE
+    nightly = _TOOLCHAIN_NIGHTLY_RE.match(version)
+    if nightly is not None:
+        return tuple(int(part) for part in nightly.groups()) >= FAIL_FAST_MIN_NIGHTLY
+    return False
 
 
 class Outcome(str, Enum):
@@ -96,6 +132,15 @@ class DownstreamConfig:
     build_args: list[str] = field(default_factory=list)
     test_args: list[str] = field(default_factory=list)
     lint_args: list[str] = field(default_factory=list)
+    # When True (the default), the probe step adds `--fail-fast` to the
+    # `lake build` of each search probe — the bisect and the stored-LKG
+    # verification — where only the pass/fail answer is read.  The flag stops
+    # lake from scheduling more of the workspace after the first error; it
+    # never turns a passing build into a failing one, so it cannot move a
+    # boundary.  It only reaches toolchains that accept it (see
+    # `toolchain_supports_fail_fast`), so this stays True unless a downstream
+    # misbehaves under the flag itself.
+    fail_fast: bool = True
     # When True, the manifest-watcher (.github/workflows/manifest-watcher.yml,
     # cron */15) inspects this downstream every 15 min and dispatches a
     # targeted regression-report run when its lake-manifest.json pin moves
@@ -203,6 +248,9 @@ class WindowSelection:
     build_args: list[str] = field(default_factory=list)
     test_args: list[str] = field(default_factory=list)
     lint_args: list[str] = field(default_factory=list)
+    # Per-downstream fail-fast flag from the inventory, forwarded like
+    # nuke_lakedir.  See DownstreamConfig.fail_fast.
+    fail_fast: bool = True
 
     @classmethod
     def from_json(cls, payload: dict[str, Any]) -> "WindowSelection":

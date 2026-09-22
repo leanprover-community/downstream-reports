@@ -32,7 +32,12 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from scripts.cache import cache_env, downstream_cache_dir, warm_downstream_cache
+from scripts.cache import (
+    cache_env,
+    downstream_cache_dir,
+    downstream_toolchain,
+    warm_downstream_cache,
+)
 from scripts.git_ops import (
     build_commit_window,
     clone_downstream,
@@ -48,6 +53,7 @@ from scripts.models import (
     ValidationResult,
     WindowSelection,
     config_from_selection,
+    toolchain_supports_fail_fast,
 )
 from scripts.storage import DownstreamStatusRecord
 from scripts.validation import (
@@ -239,6 +245,36 @@ def try_revalidate_boundary(
 
 
 # ---------------------------------------------------------------------------
+# Fail-fast gate
+# ---------------------------------------------------------------------------
+
+
+def resolve_fail_fast(config: DownstreamConfig, project_dir: Path) -> bool:
+    """Decide whether this run's search builds may pass `lake --fail-fast`.
+
+    The downstream's pinned `lean-toolchain` is the floor for every build in
+    the run: each probe bumps the dependency with `lake update`, which only
+    moves a toolchain forward.  A `lake` older than the flag rejects it and
+    exits non-zero, which hopscotch reads as a failing probe, so a toolchain
+    below the floor gets no flag at all.
+    """
+
+    if not config.fail_fast:
+        print(f"[{config.name}] fail-fast: off (disabled in the inventory)")
+        return False
+    try:
+        toolchain = downstream_toolchain(project_dir)
+    except OSError:
+        print(f"[{config.name}] fail-fast: off (the checkout has no lean-toolchain)")
+        return False
+    if not toolchain_supports_fail_fast(toolchain):
+        print(f"[{config.name}] fail-fast: off — toolchain {toolchain} predates the option")
+        return False
+    print(f"[{config.name}] fail-fast: on for search builds — toolchain {toolchain}")
+    return True
+
+
+# ---------------------------------------------------------------------------
 # Culprit re-probe
 # ---------------------------------------------------------------------------
 
@@ -282,6 +318,68 @@ def run_culprit_probe(
         )
     except Exception as exc:
         print(f"[{config.name}] warning: culprit probe failed: {exc}")
+
+
+def run_boundary_completion_probe(
+    *,
+    config: DownstreamConfig,
+    culprit_commit: str,
+    upstream_dir: Path,
+    project_dir: Path,
+    output_dir: Path,
+    env: dict[str, str],
+    tool_exe: Path | None,
+    quiet: bool = False,
+) -> dict[str, Any] | None:
+    """Rebuild a fail-fast bisect's culprit without the flag and return its state.
+
+    A fail-fast probe stops at the first error, so the bisect leaves a partial
+    log at the boundary and hopscotch's fix detection sees only that error.
+    This rebuild completes both.  It reuses the search tree, which hopscotch
+    left pinned at the culprit with the finished artifacts of the cancelled
+    probe in place, so the build carries on from where that probe stopped: the
+    skipped tail is paid once at the boundary instead of on every failing
+    probe.
+
+    Returns the re-probe's results state when it reproduced the failure, and
+    None otherwise, so the caller keeps the bisect's own state.  Exceptions
+    are swallowed for the same reason as in ``run_culprit_probe``: the outcome
+    of the run is already decided, and this probe only enriches its artifacts.
+    """
+
+    # hopscotch folds the build arguments into its resume identity and refuses
+    # a session whose verify steps changed, so its state directory goes before
+    # the re-run.  Only `.lake/hopscotch` is dropped; the build artifacts
+    # beside it are what keep the rebuild incremental.  The bisect's copy of
+    # that directory already sits in this job's artifacts.
+    print(
+        f"[{config.name}] completing the culprit log for {culprit_commit[:12]} "
+        "with a full build"
+    )
+    shutil.rmtree(project_dir / ".lake" / "hopscotch", ignore_errors=True)
+    try:
+        completion_run, completion_state, _ = run_validation_attempt(
+            config=config,
+            from_ref=parent_commit(upstream_dir, culprit_commit),
+            to_ref=culprit_commit,
+            project_dir=project_dir,
+            output_dir=output_dir / "culprit-probe",
+            tested_commits=[culprit_commit],
+            env=env,
+            tool_exe=tool_exe,
+            quiet=quiet,
+        )
+    except Exception as exc:
+        print(f"[{config.name}] warning: boundary completion probe failed: {exc}")
+        return None
+    if completion_run.returncode != 1:
+        print(
+            f"[{config.name}] warning: the boundary completion probe of "
+            f"{culprit_commit[:12]} exited {completion_run.returncode} instead of "
+            "reproducing the failure; keeping the bisect's own fixes"
+        )
+        return None
+    return completion_state
 
 
 # ---------------------------------------------------------------------------
@@ -436,6 +534,10 @@ def main() -> int:
         # Clone downstream for builds.  Public repo — no authentication required.
         clone_downstream(config, downstream_dir)
 
+        # Decided once, from the checkout's pinned toolchain, and applied only
+        # to the search builds below.
+        fail_fast = resolve_fail_fast(config, downstream_dir)
+
         warm_downstream_cache(config, project_dir=downstream_dir, output_dir=args.output_dir, env=env)
 
         target_commit = selection.target_commit
@@ -563,6 +665,7 @@ def main() -> int:
                 env=env,
                 tool_exe=args.tool_exe,
                 quiet=args.quiet,
+                fail_fast=fail_fast,
             )
             lkg_verification_outcomes[candidate] = lkg_run.returncode == 0
             reclaim_tree(lkg_check_dir, "stored last-known-good verification finished")
@@ -708,7 +811,25 @@ def main() -> int:
                 tool_exe=args.tool_exe,
                 bisect=True,
                 quiet=args.quiet,
+                fail_fast=fail_fast,
             )
+            # A fail-fast bisect stops each probe at the first error, so the
+            # culprit it lands on carries a partial log and a partial fix
+            # list.  Rebuild that one commit in full and report its fixes.
+            culprit_commit = state.get("firstFailingCommit") if fail_fast else None
+            if culprit_commit and tool_run.returncode == 1:
+                completion_state = run_boundary_completion_probe(
+                    config=config,
+                    culprit_commit=culprit_commit,
+                    upstream_dir=upstream_dir,
+                    project_dir=search_dir,
+                    output_dir=args.output_dir,
+                    env=env,
+                    tool_exe=args.tool_exe,
+                    quiet=args.quiet,
+                )
+                if completion_state is not None:
+                    state = {**state, "proposedFixes": completion_state.get("proposedFixes") or []}
             result = _build_result(
                 search_mode="bisect",
                 tested_commits=bisect_commits,

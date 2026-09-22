@@ -88,6 +88,32 @@ commit introduced the breakage?*
         verification outcome is memoized, so an LKG already built during
         boundary revalidation is reused here.)
      4. Runs `hopscotch` in bisect mode over the final window.
+     5. After a fail-fast bisect that found a culprit, runs
+        `run_boundary_completion_probe` — see below.
+
+   **Fail-fast search builds.** `resolve_fail_fast` decides once per run, from
+   the checkout's pinned `lean-toolchain`, whether hopscotch may add
+   `lake build --fail-fast` to a probe. The pin is the floor for every build
+   in the run, because each probe bumps the dependency with `lake update`,
+   which only moves a toolchain forward; `models.toolchain_supports_fail_fast`
+   holds the v4.35.0-rc1 floor (leanprover/lean4#14797), and
+   `"fail_fast": false` in the inventory turns the flag off for one
+   downstream. An older `lake` rejects the option and exits non-zero, which
+   hopscotch reads as a failing probe, so an unrecognised toolchain gets no
+   flag.
+
+   Only the builds whose log is never reported take the flag: the bisect and
+   the stored-LKG verification, where the exit code is all the probe reads.
+   The HEAD probe, `run_culprit_probe`, and the FKB rebuild keep the complete
+   error list. A fail-fast bisect then ends on a partial log, so
+   `run_boundary_completion_probe` rebuilds the culprit in the search tree
+   with the flag off. It drops `.lake/hopscotch` first (hopscotch folds the
+   build arguments into its resume identity and refuses a session whose
+   verify steps changed) and keeps the build artifacts beside it, so the
+   rebuild carries on from where the cancelled probe stopped. Its log lands
+   in `culprit-probe/`, which already outranks `bisect/`, and its
+   `proposedFixes` replace the truncated ones in the result. A rebuild that
+   passes, errors, or crashes changes nothing.
 
    All hopscotch invocations go through `cache_env()`, which strips CI secrets
    as a defence-in-depth measure. Uploads a `result-<name>` artifact.

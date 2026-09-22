@@ -176,6 +176,68 @@ class TestInvokeTool:
             assert command[command.index("--test-args") + 1] == "--verbose"
             assert command[command.index("--lint-args") + 1] == "--update"
 
+    def test_fail_fast_joins_the_build_args_of_one_invocation(self) -> None:
+        """``fail_fast`` adds ``--fail-fast`` to ``lake build`` and nowhere else.
+
+        The flag belongs to the phase rather than to the downstream:
+        the probe step sets it for the search builds, whose exit code
+        is all it reads, and leaves it off for the builds whose log is
+        reported.  ``--build-args`` is the only channel into ``lake
+        build``, so the token joins the configured ones there and never
+        reaches ``lake test`` or ``lake lint``.
+        """
+        # Arrange
+        with tempfile.TemporaryDirectory() as tmp:
+            project_dir = Path(tmp) / "downstream"
+            project_dir.mkdir()
+            output_dir = Path(tmp) / "artifacts"
+            tool_exe = Path(tmp) / "hopscotch"
+            tool_exe.write_text("")
+            env = {"LAKE_CACHE_DIR": str(Path(tmp) / "cache")}
+
+            def run(config: DownstreamConfig, fail_fast: bool) -> list[str]:
+                mock_process = Mock()
+                mock_process.stdout = iter([])
+                mock_process.wait.return_value = 0
+                mock_process.args = [str(tool_exe)]
+                with patch(
+                    "scripts.validation.subprocess.Popen", return_value=mock_process
+                ) as mock_popen:
+                    invoke_tool(
+                        config,
+                        "deadbeef00000000000000000000000000000000",
+                        "cafebabe00000000000000000000000000000000",
+                        project_dir,
+                        output_dir,
+                        env,
+                        tool_exe,
+                        fail_fast=fail_fast,
+                    )
+                return mock_popen.call_args.args[0]
+
+            bare = DownstreamConfig(name="d", repo="o/d", default_branch="main")
+            configured = DownstreamConfig(
+                name="d",
+                repo="o/d",
+                default_branch="main",
+                run_test=True,
+                build_args=["-Kenv=dev"],
+                test_args=["--verbose"],
+            )
+
+            # Act / Assert — off, the command is the configured recipe alone.
+            assert "--build-args" not in run(bare, False)
+
+            # Act / Assert — on, the flag stands alone or joins what is configured.
+            command = run(bare, True)
+            assert command[command.index("--build-args") + 1] == "--fail-fast"
+
+            command = run(configured, True)
+            assert command[command.index("--build-args") + 1] == "-Kenv=dev --fail-fast"
+            assert command[command.index("--test-args") + 1] == "--verbose", (
+                "the flag is a `lake build` option; the other steps keep their own args"
+            )
+
 
 class TestClassifyExitCode:
     """Mapping hopscotch exit codes to ``Outcome``."""
