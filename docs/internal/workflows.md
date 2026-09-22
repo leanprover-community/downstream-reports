@@ -164,12 +164,12 @@ See [`docs/internal/cache-warming.md`](cache-warming.md) for a full description.
 
 After each successful regression report on main, this workflow builds mathlib
 at the LKG / FKB SHAs reported for every downstream that does not opt out, and
-pushes the oleans to mathlib's shared Azure cache. External consumers of
-`lkg/latest.json` (e.g. the `bump-to-latest` action) hit a warm cache instead
-of having to rebuild mathlib from scratch when our reported SHAs land between
-bors merges. The warmth this workflow verifies is what the snapshot's
-`*_warm` flags report, per published commit; failed warming attempts are
-retried with backoff.
+pushes the oleans to both the Azure `master` container and the R2 bucket
+behind `cache.mathlib.org`. External consumers of `lkg/latest.json` (e.g. the
+`bump-to-latest` action) hit a warm cache instead of rebuilding mathlib from
+scratch when our reported SHAs land between bors merges. The warmth this
+workflow verifies is what the snapshot's `*_warm` flags report, per published
+commit; failed warming attempts are retried with backoff.
 
 Warming defaults on (`DownstreamConfig.warm_cache: bool = True`); set
 `"warm_cache": false` in the inventory for downstreams that don't consume
