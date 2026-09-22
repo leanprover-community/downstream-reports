@@ -12,18 +12,11 @@ name: warm-mathlib-cache
 # workflow_dispatch for manual backfills (with optional `shas` input that
 # bypasses the inventory + DB lookup).
 #
-# See docs/internal/cache-warming.md for the threat model and the Azure
-# and R2 prerequisites; the gist:
-#
-#   - The two cache credentials of the per-SHA reusable workflow's
-#     upload_cache job are granted through the `cache-warming-token`
-#     GitHub Environment, whose deployment branch policy admits `main`
-#     alone. A feature-branch dispatch therefore builds and stages, then
-#     stops at the environment gate before it uploads. Recording
-#     cache_warmth (the finalize job) is a DB write bound to the
-#     main-only `publish` environment, so it runs only on main.
-#   - Production runs are gated to main by the workflow_run filter
-#     below.
+# See docs/internal/cache-warming.md for the threat model, the gating, and
+# the Azure and R2 prerequisites. Both upload credentials come through the
+# `cache-warming-token` environment, whose branch policy admits `main`
+# alone, so a feature-branch dispatch builds and stages, then stops at
+# that gate.
 #
 # The status page's live-status layer (scripts/generate_site.py) queries this
 # workflow's runs by filename; pinned by scripts/test_generate_site.py.

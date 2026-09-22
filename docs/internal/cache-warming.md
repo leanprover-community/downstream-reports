@@ -2,14 +2,14 @@
 
 Builds mathlib at the LKG / FKB SHAs reported for every downstream
 that does not opt out via `warm_cache: false`, and pushes the
-resulting oleans to mathlib's shared cache, so external
-consumers of `lkg/latest.json` (e.g. the `bump-to-latest` action) hit
-a warm cache instead of having to rebuild mathlib from scratch. The
-push goes to both stores mathlib's own CI writes: the Azure `master`
-container, and the R2 bucket behind `cache.mathlib.org`. The
-snapshot reports the warmth this workflow verifies: each published
-commit carries a `*_warm` flag. A cold commit is still published, and
-a consumer that bumps onto it gets a warning on the PR it opens.
+resulting oleans to both stores mathlib's own CI writes: the Azure
+`master` container, and the R2 bucket behind `cache.mathlib.org`.
+External consumers of `lkg/latest.json` (e.g. the `bump-to-latest`
+action) then hit a warm cache instead of rebuilding mathlib from
+scratch. The snapshot reports the warmth this workflow verifies: each
+published commit carries a `*_warm` flag. A cold commit is still
+published, and a consumer that bumps onto it gets a warning on the PR it
+opens.
 
 ## Why
 
@@ -299,9 +299,8 @@ Steps:
 - `runs-on: ubuntu-latest`
 - `needs: build_and_stage`, `if: needs.build_and_stage.outputs.status == 'staged'` —
   skipped entirely on `already_warm` / `build_failed`.
-- `environment: cache-warming-token` — fixes the OIDC subject claim
-  that both credentials are granted through. Its deployment branch
-  policy admits `main` alone, so both mints are main-only.
+- `environment: cache-warming-token` — gates both mints, `main` only.
+  See [Authorization](#authorization).
 
 Steps:
 
@@ -329,20 +328,18 @@ Steps:
 9. **Push to R2** via the same `put-staged`, with `--backend=s3` and
    no `--container`. `MATHLIB_CACHE_PUT_URL` (the secret
    `MATHLIB_CACHE_R2_PUT_URL`) names one flat endpoint and turns the
-   container policy off, so `--repo` alone decides the prefix and
+   container policy off, so `--repo` alone sets the prefix and
    `leanprover-community/mathlib4` writes the flat `f/<hash>.ltar`
    names a mathlib4 consumer reads.
 10. Write result, upload as `warm-result-<sha>` (terminal:
     `push_failed`) or `pushed-<sha>` (non-terminal: `pushed`).
 11. Exit 1 on Azure push failure, surfacing as a red job.
 
-Azure is the upload of record. Steps 8 and 9 are best-effort: each one
-warns on failure and neither changes the job's status, because `verify`
-runs the target SHA's own tool, which finds the files on Azure whether
-it reads the public endpoint or the storage account. The two uploads are
-independent, so the R2 leg runs even when the Azure leg failed, mint
-included. A skipped or failed R2 push leaves this SHA's files out of the
-bucket until the planner retries the SHA or a backfill adds them.
+Azure is the upload of record, so steps 8 and 9 warn on failure and
+leave the job's status alone: `verify` finds the files on Azure. The two
+legs are independent and the R2 one runs even when the Azure mint or
+push failed. A skipped or failed R2 push leaves this SHA out of the
+bucket until the planner retries it or a backfill adds it.
 
 ### `verify`
 
@@ -432,10 +429,10 @@ did report.
 
 `record_warm_shas.py` takes the write-capable `POSTGRES_DSN`, so `finalize`
 runs in the main-only `publish` GitHub Environment and the whole job is gated
-to `main` (`github.ref == 'refs/heads/main'`) — a branch `workflow_dispatch`
-backfill still warms and uploads oleans, but `finalize` cleanly skips rather
-than failing at the environment gate. **The `publish` environment must stay
-branch-policy-only:** adding a required-reviewer or wait-timer rule would stall
+to `main` (`github.ref == 'refs/heads/main'`), which makes a branch
+`workflow_dispatch` skip it cleanly rather than fail at the environment
+gate. **The `publish` environment must stay branch-policy-only:** adding
+a required-reviewer or wait-timer rule would stall
 this unattended scheduled chain — and the report/on-demand `publish` jobs that
 share the environment — waiting on manual approval.
 
@@ -458,10 +455,9 @@ Tune up if the warming plan grows large and there's headroom on the
 
 ## Authorization
 
-Both pushes target the stores mathlib's own CI writes, and both
-credentials are granted through one GitHub Environment on this repo,
-`cache-warming-token`. Its deployment branch policy admits `main`
-alone, so the two mints have one trust boundary.
+Both credentials come through one GitHub Environment on this repo,
+`cache-warming-token`, whose branch policy admits `main` alone. That is
+the single trust boundary for both mints.
 
 ### Azure
 
@@ -488,9 +484,8 @@ doesn't have. The exchange itself is the standard OAuth2 flow at
    repo:leanprover-community/downstream-reports:environment:cache-warming-token
    ```
 
-   This binds the credential to the environment rather than to a
-   workflow file — same pattern as the PR validation workflow's
-   `pr-validation-token` environment.
+   Same pattern as the PR validation workflow's `pr-validation-token`
+   environment.
 3. Repo secret `MATHLIB_CACHE_WRITER_CLIENT_ID` (the cache-writer
    Azure app's client ID).
 4. Repo secret `LPC_AZ_TENANT_ID` (shared tenant ID, already used by
@@ -514,48 +509,45 @@ identities.
 
 ### R2
 
-The R2 push holds no durable credential. The `mint-s3-credentials`
-action sends the job's OIDC token to the mathlib cache broker, and the
-broker answers S3 credentials that expire on their own. The broker's
-policy decides the grant from the token's claims; the row
-`downstream-reports-warm-publish` matches this job's subject and grants
-`object-read-write` on the `mathlib4/` prefix of the `mathlib4-cache`
-bucket, for 900 seconds. That prefix holds the master set, which is
-what the Azure `master` container holds, so the two pushes have one
-trust level. The broker lives in the `mathlib-initiative/cache-infrastructure`
-repository, under `cache-broker/`.
+The `mint-s3-credentials` action sends the job's OIDC token to the
+mathlib cache broker, which answers S3 credentials that expire after
+900 seconds. The broker's policy decides the grant from the token's
+claims: the row `downstream-reports-warm-publish` matches this job's
+subject and grants `object-read-write` on the `mathlib4/` prefix of the
+`mathlib4-cache` bucket. That prefix holds the master set, the same set
+the Azure `master` container holds, so the two pushes sit at one trust
+level. The broker lives in `mathlib-initiative/cache-infrastructure`
+under `cache-broker/`.
 
 #### One-time prerequisites
 
-1. **A broker grant row** whose claims match this job's subject, in the
-   broker's `GRANTS` policy. Without a matching row the broker answers
-   403 and the mint step fails.
+1. **A broker grant row** whose claims match this job's subject.
+   Without one the broker answers 403 and the mint step fails.
 2. **Repo variable** `MATHLIB_CACHE_BROKER_URL` — the broker's
-   credential endpoint. This is the switch: while it is empty or
-   absent, the job runs the Azure push alone.
+   credential endpoint, and the switch: while it is empty or absent,
+   the job runs the Azure push alone.
 3. **Environment secret** `MATHLIB_CACHE_R2_PUT_URL` on
    `cache-warming-token` — the flat destination,
    `https://<account>.r2.cloudflarestorage.com/mathlib4-cache/mathlib4`.
    While it is unset, the push step warns and uploads nothing.
 
-Both names match mathlib4's own, which sets the same variable and the
-same environment secret for its `upload_cache` job.
+Both names match mathlib4's own for its `upload_cache` job.
 
 ## Token isolation
 
 Both mints run in `upload_cache`, a separate job from the build, so
-neither credential is ever in the environment of the elaboration-time
-code. The verify job runs on a third runner with no credential at all.
+neither credential reaches the environment of the elaboration-time
+code. `verify` runs on a third runner with no credential.
 
-The Azure bearer reaches `$GITHUB_ENV`, because
-`MATHLIB_CACHE_AZURE_BEARER_TOKEN` is how the cache tool reads it, so
-the job clears it right after the Azure push. That clear runs before
-the R2 mint, so the two credentials never share a step environment.
+The cache tool reads the Azure bearer from
+`MATHLIB_CACHE_AZURE_BEARER_TOKEN`, so the bearer has to sit in
+`$GITHUB_ENV`. The job clears it right after the Azure push, and that
+clear runs before the R2 mint, so the two credentials never share a step
+environment.
 
-The R2 credentials never reach `$GITHUB_ENV`. The action masks them and
+The R2 credentials stay out of `$GITHUB_ENV`: the action masks them and
 returns them as step outputs, and only the R2 push step maps them into
-its own `env:`. They also expire on their own after 900 seconds, so the
-job holds nothing durable.
+its own `env:`.
 
 ## Testing
 
@@ -594,8 +586,10 @@ gh workflow run warm-mathlib-cache.yml \
 
 GitHub locates the workflow via the shim on main but executes the
 feature branch's version of both files (`./_warm-one-sha.yml` resolves
-at the caller's ref). The federated credential is bound to the
-environment, not the branch, so token minting works from any ref.
+at the caller's ref). `build_and_stage` therefore runs, and
+`upload_cache` stops at the `cache-warming-token` gate, whose branch
+policy admits `main` alone. A feature-branch dispatch exercises the
+build and stage path; it does not upload.
 
 ### End-to-end check
 

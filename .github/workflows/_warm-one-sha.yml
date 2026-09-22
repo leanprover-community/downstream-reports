@@ -14,13 +14,12 @@ name: warm-mathlib-cache (one SHA)
 #                      look them up. A master-built tool can sit on a
 #                      different generation and would probe/stage
 #                      names nobody at <sha> can fetch.
-#   upload_cache     — ubuntu, holds the cache credentials (both minted
-#                      via OIDC bound to the cache-warming-token
-#                      environment). Builds its own cache tool from a
-#                      shallow master checkout and runs `put-staged`
-#                      twice: to the Azure `master` container, then to
-#                      the R2 bucket behind cache.mathlib.org. Azure is
-#                      the upload of record and sets the job's status.
+#   upload_cache     — ubuntu, holds the cache credentials. Builds its
+#                      own cache tool from a shallow master checkout and
+#                      runs `put-staged` twice: to the Azure `master`
+#                      container, then to the R2 bucket behind
+#                      cache.mathlib.org. Azure is the upload of record
+#                      and sets the job's status.
 #   verify           — ubuntu, NO token. Independent confirmation that
 #                      every Mathlib olean is fetchable: fresh clone,
 #                      `cache get`, `lake build --no-build --rehash -v
@@ -278,11 +277,11 @@ jobs:
     # the push_failed result is uploaded; continue-on-error keeps the
     # workflow_run green so publish-lkg + generate-pages still chain.
     continue-on-error: true
-    # The environment fixes the OIDC subject claim that both cache
-    # credentials are granted through: the federated credential on the
-    # mathlib cache-writer Azure app, and the broker's
-    # `downstream-reports-warm-publish` grant. Its deployment branch
-    # policy admits `main` alone, so both mints are main-only.
+    # The environment fixes the OIDC subject claim that both credentials
+    # are granted through: the federated credential on the mathlib
+    # cache-writer Azure app, and the broker's
+    # `downstream-reports-warm-publish` grant. Its branch policy admits
+    # `main` alone, so both mints are main-only.
     environment:
       name: cache-warming-token
       deployment: false
@@ -384,14 +383,11 @@ jobs:
           echo "MATHLIB_CACHE_AZURE_BEARER_TOKEN=" >> "$GITHUB_ENV"
 
       # Second upload of the same staged set, to the R2 bucket behind
-      # cache.mathlib.org. The two uploads are independent, and `!cancelled()`
-      # is what keeps this one running when the Azure leg failed, mint
-      # included. The `build_tool` gate is the one shared dependency: a
-      # credential is worth minting only when there is a tool to spend it. It runs after the Azure bearer is cleared, so the two
-      # credentials never share a step environment. The action returns
-      # short-lived S3 credentials as masked step outputs. A failed mint fails
-      # only its own step, and the push below is then skipped. An empty
-      # `MATHLIB_CACHE_BROKER_URL` turns the R2 upload off.
+      # cache.mathlib.org. `!cancelled()` keeps this leg running when the
+      # Azure leg failed, mint included; `build_tool` is the one shared
+      # dependency, since the push needs the cache tool. The step
+      # order holds a boundary: the bearer clear above runs first, so the two
+      # credentials never share a step environment.
       - name: Mint R2 credentials
         id: mint_r2
         if: ${{ !cancelled() && steps.build_tool.outcome == 'success' && vars.MATHLIB_CACHE_BROKER_URL != '' }}
@@ -401,14 +397,12 @@ jobs:
           broker-url: ${{ vars.MATHLIB_CACHE_BROKER_URL }}
           audience: mathlib-cache-broker
 
-      # Azure is the upload of record, so this step warns on failure and
-      # leaves the job's status alone: `verify` runs the target SHA's own
-      # tool, which finds the files on Azure whether it reads the public
-      # endpoint or the storage account.
+      # Azure is the upload of record, so a failure here warns and leaves
+      # the job's status alone: `verify` finds the files on Azure.
       #
       # The step passes no `--container`, unlike the Azure push above.
       # `MATHLIB_CACHE_PUT_URL` names one flat endpoint and turns the
-      # container policy off, so `--repo` alone decides the prefix, and
+      # container policy off, so `--repo` alone sets the prefix, and
       # `leanprover-community/mathlib4` writes the flat `f/<hash>.ltar` names
       # a mathlib4 consumer reads.
       - name: Push staged cache to R2
@@ -423,8 +417,8 @@ jobs:
           # R2 signs every request in the region `auto`.
           MATHLIB_CACHE_S3_REGION: auto
           MATHLIB_CACHE_PUT_URL: ${{ secrets.MATHLIB_CACHE_R2_PUT_URL }}
-          # The broker row that matched the token. Display-only, and it
-          # reaches the script through the environment, not the command text.
+          # The broker row that matched, for the log line below. It reaches
+          # the script through `env:`, not through the command text.
           GRANT: ${{ steps.mint_r2.outputs.grant }}
         run: |
           if [ -z "$MATHLIB_CACHE_PUT_URL" ]; then
