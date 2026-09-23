@@ -231,10 +231,10 @@ def invoke_tool(
 ) -> subprocess.CompletedProcess[str]:
     """Run the Lean executable, streaming logs to the console and artifact files.
 
-    `fail_fast` adds `lake build --fail-fast` to this one invocation.  It is a
-    property of the phase, not of the downstream: search builds take it because
-    only their exit code is read, while the builds whose log is reported keep
-    the complete error list.  `config.build_args` stays the configured recipe.
+    `fail_fast` adds `--fail-fast` to the `lake build` of this invocation.  The
+    caller sets it per phase, not per downstream: search builds take it
+    because only their exit code is read.  The flag joins `config.build_args`
+    in the command and leaves `config` unchanged.
     """
 
     output_dir.mkdir(parents=True, exist_ok=True)

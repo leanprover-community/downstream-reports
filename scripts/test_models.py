@@ -487,8 +487,8 @@ class TestToolchainSupportsFailFast:
         """Scenario: `--fail-fast` reaches v4.35.0-rc1 and later, and nothing else.
 
         An older `lake` rejects the unknown option and exits non-zero,
-        which hopscotch reads as a failing probe — a whole bisect of
-        those lands on a wrong culprit.  Every toolchain the parser
-        cannot place is therefore treated as too old.
+        which hopscotch reads as a failing probe, so a bisect lands on a
+        wrong culprit.  The parser treats every toolchain it cannot read
+        as too old.
         """
         assert toolchain_supports_fail_fast(toolchain) is supported

@@ -546,10 +546,9 @@ class TestFailFast:
         culprit in the search tree with the flag off, and returns the fixes the
         complete build found.
 
-        Hopscotch refuses to resume a session whose verify steps
-        changed, so its state directory has to go.  The build artifacts
-        beside it stay, which is what carries the rebuild on from where
-        the cancelled probe stopped.
+        Hopscotch refuses to resume with different build arguments, so
+        its state directory goes.  The build artifacts beside it stay, so
+        the rebuild continues from where the cancelled probe stopped.
         """
         # Arrange
         search_dir = tmp_path / "search"

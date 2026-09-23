@@ -336,9 +336,9 @@ def run_boundary_completion_probe(
     A fail-fast probe stops at the first error, so the bisect leaves a partial
     log at the boundary and hopscotch's fix detection sees only that error.
     This rebuild completes both.  It reuses the search tree, which hopscotch
-    left pinned at the culprit with the finished artifacts of the cancelled
-    probe in place, so the build carries on from where that probe stopped: the
-    skipped tail is paid once at the boundary instead of on every failing
+    left pinned at the culprit with the build artifacts of the cancelled probe
+    in place.  The build continues from where that probe stopped, so the
+    skipped work costs one build at the boundary, not one on each failing
     probe.
 
     Returns the re-probe's results state when it reproduced the failure, and
@@ -347,11 +347,11 @@ def run_boundary_completion_probe(
     of the run is already decided, and this probe only enriches its artifacts.
     """
 
-    # hopscotch folds the build arguments into its resume identity and refuses
-    # a session whose verify steps changed, so its state directory goes before
-    # the re-run.  Only `.lake/hopscotch` is dropped; the build artifacts
-    # beside it are what keep the rebuild incremental.  The bisect's copy of
-    # that directory already sits in this job's artifacts.
+    # hopscotch includes the build arguments in its resume identity and
+    # refuses to resume with different ones, so its state directory goes
+    # before the re-run.  Only `.lake/hopscotch` is deleted; the build
+    # artifacts beside it keep the rebuild incremental.  The bisect's copy of
+    # that directory is already in this job's `bisect/tool-state`.
     print(
         f"[{config.name}] completing the culprit log for {culprit_commit[:12]} "
         "with a full build"

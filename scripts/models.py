@@ -25,8 +25,8 @@ RELEASE_TAG_RE = re.compile(r"^v(\d+)\.(\d+)\.(\d+)(?:-rc\d+)?$")
 # The first Lean toolchain whose `lake build` accepts `--fail-fast`
 # (leanprover/lean4#14797, merged 2026-08-22): v4.35.0-rc1, or the nightly of
 # the merge day.  An older `lake` rejects the unknown option and exits
-# non-zero, which hopscotch reads as a failing probe — so the probe step only
-# passes the flag to a toolchain at or above this floor.
+# non-zero, which hopscotch reads as a failing probe.  The probe step passes
+# the flag only to a toolchain at or above this floor.
 FAIL_FAST_MIN_RELEASE = (4, 35, 0, 1)
 FAIL_FAST_MIN_NIGHTLY = (2026, 8, 22)
 
@@ -39,9 +39,8 @@ def toolchain_supports_fail_fast(toolchain: str) -> bool:
 
     `toolchain` is a `lean-toolchain` line, with or without its origin prefix
     (`leanprover/lean4:v4.35.0-rc1`).  A final release sorts after its own
-    release candidates.  Anything else — a `master` or PR toolchain, a local
-    name — returns False: the flag is an optimisation, so an unrecognised
-    toolchain simply goes without it.
+    release candidates.  Any other toolchain (a `master` or PR toolchain, a
+    local name) returns False, because the flag is only an optimisation.
     """
 
     version = toolchain.strip().rsplit(":", 1)[-1]
@@ -133,13 +132,12 @@ class DownstreamConfig:
     test_args: list[str] = field(default_factory=list)
     lint_args: list[str] = field(default_factory=list)
     # When True (the default), the probe step adds `--fail-fast` to the
-    # `lake build` of each search probe — the bisect and the stored-LKG
-    # verification — where only the pass/fail answer is read.  The flag stops
-    # lake from scheduling more of the workspace after the first error; it
-    # never turns a passing build into a failing one, so it cannot move a
-    # boundary.  It only reaches toolchains that accept it (see
-    # `toolchain_supports_fail_fast`), so this stays True unless a downstream
-    # misbehaves under the flag itself.
+    # `lake build` of the bisect and the stored-LKG verification, which read
+    # only the exit code.  The flag stops the build at the first error.  It
+    # cannot turn a passing build into a failing one, so it cannot move a
+    # boundary.  Toolchains that predate the flag do not get it (see
+    # `toolchain_supports_fail_fast`).  Set False only for a downstream that
+    # misbehaves under the flag.
     fail_fast: bool = True
     # When True, the manifest-watcher (.github/workflows/manifest-watcher.yml,
     # cron */15) inspects this downstream every 15 min and dispatches a
