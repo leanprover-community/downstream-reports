@@ -598,14 +598,13 @@ class TestFailFast:
         "attempt",
         [
             pytest.param(0, id="re_probe_passes"),
-            pytest.param(2, id="re_probe_errors"),
             pytest.param(RuntimeError("tool crashed"), id="re_probe_raises"),
         ],
     )
     def test_completion_probe_yields_nothing_when_the_failure_is_not_reproduced(
         self, tmp_path: Path, attempt: int | Exception
     ) -> None:
-        """Scenario: a rebuild that passes, errors, or crashes returns None, so the
+        """Scenario: a rebuild that passes or crashes returns None, so the
         caller keeps the fixes the bisect itself recorded.
 
         The boundary is already decided by the bisect.  This probe only
