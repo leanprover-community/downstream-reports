@@ -14,7 +14,7 @@
       "repo": "leanprover-community/physlib",
       "default_branch": "master",
       "dependency_name": "mathlib",
-      "enabled": true,
+      "enabled": false,
       "warm_cache": false,
       "revalidate_boundary": true
     },
