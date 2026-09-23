@@ -227,14 +227,22 @@ def invoke_tool(
     tool_exe: Path | None,
     bisect: bool = False,
     quiet: bool = False,
+    fail_fast: bool = False,
 ) -> subprocess.CompletedProcess[str]:
-    """Run the Lean executable, streaming logs to the console and artifact files."""
+    """Run the Lean executable, streaming logs to the console and artifact files.
+
+    `fail_fast` adds `--fail-fast` to the `lake build` of this invocation.  The
+    caller sets it per phase, not per downstream: search builds take it
+    because only their exit code is read.  The flag joins `config.build_args`
+    in the command and leaves `config` unchanged.
+    """
 
     output_dir.mkdir(parents=True, exist_ok=True)
     stdout_path = output_dir / "tool-stdout.txt"
     stderr_path = output_dir / "tool-stderr.txt"
     git_url = git_url_from_manifest(project_dir, config.dependency_name)
     results_json_path = output_dir / "results.json"
+    build_args = [*config.build_args, "--fail-fast"] if fail_fast else list(config.build_args)
     command = (
         [
             str(tool_exe),
@@ -254,7 +262,7 @@ def invoke_tool(
             *(["--quiet"] if quiet else []),
             *(["--test"] if config.run_test else []),
             *(["--lint"] if config.run_lint else []),
-            *(["--build-args", " ".join(config.build_args)] if config.build_args else []),
+            *(["--build-args", " ".join(build_args)] if build_args else []),
             *(["--test-args", " ".join(config.test_args)] if config.test_args else []),
             *(["--lint-args", " ".join(config.lint_args)] if config.lint_args else []),
         ]
@@ -302,6 +310,7 @@ def run_validation_attempt(
     tool_exe: Path | None,
     bisect: bool = False,
     quiet: bool = False,
+    fail_fast: bool = False,
 ) -> tuple[subprocess.CompletedProcess[str], dict[str, Any], str | None]:
     """Run one `hopscotch` attempt and return the process, state, and summary.
 
@@ -321,6 +330,7 @@ def run_validation_attempt(
         tool_exe,
         bisect=bisect,
         quiet=quiet,
+        fail_fast=fail_fast,
     )
     copy_tool_artifacts(project_dir, output_dir)
     return tool_run, parse_results_file(output_dir), parse_summary_file(output_dir)

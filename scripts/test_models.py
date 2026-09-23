@@ -46,6 +46,7 @@ from scripts.models import (
     forwarded_config_fields,
     load_inventory,
     render_verify_summary,
+    toolchain_supports_fail_fast,
 )
 
 
@@ -385,6 +386,7 @@ class TestConfigForwarding:
         "nuke_lakedir": True,
         "run_test": True,
         "run_lint": True,
+        "fail_fast": False,
         "build_args": ["-Kwerror"],
         "test_args": ["--fast"],
         "lint_args": ["--strict"],
@@ -458,3 +460,35 @@ class TestConfigForwarding:
         assert selection.nuke_lakedir is True, (
             "non-excluded fields are still forwarded"
         )
+
+
+class TestToolchainSupportsFailFast:
+    """``toolchain_supports_fail_fast`` — the version floor for `lake --fail-fast`."""
+
+    @pytest.mark.parametrize(
+        "toolchain,supported",
+        [
+            pytest.param("leanprover/lean4:v4.35.0-rc1", True, id="floor_release_candidate"),
+            pytest.param("leanprover/lean4:v4.35.0", True, id="final_follows_its_candidates"),
+            pytest.param("leanprover/lean4:v4.34.0", False, id="release_below_the_floor"),
+            pytest.param("leanprover/lean4:v4.35.0-rc0", False, id="candidate_below_the_floor"),
+            pytest.param("leanprover/lean4:nightly-2026-08-22", True, id="nightly_of_the_merge"),
+            pytest.param("leanprover/lean4:nightly-2026-08-21", False, id="nightly_before_it"),
+            pytest.param("v4.35.0-rc1", True, id="bare_version_without_origin"),
+            pytest.param("  leanprover/lean4:v4.35.0\n", True, id="surrounding_whitespace"),
+            pytest.param("leanprover/lean4:master", False, id="branch_toolchain"),
+            pytest.param("leanprover/lean4-pr-releases:pr-release-14797", False, id="pr_toolchain"),
+            pytest.param("", False, id="empty"),
+        ],
+    )
+    def test_floor_admits_only_toolchains_that_accept_the_option(
+        self, toolchain: str, supported: bool
+    ) -> None:
+        """Scenario: `--fail-fast` reaches v4.35.0-rc1 and later, and nothing else.
+
+        An older `lake` rejects the unknown option and exits non-zero,
+        which hopscotch reads as a failing probe, so a bisect lands on a
+        wrong culprit.  The parser treats every toolchain it cannot read
+        as too old.
+        """
+        assert toolchain_supports_fail_fast(toolchain) is supported

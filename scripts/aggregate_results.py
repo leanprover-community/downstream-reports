@@ -360,8 +360,9 @@ def filter_culprit_log_text(text: str) -> str:
 def load_culprit_log_text(artifact_root: Path) -> str | None:
     """Load the culprit log from the well-known hopscotch logs/culprit/ directory.
 
-    Checks the culprit-probe output first (skip-known-bad-bisect path), then the
-    bisect probe output, then the head probe output.  The tool writes
+    Checks the culprit-probe output first (the known-bad culprit re-probe, the
+    FKB rebuild, or the fail-fast boundary completion), then the bisect probe
+    output, then the head probe output.  The tool writes
     ``build.log`` or ``update.log`` under ``.lake/hopscotch/logs/culprit/``;
     ``copy_tool_artifacts`` mirrors that tree under the per-step ``tool-state``
     subdirectory, hence the path prefixes below.

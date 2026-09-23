@@ -10,6 +10,11 @@ Coverage scope:
     - ``run_culprit_probe`` — the follow-up build of the stored
       culprit that captures fresh failure logs in this job's
       artifacts (rather than back-linking to an older run).
+    - ``resolve_fail_fast`` — the toolchain gate that decides
+      whether this run's search builds may pass ``lake --fail-fast``.
+    - ``run_boundary_completion_probe`` — the full rebuild of a
+      fail-fast bisect's culprit, which restores the complete error
+      list and fix detection at the boundary.
     - ``build_parser`` — pins the ``--skip-known-bad-bisect`` /
       ``--no-skip-known-bad-bisect``, ``--max-commits``, and
       ``--min-free-gb`` CLI surface.
@@ -40,6 +45,7 @@ so the alert payload's culprit-log link works without a back-link.
 from __future__ import annotations
 
 import subprocess
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -53,6 +59,8 @@ from scripts.probe_downstream_regression_window import (
 from scripts.probe_downstream_regression_window import (
     ensure_free_disk,
     reclaim_tree,
+    resolve_fail_fast,
+    run_boundary_completion_probe,
     run_culprit_probe,
     try_revalidate_boundary,
     try_skip_known_bad_bisect,
@@ -498,6 +506,138 @@ class TestRunCulpritProbe:
                 env={},
                 tool_exe=None,
             )
+
+
+class TestFailFast:
+    """The `lake --fail-fast` gate and the boundary rebuild that follows it."""
+
+    @pytest.mark.parametrize(
+        "toolchain,configured,expected",
+        [
+            pytest.param("leanprover/lean4:v4.35.0-rc1\n", True, True, id="toolchain_accepts_it"),
+            pytest.param("leanprover/lean4:v4.34.0\n", True, False, id="toolchain_predates_it"),
+            pytest.param("leanprover/lean4:v4.35.0\n", False, False, id="inventory_opt_out"),
+            pytest.param(None, True, False, id="checkout_has_no_lean_toolchain"),
+        ],
+    )
+    def test_gate_needs_the_inventory_flag_and_a_new_enough_toolchain(
+        self, tmp_path: Path, toolchain: str | None, configured: bool, expected: bool
+    ) -> None:
+        """Scenario: both the inventory flag and the checkout's pinned toolchain
+        admit the option before a search build passes it.
+
+        The pin is the floor for the whole run, because each probe bumps
+        the dependency with ``lake update``, which only moves a toolchain
+        forward.  An older ``lake`` exits non-zero on the unknown option
+        and hopscotch reads that as a failing probe.
+        """
+        # Arrange
+        project_dir = tmp_path / "downstream"
+        project_dir.mkdir()
+        if toolchain is not None:
+            (project_dir / "lean-toolchain").write_text(toolchain)
+        config = replace(PHYSLIB_CONFIG, fail_fast=configured)
+
+        # Act / Assert
+        assert resolve_fail_fast(config, project_dir) is expected
+
+    def test_completion_probe_rebuilds_the_culprit_without_the_flag(self, tmp_path: Path) -> None:
+        """Scenario: the boundary rebuild drops hopscotch's state, re-probes the
+        culprit in the search tree with the flag off, and returns the fixes the
+        complete build found.
+
+        Hopscotch refuses to resume with different build arguments, so
+        its state directory goes.  The build artifacts beside it stay, so
+        the rebuild continues from where the cancelled probe stopped.
+        """
+        # Arrange
+        search_dir = tmp_path / "search"
+        state_dir = search_dir / ".lake" / "hopscotch"
+        state_dir.mkdir(parents=True)
+        (state_dir / "state.json").write_text("{}")
+        (search_dir / ".lake" / "build").mkdir()
+        complete_fixes = [{"kind": "rename", "from": "Foo", "to": "Bar"}]
+        mock_run = Mock(
+            return_value=(Mock(returncode=1), {"proposedFixes": complete_fixes}, None)
+        )
+
+        with patch(
+            "scripts.probe_downstream_regression_window.run_validation_attempt",
+            mock_run,
+        ), patch(
+            "scripts.probe_downstream_regression_window.parent_commit",
+            return_value="p" * 40,
+        ):
+            # Act
+            state = run_boundary_completion_probe(
+                config=PHYSLIB_CONFIG,
+                culprit_commit="b" * 40,
+                upstream_dir=Path("/dummy"),
+                project_dir=search_dir,
+                output_dir=tmp_path / "output",
+                env={},
+                tool_exe=None,
+            )
+
+        # Assert
+        assert state == {"proposedFixes": complete_fixes}
+        call_kwargs = mock_run.call_args[1]
+        assert call_kwargs["output_dir"] == tmp_path / "output" / "culprit-probe", (
+            "the completion log takes priority over the bisect's own"
+        )
+        assert not call_kwargs.get("fail_fast", False), (
+            "this build exists to record every error, so it runs in full"
+        )
+        assert not state_dir.exists(), "a changed verify recipe needs a fresh session"
+        assert (search_dir / ".lake" / "build").exists(), (
+            "the build artifacts stay so the rebuild is incremental"
+        )
+
+    @pytest.mark.parametrize(
+        "attempt",
+        [
+            pytest.param(0, id="re_probe_passes"),
+            pytest.param(RuntimeError("tool crashed"), id="re_probe_raises"),
+        ],
+    )
+    def test_completion_probe_yields_nothing_when_the_failure_is_not_reproduced(
+        self, tmp_path: Path, attempt: int | Exception
+    ) -> None:
+        """Scenario: a rebuild that passes or crashes returns None, so the
+        caller keeps the fixes the bisect itself recorded.
+
+        The boundary is already decided by the bisect.  This probe only
+        enriches the artifacts, so it never changes a result and never
+        fails the job.
+        """
+        # Arrange
+        search_dir = tmp_path / "search"
+        search_dir.mkdir()
+        if isinstance(attempt, Exception):
+            mock_run = Mock(side_effect=attempt)
+        else:
+            mock_run = Mock(return_value=(Mock(returncode=attempt), {"proposedFixes": []}, None))
+
+        with patch(
+            "scripts.probe_downstream_regression_window.run_validation_attempt",
+            mock_run,
+        ), patch(
+            "scripts.probe_downstream_regression_window.parent_commit",
+            return_value="p" * 40,
+        ):
+            # Act
+            state = run_boundary_completion_probe(
+                config=PHYSLIB_CONFIG,
+                culprit_commit="b" * 40,
+                upstream_dir=Path("/dummy"),
+                project_dir=search_dir,
+                output_dir=tmp_path / "output",
+                env={},
+                tool_exe=None,
+            )
+
+        # Assert
+        assert state is None
 
 
 class TestDiskHygiene:

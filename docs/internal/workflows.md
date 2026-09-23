@@ -88,6 +88,33 @@ commit introduced the breakage?*
         verification outcome is memoized, so an LKG already built during
         boundary revalidation is reused here.)
      4. Runs `hopscotch` in bisect mode over the final window.
+     5. After a fail-fast bisect that found a culprit, runs
+        `run_boundary_completion_probe` — see below.
+
+   **Fail-fast search builds.** `resolve_fail_fast` decides once per run
+   whether a probe gets `lake build --fail-fast`. It reads the checkout's
+   pinned `lean-toolchain`. The pin is the floor for every build in the run,
+   because each probe bumps the dependency with `lake update`, which only
+   moves a toolchain forward. `models.toolchain_supports_fail_fast` holds the
+   v4.35.0-rc1 floor (leanprover/lean4#14797). An older `lake` rejects the
+   option and exits non-zero, which hopscotch reads as a failing probe. So a
+   toolchain below the floor, or one the parser cannot read, gets no flag.
+   `"fail_fast": false` in the inventory turns the flag off for one
+   downstream.
+
+   The flag applies to the two builds whose log is not reported: the bisect
+   and the stored-LKG verification. The probe reads only their exit code.
+   The HEAD probe, `run_culprit_probe`, and the FKB rebuild keep the complete
+   error list.
+
+   A fail-fast bisect ends on a partial log, so
+   `run_boundary_completion_probe` rebuilds the culprit in the search tree
+   with the flag off. It deletes `.lake/hopscotch` first, because hopscotch
+   includes the build arguments in its resume identity. The build artifacts
+   stay, so the rebuild continues from where the cancelled probe stopped. Its
+   log goes to `culprit-probe/`, which the report reads before `bisect/`.
+   Its `proposedFixes` replace the truncated ones in the result. A rebuild
+   that passes, errors, or crashes changes nothing.
 
    All hopscotch invocations go through `cache_env()`, which strips CI secrets
    as a defence-in-depth measure. Uploads a `result-<name>` artifact.
