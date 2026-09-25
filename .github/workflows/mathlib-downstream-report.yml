@@ -5,7 +5,12 @@ name: mathlib-downstream-report
 
 on:
   schedule:
-    - cron: "0 3,15 * * *"
+    # Two entries, not "0 3,15", so the plan job can tell the ticks apart
+    # through github.event.schedule: downstreams with
+    # `"probe_cadence": "daily"` run only on the 03:00 tick
+    # (models.DAILY_PROBE_SCHEDULE).
+    - cron: "0 3 * * *"
+    - cron: "0 15 * * *"
   workflow_dispatch:
     inputs:
       upstream_ref:
@@ -103,19 +108,26 @@ jobs:
         env:
           INPUT_DOWNSTREAM: ${{ inputs.downstream }}
           INPUT_RUNNER_LABELS: ${{ inputs.runner_labels }}
+          # Empty on a dispatched run, which includes every downstream.
+          EVENT_SCHEDULE: ${{ github.event.schedule }}
         run: |
           python3 - <<'PY' > matrix.json
           import json
           import os
           from pathlib import Path
 
+          from scripts.models import included_in_schedule
+
           payload = json.loads(Path("ci/inventory/downstreams.json").read_text())
           downstream = os.environ.get("INPUT_DOWNSTREAM", "")
           filter_names = {s.strip() for s in downstream.replace("\n", ",").split(",") if s.strip()} if downstream else set()
+          schedule = os.environ.get("EVENT_SCHEDULE", "")
           include = [
               item
               for item in payload.get("downstreams", [])
-              if item.get("enabled", True) and (not filter_names or item["name"] in filter_names)
+              if item.get("enabled", True)
+              and (not filter_names or item["name"] in filter_names)
+              and included_in_schedule(item.get("probe_cadence", "twice-daily"), schedule)
           ]
           runner_labels = os.environ.get("INPUT_RUNNER_LABELS", "")
           default_runs_on = [s.strip() for s in runner_labels.split(",") if s.strip()] or ["self-hosted", "pr"]

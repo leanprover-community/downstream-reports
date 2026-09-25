@@ -9,6 +9,10 @@ commit introduced the breakage?*
 **Jobs:**
 
 1. **`plan`** — reads `ci/inventory/downstreams.json` to build a job matrix.
+   The workflow has two cron entries, 03:00 and 15:00 UTC. A downstream with
+   `"probe_cadence": "daily"` joins only the 03:00 tick
+   (`models.DAILY_PROBE_SCHEDULE`), which halves the cost of an expensive
+   probe. A dispatched run always includes it.
    Also runs `export_status_snapshot.py` to read the `downstream_status` table
    once and uploads it as the `status-snapshot` artifact (a single JSON
    file). This is the run's only pre-report
