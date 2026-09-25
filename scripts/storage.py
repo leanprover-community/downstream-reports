@@ -730,7 +730,7 @@ def _loads_json_list(value: Any) -> list:
 #
 # Our production database is Neon (serverless Postgres).  When its compute is
 # cold or mid-scale, the pooler occasionally refuses or drops a connection; the
-# failure surfaces as a SQLAlchemy ``OperationalError`` wrapping a psycopg2
+# failure surfaces as a SQLAlchemy ``OperationalError`` wrapping a psycopg
 # "connection timed out".  These blips clear on a retry within a few seconds.
 # Without a connect timeout the OS waits out the full TCP timeout (minutes), so
 # a single blip can burn a whole job — and because the regression workflow fans
@@ -738,7 +738,7 @@ def _loads_json_list(value: Any) -> list:
 # itself can provoke a cold-start timeout.  We fail fast, then retry with
 # exponential backoff and full jitter to ride out the blip and spread the herd.
 
-# psycopg2 honours connect_timeout (seconds); keep it short so a dead endpoint
+# libpq honours connect_timeout (seconds); keep it short so a dead endpoint
 # fails fast enough to retry rather than hanging on the OS TCP timeout.
 _CONNECT_TIMEOUT_SECONDS = 10
 
