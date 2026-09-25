@@ -250,7 +250,7 @@ class _FlakyEngine:
 
 
 def _operational_error() -> OperationalError:
-    """Build an OperationalError shaped like a psycopg2 connection timeout."""
+    """Build an OperationalError shaped like a psycopg connection timeout."""
     return OperationalError("SELECT 1", {}, Exception("connection timed out"))
 
 
@@ -370,7 +370,7 @@ class TestCreateSqlEngine:
 
     def test_non_postgres_dsn_omits_connect_timeout(self, monkeypatch) -> None:
         """
-        ``connect_timeout`` is a psycopg2 keyword; passing it to a non-Postgres
+        ``connect_timeout`` is a libpq keyword; passing it to a non-Postgres
         driver (e.g. the SQLite engine the test suite uses) would error.  For
         those DSNs the factory still enables pre-ping but leaves connect_args
         empty.
