@@ -594,17 +594,19 @@ class TestFailFast:
         )
 
     @pytest.mark.parametrize(
-        "attempt",
+        ("attempt", "attempt_state"),
         [
-            pytest.param(0, id="re_probe_passes"),
-            pytest.param(RuntimeError("tool crashed"), id="re_probe_raises"),
+            pytest.param(0, {}, id="re_probe_passes"),
+            pytest.param(RuntimeError("tool crashed"), {}, id="re_probe_raises"),
+            pytest.param(1, {"failureStage": "lake update"}, id="re_probe_fails_at_lake_update"),
         ],
     )
     def test_completion_probe_yields_nothing_when_the_failure_is_not_reproduced(
-        self, tmp_path: Path, attempt: int | Exception
+        self, tmp_path: Path, attempt: int | Exception, attempt_state: dict
     ) -> None:
-        """Scenario: a rebuild that passes or crashes returns None, so the
-        caller keeps the fixes the bisect itself recorded.
+        """Scenario: a rebuild that passes, crashes, or fails at the lake
+        update stage returns None, so the caller keeps the fixes the bisect
+        itself recorded.
 
         The boundary is already decided by the bisect.  This probe only
         enriches the artifacts, so it never changes a result and never
@@ -616,7 +618,9 @@ class TestFailFast:
         if isinstance(attempt, Exception):
             mock_run = Mock(side_effect=attempt)
         else:
-            mock_run = Mock(return_value=(Mock(returncode=attempt), {"proposedFixes": []}, None))
+            mock_run = Mock(
+                return_value=(Mock(returncode=attempt), {**attempt_state, "proposedFixes": []}, None)
+            )
 
         with patch(
             "scripts.probe_downstream_regression_window.run_validation_attempt",
