@@ -254,7 +254,8 @@
       "enabled": true,
       "bumping_branch": "main",
       "target_mode": "master",
-      "revalidate_boundary": true
+      "revalidate_boundary": true,
+      "probe_cadence": "daily"
     },
     {
       "name": "PFR",
