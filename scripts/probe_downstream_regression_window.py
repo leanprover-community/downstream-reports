@@ -373,11 +373,12 @@ def run_boundary_completion_probe(
     except Exception as exc:
         print(f"[{config.name}] warning: boundary completion probe failed: {exc}")
         return None
-    if completion_run.returncode != 1:
+    if classify_tool_run(completion_run.returncode, completion_state) is not Outcome.FAILED:
         print(
             f"[{config.name}] warning: the boundary completion probe of "
-            f"{culprit_commit[:12]} exited {completion_run.returncode} instead of "
-            "reproducing the failure; keeping the bisect's own fixes"
+            f"{culprit_commit[:12]} did not reproduce the failure (exit code "
+            f"{completion_run.returncode}, stage {completion_state.get('failureStage')}); "
+            "keeping the bisect's own fixes"
         )
         return None
     return completion_state
@@ -839,7 +840,7 @@ def main() -> int:
             # culprit it lands on carries a partial log and a partial fix
             # list.  Rebuild that one commit in full and report its fixes.
             culprit_commit = state.get("firstFailingCommit") if fail_fast else None
-            if culprit_commit and tool_run.returncode == 1:
+            if culprit_commit and classify_tool_run(tool_run.returncode, state) is Outcome.FAILED:
                 completion_state = run_boundary_completion_probe(
                     config=config,
                     culprit_commit=culprit_commit,
