@@ -74,10 +74,10 @@ jobs:
       matrix: ${{ steps.plan.outputs.matrix }}
       has_downstreams: ${{ steps.plan.outputs.has_downstreams }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
       - name: Set up Python
-        uses: actions/setup-python@v6.2.0
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
           python-version: '3.x'
 
@@ -127,7 +127,7 @@ jobs:
       matrix: ${{ fromJson(needs.plan.outputs.matrix) }}
     timeout-minutes: ${{ fromJSON(vars.PR_VALIDATION_TIMEOUT_MINUTES || '90') }}
     steps:
-      - uses: actions/checkout@v6   # hopscotch-reports itself, for scripts
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803   # v6, hopscotch-reports itself, for scripts
 
       - name: Install Lean (elan)
         run: |
@@ -204,7 +204,7 @@ jobs:
 
       - name: Upload result
         if: always()
-        uses: actions/upload-artifact@v7.0.0
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           # Artifact name is keyed on (name, rev_slug, mode) so two entries
           # that differ in any dimension produce two artifacts that the
@@ -231,14 +231,14 @@ jobs:
       name: pr-validation-token
       deployment: false
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
       - name: Set up Python
-        uses: actions/setup-python@v6.2.0
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
           python-version: '3.x'
 
-      - uses: actions/download-artifact@v8.0.1
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           path: results
           pattern: result-*
