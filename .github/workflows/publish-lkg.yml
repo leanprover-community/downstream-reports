@@ -54,10 +54,10 @@ jobs:
     if: github.event_name != 'workflow_run' || (github.event.workflow_run.head_branch == 'main' && github.event.workflow_run.conclusion == 'success')
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
       - name: Set up Python
-        uses: actions/setup-python@v6.2.0
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
           python-version: '3.x'
 
@@ -93,7 +93,7 @@ jobs:
             --output /tmp/runs-snapshot.json
 
       - name: Log in to Azure (OIDC)
-        uses: azure/login@v2
+        uses: azure/login@7184910d9eb2b1c5e48f7073824a90609bb9b6d6 # v2
         with:
           client-id: ${{ secrets.DOWNSTREAM_REPORTS_WRITER_AZ_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}

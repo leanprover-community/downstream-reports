@@ -801,7 +801,7 @@ runs:
     - name: Bump dependency to first-known-bad
       id: bump
       if: inputs.open-pr == 'true' && steps.fkb.outputs.commit != '' && steps.check-pr.outputs.existing_pr_number == ''
-      uses: leanprover-community/downstream-reports/.github/actions/bump-to-latest@main
+      uses: leanprover-community/downstream-reports/.github/actions/bump-to-latest@d0764abb5ca52756fe941e73e1e1cab4074b6047 # main
       with:
         downstream:      ${{ inputs.downstream }}
         dependency-name: ${{ inputs.dependency-name }}
