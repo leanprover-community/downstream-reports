@@ -1,0 +1,98 @@
+name: batteries-pr-validation
+run-name: batteries-pr-validation:${{ inputs.request_id }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      request_id:
+        description: Batteries workflow run ID and attempt, for result correlation.
+        required: true
+        type: string
+      pr_number:
+        description: Batteries PR number.
+        required: true
+        type: string
+      batteries_repo:
+        description: Repository containing the Batteries PR head.
+        required: true
+        type: string
+      batteries_sha:
+        description: Exact Batteries revision to test.
+        required: true
+        type: string
+      mathlib_sha:
+        description: Exact Mathlib master revision to test.
+        required: true
+        type: string
+      adaptation_fork:
+        description: Name of the dedicated Mathlib adaptation fork in leanprover-community.
+        required: true
+        type: string
+      adaptation_pr:
+        description: Existing adaptation PR number; skip the initial build and refresh its branch.
+        required: false
+        default: ''
+        type: string
+
+permissions:
+  contents: read
+
+# Share the downstream PR queue. Only this repository receives runner access.
+concurrency:
+  group: mathlib-pr-validation
+  cancel-in-progress: false
+  queue: max
+
+jobs:
+  validate:
+    if: github.repository == 'leanprover-community/downstream-reports' && github.ref == 'refs/heads/main'
+    runs-on: [self-hosted, pr]
+    timeout-minutes: 120
+    env:
+      REQUEST_ID: ${{ inputs.request_id }}
+      PR_NUMBER: ${{ inputs.pr_number }}
+      BATTERIES_REPO: ${{ inputs.batteries_repo }}
+      BATTERIES_SHA: ${{ inputs.batteries_sha }}
+      MATHLIB_SHA: ${{ inputs.mathlib_sha }}
+      ADAPTATION_FORK: ${{ inputs.adaptation_fork }}
+      ADAPTATION_PR: ${{ inputs.adaptation_pr }}
+      LAKE_NO_CACHE: true
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Install Lean (elan)
+        run: |
+          if ! command -v elan >/dev/null; then
+            curl https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh -sSf \
+              | sh -s -- -y --default-toolchain none
+          fi
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+      - name: Test or prepare the dependency update
+        run: |
+          python3 scripts/batteries_pr_validation.py \
+            --workdir "$RUNNER_TEMP/batteries-validation" \
+            --output-dir "$RUNNER_TEMP/batteries-result"
+      - name: Upload the validation result
+        if: always()
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: batteries-validation-result
+          path: ${{ runner.temp }}/batteries-result/result.json
+          if-no-files-found: error
+          retention-days: 7
+      - name: Upload the build log
+        if: always()
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: batteries-validation-log
+          path: ${{ runner.temp }}/batteries-result/build.log
+          if-no-files-found: ignore
+          retention-days: 7
+      - name: Upload the candidate branch
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: mathlib-adaptation-branch
+          path: ${{ runner.temp }}/batteries-result/mathlib-adaptation.bundle
+          if-no-files-found: ignore
+          retention-days: 7
