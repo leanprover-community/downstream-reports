@@ -199,7 +199,7 @@ jobs:
 
       - name: Track incompatibility
         id: track
-        uses: leanprover-community/downstream-reports/.github/actions/track-incompatibility@d0764abb5ca52756fe941e73e1e1cab4074b6047 # main as of 2026-09-28
+        uses: leanprover-community/downstream-reports/.github/actions/track-incompatibility@992989408f0e6c10d8363ece29deeaa7f2dae27f # main as of 2026-09-28
         with:
           downstream:         ${{ inputs.downstream == '' && github.repository || inputs.downstream }}
           label:              ${{ inputs.label }}
