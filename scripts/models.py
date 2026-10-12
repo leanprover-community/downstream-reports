@@ -151,6 +151,13 @@ class DownstreamConfig:
     # — currently Robo, which depends on a populated `/usr/share/zoneinfo`
     # database for `Std.Time` lookups during `MakeGame` elaboration.
     runs_on: list[str] = field(default_factory=lambda: ["self-hosted", "pr"])
+    # How many scheduled regression-report ticks probe this downstream.
+    # "twice-daily" (default): both ticks.  "daily": only the
+    # DAILY_PROBE_SCHEDULE tick, for downstreams whose probe is expensive
+    # and whose consumers bump at most once a day.  Dispatched runs (manual
+    # or manifest-watcher) always include the downstream.  See
+    # `included_in_schedule`.
+    probe_cadence: str = "twice-daily"
 
     def __post_init__(self) -> None:
         valid_target_modes = ("master", "next-release")
@@ -159,6 +166,32 @@ class DownstreamConfig:
                 f"{self.name}: invalid target_mode {self.target_mode!r} "
                 f"(expected one of {valid_target_modes})"
             )
+        if self.probe_cadence not in PROBE_CADENCES:
+            raise ValueError(
+                f"{self.name}: invalid probe_cadence {self.probe_cadence!r} "
+                f"(expected one of {PROBE_CADENCES})"
+            )
+
+
+PROBE_CADENCES = ("twice-daily", "daily")
+
+# The regression-report cron entry that also probes "daily" downstreams.
+# Must match one `schedule:` entry in mathlib-downstream-report.yml.  The
+# 03:00 UTC tick publishes its snapshot well before a typical daily bump
+# job runs in the afternoon.
+DAILY_PROBE_SCHEDULE = "0 3 * * *"
+
+
+def included_in_schedule(probe_cadence: str, schedule: str) -> bool:
+    """Return True when a run that *schedule* started probes the downstream.
+
+    *schedule* is the cron string of the triggering tick
+    (``github.event.schedule``), or empty for a dispatched run, which
+    includes every downstream.
+    """
+    if not schedule or probe_cadence == "twice-daily":
+        return True
+    return schedule == DAILY_PROBE_SCHEDULE
 
 
 @dataclass(frozen=True)

@@ -37,6 +37,7 @@ from pathlib import Path
 import pytest
 
 from scripts.models import (
+    DAILY_PROBE_SCHEDULE,
     DEFAULT_VERIFY_COMMANDS,
     DownstreamConfig,
     WindowSelection,
@@ -44,6 +45,7 @@ from scripts.models import (
     config_from_selection,
     describe_verify_commands,
     forwarded_config_fields,
+    included_in_schedule,
     load_inventory,
     render_verify_summary,
     toolchain_supports_fail_fast,
@@ -373,6 +375,45 @@ class TestTargetMode:
         assert loaded["Bleeding"].target_mode == "master", (
             "Inventory's `target_mode` override must propagate to DownstreamConfig"
         )
+
+
+class TestProbeCadence:
+    """The ``probe_cadence`` field and the plan job's schedule filter."""
+
+    def test_invalid_value_raises(self) -> None:
+        """Scenario: a typo'd probe_cadence is rejected at construction
+        instead of silently probing on both ticks."""
+        with pytest.raises(ValueError, match="invalid probe_cadence"):
+            DownstreamConfig(
+                name="foo",
+                repo="owner/foo",
+                default_branch="main",
+                probe_cadence="weekly",
+            )
+
+    @pytest.mark.parametrize(
+        ("cadence", "schedule", "expected"),
+        [
+            ("twice-daily", DAILY_PROBE_SCHEDULE, True),
+            ("twice-daily", "0 15 * * *", True),
+            ("daily", DAILY_PROBE_SCHEDULE, True),
+            ("daily", "0 15 * * *", False),
+            ("daily", "", True),
+        ],
+    )
+    def test_included_in_schedule(self, cadence: str, schedule: str, expected: bool) -> None:
+        """Scenario: a "daily" downstream joins only the daily tick and
+        dispatched runs; a "twice-daily" downstream joins every run."""
+        assert included_in_schedule(cadence, schedule) is expected
+
+    def test_daily_schedule_matches_workflow_cron(self) -> None:
+        """Scenario: the report workflow declares DAILY_PROBE_SCHEDULE as
+        its own cron entry, so the filter can match ``github.event.schedule``."""
+        workflow = (
+            Path(__file__).resolve().parent.parent
+            / ".github/workflows/mathlib-downstream-report.yml"
+        ).read_text()
+        assert f'- cron: "{DAILY_PROBE_SCHEDULE}"' in workflow
 
 
 class TestConfigForwarding:
