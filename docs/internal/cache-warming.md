@@ -314,9 +314,10 @@ Steps:
    `azure-create-cache-token` action because that action shells out
    to `az`; the inline mint keeps the workflow self-contained.
 6. **Push to Azure** via `lake env .lake/build/bin/cache put-staged
-   --container=master --staging-dir=../cache-staging
+   --backend=azure --staging-dir=../cache-staging
    --repo=leanprover-community/mathlib4` (run from
-   `mathlib4-tools/`). `put-staged` uploads the staged `.ltar` files
+   `mathlib4-tools/`), with `MATHLIB_CACHE_PUT_URL` set to the flat
+   endpoint of the `master` container. `put-staged` uploads the staged `.ltar` files
    under the names staging gave them and computes no hashes, so the
    master-built tool is safe here across hash generations.
 7. **Clear** `MATHLIB_CACHE_AZURE_BEARER_TOKEN` from `$GITHUB_ENV`
@@ -325,8 +326,8 @@ Steps:
    action, which exchanges the job's OIDC token at the mathlib cache
    broker for short-lived S3 credentials. The repo variable
    `MATHLIB_CACHE_BROKER_URL` is the switch: empty turns this leg off.
-9. **Push to R2** via the same `put-staged`, with `--backend=s3` and
-   no `--container`. `MATHLIB_CACHE_PUT_URL` (the secret
+9. **Push to R2** via the same `put-staged`, with `--backend=s3`.
+   `MATHLIB_CACHE_PUT_URL` (the secret
    `MATHLIB_CACHE_R2_PUT_URL`) names one flat endpoint and turns the
    container policy off, so `--repo` alone sets the prefix and
    `leanprover-community/mathlib4` writes the flat `f/<hash>.ltar`
@@ -496,7 +497,10 @@ auth error.
 
 #### Target container
 
-The Azure push names one container: `--container=master`. These are
+The Azure push targets the `master` container. The workflow sets
+`MATHLIB_CACHE_PUT_URL` to its flat endpoint,
+`https://lakecache.blob.core.windows.net/mathlib4-master`, because the
+cache tool's azure backend uploads only to such an endpoint. These are
 Mathlib oleans at mathlib4 master commits, under the flat `f/<hash>`
 names mathlib master CI writes, and a mathlib4 consumer reads `master`
 first (`defaultContainersForRepo`, mathlib4 `Cache/Infra.lean`).
