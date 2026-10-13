@@ -356,18 +356,22 @@ jobs:
           echo "::add-mask::$BEARER"
           echo "MATHLIB_CACHE_AZURE_BEARER_TOKEN=$BEARER" >> "$GITHUB_ENV"
 
-      # The upload targets one container. These are Mathlib oleans at
-      # mathlib4 master commits, so they go to `master` — the container
-      # a mathlib4 consumer reads first, and the one the bearer token
-      # grants write to.
+      # The upload targets the Azure `master` container. These are
+      # Mathlib oleans at mathlib4 master commits, so they go to `master`:
+      # the container a mathlib4 consumer reads first, and the one the
+      # bearer token grants write to. The cache tool's azure backend
+      # uploads only to the flat endpoint `MATHLIB_CACHE_PUT_URL` names,
+      # and `leanprover-community/mathlib4` writes the flat
+      # `f/<hash>.ltar` names a mathlib4 consumer reads.
       - name: Push staged cache to Azure
         id: push
         continue-on-error: true   # best-effort; push_failed surfaces in result.json
         working-directory: mathlib4-tools
+        env:
+          MATHLIB_CACHE_PUT_URL: https://lakecache.blob.core.windows.net/mathlib4-master
         run: |
           push() {
-            lake env .lake/build/bin/cache put-staged \
-              --container=master \
+            lake env .lake/build/bin/cache put-staged --backend=azure \
               --staging-dir=../cache-staging \
               --repo=leanprover-community/mathlib4
           }
@@ -400,11 +404,10 @@ jobs:
       # Azure is the upload of record, so a failure here warns and leaves
       # the job's status alone: `verify` finds the files on Azure.
       #
-      # The step passes no `--container`, unlike the Azure push above.
-      # `MATHLIB_CACHE_PUT_URL` names one flat endpoint and turns the
-      # container policy off, so `--repo` alone sets the prefix, and
-      # `leanprover-community/mathlib4` writes the flat `f/<hash>.ltar` names
-      # a mathlib4 consumer reads.
+      # As in the Azure push above, `MATHLIB_CACHE_PUT_URL` names one flat
+      # endpoint and turns the container policy off, so `--repo` alone sets
+      # the prefix, and `leanprover-community/mathlib4` writes the flat
+      # `f/<hash>.ltar` names a mathlib4 consumer reads.
       - name: Push staged cache to R2
         id: push_r2
         if: ${{ !cancelled() && steps.mint_r2.outputs.success == 'true' }}
