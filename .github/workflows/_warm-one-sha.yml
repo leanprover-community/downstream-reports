@@ -43,7 +43,7 @@ on:
         type: string
         required: true
       tag:
-        description: "Why we're warming this SHA: lkg | fkb | both | manual."
+        description: "Reason for warming this SHA: lkg | fkb | both | manual."
         type: string
         required: true
       downstreams_json:
@@ -61,8 +61,8 @@ jobs:
     outputs:
       status: ${{ steps.write_result.outputs.status }}
     steps:
-      # Self-hosted `pr` runner doesn't ship jq. linux/amd64 only;
-      # fine for this runner label.
+      # The self-hosted `pr` runner ships no jq. The binary is
+      # linux/amd64, which matches this runner label.
       - name: Install jq
         run: |
           mkdir -p "$HOME/.local/bin"
@@ -77,19 +77,18 @@ jobs:
             | sh -s -- -y --default-toolchain none
           echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
 
-      # Full commit history (blobs deferred). Needed so the next step
-      # can run an ancestor check against origin/master.
+      # Full commit history with blobs deferred, so the next step can
+      # run an ancestor check against origin/master.
       - name: Clone mathlib at target SHA
         run: |
           git clone --filter=blob:none https://github.com/leanprover-community/mathlib4 mathlib4
 
-      # Accept master-reachable SHAs and SHAs reachable from a published
-      # release tag (e.g. v4.29.1) — downstreams that pin a stable
-      # release land their LKG/FKB on a tag that diverged from master,
-      # and warming those oleans is exactly what `lake exe cache get` at
-      # that tag wants. Everything else is refused, which still guards
-      # against operator typos in `workflow_dispatch shas=...` and any
-      # garbage SHA surfaced from the DB.
+      # Accept SHAs reachable from master and SHAs reachable from a
+      # published release tag (e.g. v4.29.1): a downstream that pins a
+      # stable release lands its LKG/FKB on a tag that diverged from
+      # master, and `lake exe cache get` at that tag reads the warmed
+      # oleans. The check refuses everything else, which guards against
+      # a typo in `workflow_dispatch shas=...` and a bad SHA from the DB.
       - name: Verify SHA is published (master or release tag)
         env:
           SHA: ${{ inputs.sha }}
@@ -113,23 +112,22 @@ jobs:
           SHA: ${{ inputs.sha }}
         run: git -C mathlib4 checkout "$SHA"
 
-      # Shallow master checkout, kept separate from the target SHA's
-      # working tree. Exists solely as the leantar-backfill source
-      # below: its `lean-toolchain` resolves a recent toolchain whose
-      # sysroot ships leantar.
+      # Shallow master checkout, separate from the target SHA's working
+      # tree. It is the leantar backfill source below: its
+      # `lean-toolchain` resolves a recent toolchain whose sysroot ships
+      # leantar.
       - name: Clone mathlib master (leantar source)
         run: |
           git clone --depth=1 --branch=master \
             https://github.com/leanprover-community/mathlib4 mathlib4-tools
 
-      # The cache binary resolves `leantar` strictly from the active
-      # toolchain's sysroot (`<lean --print-prefix>/bin/leantar`,
-      # see Cache/IO.lean leantarSysrootBin) — PATH is not consulted.
-      # Target SHAs older than nightly-2026-03-09 pin a toolchain that
-      # predates leantar bundling, so cache stage/probe explode with
-      # "leantar not found in Lean sysroot". Backfill by copying the
-      # master toolchain's leantar (always recent enough) into the
-      # target sysroot.
+      # The cache binary resolves `leantar` from the active toolchain's
+      # sysroot alone (`<lean --print-prefix>/bin/leantar`, see
+      # Cache/IO.lean leantarSysrootBin). A target SHA older than
+      # nightly-2026-03-09 pins a toolchain without leantar, so cache
+      # stage and probe fail with "leantar not found in Lean sysroot".
+      # The step copies the master toolchain's leantar into the target
+      # sysroot.
       - name: Backfill leantar into target toolchain (if missing)
         run: |
           set -euo pipefail
@@ -150,15 +148,16 @@ jobs:
           echo "Backfilled leantar: $TOOLS_PREFIX/bin/leantar -> $TARGET_PREFIX/bin/leantar"
 
       # `lake exe cache` builds and runs the target checkout's own
-      # cache tool, exactly what a consumer at this SHA runs — the
-      # probe therefore measures completeness as consumers see it.
-      # A cold cache is the normal reason this workflow runs, so the
-      # probe is a router, not a check: it always exits 0 and reports
-      # warm/cold through `outputs.status`, keeping ##[error]
-      # annotations out of the expected path — red in this job marks
-      # a real failure. The retry absorbs transient flakes (a cache endpoint
-      # 503, network blip) so a download hiccup on a complete cache
-      # doesn't trigger a needless full build.
+      # cache tool, so the probe looks up the file names a consumer at
+      # this SHA computes. It reads the runner's local cache first, so
+      # it measures the runner's view; `verify` is the check that reads
+      # what consumers read. A cold cache is the normal reason this
+      # workflow runs, so the step always exits 0 and reports warm/cold
+      # through `outputs.status`: the expected path leaves no ##[error]
+      # annotation, and red in this job marks a real failure. The retry
+      # absorbs a transient flake (a cache endpoint 503, a network blip)
+      # so a download hiccup on a complete cache does not cost a full
+      # build.
       - name: Probe cache completeness
         id: probe
         working-directory: mathlib4
@@ -206,15 +205,14 @@ jobs:
           }
           if ! stage; then
             echo "::warning::Stage attempt 1 failed, retrying once..."
-            # Partial .ltar output from the failed attempt would
-            # otherwise be uploaded alongside the second attempt's
-            # files, mixing stale + fresh blobs in the staging artifact.
+            # Clear the first attempt's partial .ltar output, so the
+            # staging artifact holds the second attempt's files alone.
             rm -rf ../cache-staging
             stage
           fi
 
-      # Just .ltar files — no binary. upload_cache builds its own
-      # trusted cache tool from a clean master checkout.
+      # The artifact holds .ltar files only, no binary: upload_cache
+      # builds its own cache tool from a master checkout.
       - name: Upload staging artifact
         if: steps.stage.outcome == 'success'
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
@@ -323,12 +321,11 @@ jobs:
           echo "$dir" >> "$GITHUB_PATH"
           ./curl --version
 
-      # Build a trusted cache binary from a clean master checkout —
-      # the R2 credentials below never see any binary produced by the
-      # build runner. Using the master tool here is safe across hash
-      # generations: `put-staged` uploads the staged .ltar files under
-      # the names build_and_stage's in-tree tool gave them, and does
-      # not compute hashes itself.
+      # Build the cache binary from a master checkout, so the R2
+      # credentials below reach only a binary this job built. The
+      # master tool is safe across hash generations: `put-staged`
+      # uploads the staged .ltar files under the names build_and_stage's
+      # in-tree tool gave them and computes no hashes itself.
       - name: Clone mathlib master (cache tool)
         run: |
           git clone --depth=1 --branch=master \
@@ -453,7 +450,7 @@ jobs:
 
       - name: Verify cache for SHA
         id: verify
-        continue-on-error: true   # best-effort; verify_failed surfaces in result.json
+        continue-on-error: true   # verify_failed surfaces in result.json
         env:
           SHA: ${{ inputs.sha }}
         run: |
