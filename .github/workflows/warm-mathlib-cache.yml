@@ -50,9 +50,9 @@ permissions:
   contents: read
   id-token: write   # required so the reusable workflow can mint the cache credentials
 
-# One warming run at a time across the whole repo. A dispatch that
-# lands while a run is in progress queues, and it replaces any run
-# already queued, so the latest plan is the one that runs.
+# One warming run at a time across the whole repo. A run that starts
+# while another is in progress queues, and it replaces any run already
+# queued, so the latest plan is the one that runs.
 concurrency:
   group: warm-mathlib-cache
   cancel-in-progress: false
@@ -158,9 +158,10 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
-      # Each warm-result-<sha> artifact lands in its own subdirectory
-      # under results/. Every artifact holds a `result.json`, so a merge
-      # would let one SHA's file overwrite another's.
+      # Every artifact holds a `result.json`, so a merge would let one
+      # SHA's file overwrite another's. Two or more artifacts land in
+      # their own subdirectories under results/, and a single one
+      # extracts to results/result.json; the summary step reads both.
       #
       # Skipped when the matrix was empty: no `warm-result-*` artifact
       # exists, and the action errors on an empty match.

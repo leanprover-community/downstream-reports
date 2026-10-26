@@ -3,7 +3,7 @@ name: warm-mathlib-cache (one SHA)
 # Per-SHA worker invoked once per matrix entry by warm-mathlib-cache.yml.
 # Three jobs:
 #
-#   build_and_stage  — self-hosted, NO cache token. Clones mathlib at
+#   build_and_stage  — self-hosted, NO credential. Clones mathlib at
 #                      <sha>, probes the cache, builds Mathlib if
 #                      needed, stages .ltar files. Probe and stage run
 #                      the target SHA's own in-tree cache tool
@@ -20,7 +20,7 @@ name: warm-mathlib-cache (one SHA)
 #                      need, and runs `put-staged` to the R2 bucket
 #                      behind cache.mathlib.org, the store every
 #                      consumer reads. The push sets the job's status.
-#   verify           — ubuntu, NO token. Independent confirmation that
+#   verify           — ubuntu, NO credential. Independent confirmation that
 #                      every Mathlib olean is fetchable: fresh clone,
 #                      `cache get`, `lake build --no-build --rehash -v
 #                      Mathlib`.
@@ -39,7 +39,7 @@ on:
   workflow_call:
     inputs:
       sha:
-        description: "Mathlib master SHA to warm (40-char hex)."
+        description: "Mathlib SHA to warm (40-char hex), reachable from master or a release tag."
         type: string
         required: true
       tag:
@@ -150,14 +150,14 @@ jobs:
       # `lake exe cache` builds and runs the target checkout's own
       # cache tool, so the probe looks up the file names a consumer at
       # this SHA computes. It reads the runner's local cache first, so
-      # it measures the runner's view; `verify` is the check that reads
-      # what consumers read. A cold cache is the normal reason this
-      # workflow runs, so the step always exits 0 and reports warm/cold
-      # through `outputs.status`: the expected path leaves no ##[error]
-      # annotation, and red in this job marks a real failure. The retry
-      # absorbs a transient flake (a cache endpoint 503, a network blip)
-      # so a download hiccup on a complete cache does not cost a full
-      # build.
+      # it measures the runner's view. `verify` reads what consumers
+      # read, but it runs only after a push; a warm probe ends the
+      # chain without it. The step always exits 0 and reports warm/cold
+      # through `outputs.status`. A cold cache is the normal reason
+      # this workflow runs, so it leaves no ##[error] annotation, and
+      # red in this job marks a real failure. The retry absorbs a
+      # transient flake (a cache endpoint 503, a network blip) so a
+      # download hiccup on a complete cache does not cost a full build.
       - name: Probe cache completeness
         id: probe
         working-directory: mathlib4
@@ -350,11 +350,11 @@ jobs:
 
       # The upload targets the R2 bucket behind cache.mathlib.org, the
       # store every consumer's `lake exe cache get` reads. These are
-      # Mathlib oleans at mathlib4 master commits, so they go to the
-      # master set. `MATHLIB_CACHE_PUT_URL` names one flat endpoint and
-      # turns the container policy off, so `--repo` alone sets the
-      # prefix, and `leanprover-community/mathlib4` writes the flat
-      # `f/<hash>.ltar` names a mathlib4 consumer reads.
+      # Mathlib oleans at commits on mathlib4 master or a release tag,
+      # so they go to the master set. `MATHLIB_CACHE_PUT_URL` names one
+      # flat endpoint and turns the container policy off, so `--repo`
+      # alone sets the prefix, and `leanprover-community/mathlib4`
+      # writes the flat `f/<hash>.ltar` names a mathlib4 consumer reads.
       - name: Push staged cache to R2
         id: push
         continue-on-error: true   # push_failed surfaces in result.json
