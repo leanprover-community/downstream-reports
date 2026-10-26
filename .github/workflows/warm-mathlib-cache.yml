@@ -13,7 +13,7 @@ name: warm-mathlib-cache
 # bypasses the inventory + DB lookup).
 #
 # See docs/internal/cache-warming.md for the threat model, the gating, and
-# the Azure and R2 prerequisites. Both upload credentials come through the
+# the R2 prerequisites. The upload credentials come through the
 # `cache-warming-token` environment, whose branch policy admits `main`
 # alone, so a feature-branch dispatch builds and stages, then stops at
 # that gate.
