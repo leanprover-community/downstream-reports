@@ -3,7 +3,7 @@ name: warm-mathlib-cache (one SHA)
 # Per-SHA worker invoked once per matrix entry by warm-mathlib-cache.yml.
 # Three jobs:
 #
-#   build_and_stage  — self-hosted, NO cache token. Clones mathlib at
+#   build_and_stage  — self-hosted, NO credential. Clones mathlib at
 #                      <sha>, probes the cache, builds Mathlib if
 #                      needed, stages .ltar files. Probe and stage run
 #                      the target SHA's own in-tree cache tool
@@ -15,12 +15,12 @@ name: warm-mathlib-cache (one SHA)
 #                      different generation and would probe/stage
 #                      names nobody at <sha> can fetch.
 #   upload_cache     — ubuntu, holds the cache credentials. Builds its
-#                      own cache tool from a shallow master checkout and
-#                      runs `put-staged` twice: to the Azure `master`
-#                      container, then to the R2 bucket behind
-#                      cache.mathlib.org. Azure is the upload of record
-#                      and sets the job's status.
-#   verify           — ubuntu, NO token. Independent confirmation that
+#                      own cache tool from a shallow master checkout,
+#                      installs the curl release the tool's uploads
+#                      need, and runs `put-staged` to the R2 bucket
+#                      behind cache.mathlib.org, the store every
+#                      consumer reads. The push sets the job's status.
+#   verify           — ubuntu, NO credential. Independent confirmation that
 #                      every Mathlib olean is fetchable: fresh clone,
 #                      `cache get`, `lake build --no-build --rehash -v
 #                      Mathlib`.
@@ -39,11 +39,11 @@ on:
   workflow_call:
     inputs:
       sha:
-        description: "Mathlib master SHA to warm (40-char hex)."
+        description: "Mathlib SHA to warm (40-char hex), reachable from master or a release tag."
         type: string
         required: true
       tag:
-        description: "Why we're warming this SHA: lkg | fkb | both | manual."
+        description: "Reason for warming this SHA: lkg | fkb | both | manual."
         type: string
         required: true
       downstreams_json:
@@ -53,7 +53,7 @@ on:
 
 permissions:
   contents: read
-  id-token: write   # required for both OIDC mints in upload_cache
+  id-token: write   # required for the OIDC mint in upload_cache
 
 jobs:
   build_and_stage:
@@ -61,8 +61,8 @@ jobs:
     outputs:
       status: ${{ steps.write_result.outputs.status }}
     steps:
-      # Self-hosted `pr` runner doesn't ship jq. linux/amd64 only;
-      # fine for this runner label.
+      # The self-hosted `pr` runner ships no jq. The binary is
+      # linux/amd64, which matches this runner label.
       - name: Install jq
         run: |
           mkdir -p "$HOME/.local/bin"
@@ -77,19 +77,18 @@ jobs:
             | sh -s -- -y --default-toolchain none
           echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
 
-      # Full commit history (blobs deferred). Needed so the next step
-      # can run an ancestor check against origin/master.
+      # Full commit history with blobs deferred, so the next step can
+      # run an ancestor check against origin/master.
       - name: Clone mathlib at target SHA
         run: |
           git clone --filter=blob:none https://github.com/leanprover-community/mathlib4 mathlib4
 
-      # Accept master-reachable SHAs and SHAs reachable from a published
-      # release tag (e.g. v4.29.1) — downstreams that pin a stable
-      # release land their LKG/FKB on a tag that diverged from master,
-      # and warming those oleans is exactly what `lake exe cache get` at
-      # that tag wants. Everything else is refused, which still guards
-      # against operator typos in `workflow_dispatch shas=...` and any
-      # garbage SHA surfaced from the DB.
+      # Accept SHAs reachable from master and SHAs reachable from a
+      # published release tag (e.g. v4.29.1): a downstream that pins a
+      # stable release lands its LKG/FKB on a tag that diverged from
+      # master, and `lake exe cache get` at that tag reads the warmed
+      # oleans. The check refuses everything else, which guards against
+      # a typo in `workflow_dispatch shas=...` and a bad SHA from the DB.
       - name: Verify SHA is published (master or release tag)
         env:
           SHA: ${{ inputs.sha }}
@@ -113,23 +112,22 @@ jobs:
           SHA: ${{ inputs.sha }}
         run: git -C mathlib4 checkout "$SHA"
 
-      # Shallow master checkout, kept separate from the target SHA's
-      # working tree. Exists solely as the leantar-backfill source
-      # below: its `lean-toolchain` resolves a recent toolchain whose
-      # sysroot ships leantar.
+      # Shallow master checkout, separate from the target SHA's working
+      # tree. It is the leantar backfill source below: its
+      # `lean-toolchain` resolves a recent toolchain whose sysroot ships
+      # leantar.
       - name: Clone mathlib master (leantar source)
         run: |
           git clone --depth=1 --branch=master \
             https://github.com/leanprover-community/mathlib4 mathlib4-tools
 
-      # The cache binary resolves `leantar` strictly from the active
-      # toolchain's sysroot (`<lean --print-prefix>/bin/leantar`,
-      # see Cache/IO.lean leantarSysrootBin) — PATH is not consulted.
-      # Target SHAs older than nightly-2026-03-09 pin a toolchain that
-      # predates leantar bundling, so cache stage/probe explode with
-      # "leantar not found in Lean sysroot". Backfill by copying the
-      # master toolchain's leantar (always recent enough) into the
-      # target sysroot.
+      # The cache binary resolves `leantar` from the active toolchain's
+      # sysroot alone (`<lean --print-prefix>/bin/leantar`, see
+      # Cache/IO.lean leantarSysrootBin). A target SHA older than
+      # nightly-2026-03-09 pins a toolchain without leantar, so cache
+      # stage and probe fail with "leantar not found in Lean sysroot".
+      # The step copies the master toolchain's leantar into the target
+      # sysroot.
       - name: Backfill leantar into target toolchain (if missing)
         run: |
           set -euo pipefail
@@ -150,15 +148,16 @@ jobs:
           echo "Backfilled leantar: $TOOLS_PREFIX/bin/leantar -> $TARGET_PREFIX/bin/leantar"
 
       # `lake exe cache` builds and runs the target checkout's own
-      # cache tool, exactly what a consumer at this SHA runs — the
-      # probe therefore measures completeness as consumers see it.
-      # A cold cache is the normal reason this workflow runs, so the
-      # probe is a router, not a check: it always exits 0 and reports
-      # warm/cold through `outputs.status`, keeping ##[error]
-      # annotations out of the expected path — red in this job marks
-      # a real failure. The retry absorbs transient flakes (Azure
-      # 503, network blip) so a download hiccup on a complete cache
-      # doesn't trigger a needless full build.
+      # cache tool, so the probe looks up the file names a consumer at
+      # this SHA computes. It reads the runner's local cache first, so
+      # it measures the runner's view. `verify` reads what consumers
+      # read, but it runs only after a push; a warm probe ends the
+      # chain without it. The step always exits 0 and reports warm/cold
+      # through `outputs.status`. A cold cache is the normal reason
+      # this workflow runs, so it leaves no ##[error] annotation, and
+      # red in this job marks a real failure. The retry absorbs a
+      # transient flake (a cache endpoint 503, a network blip) so a
+      # download hiccup on a complete cache does not cost a full build.
       - name: Probe cache completeness
         id: probe
         working-directory: mathlib4
@@ -206,15 +205,14 @@ jobs:
           }
           if ! stage; then
             echo "::warning::Stage attempt 1 failed, retrying once..."
-            # Partial .ltar output from the failed attempt would
-            # otherwise be uploaded alongside the second attempt's
-            # files, mixing stale + fresh blobs in the staging artifact.
+            # Clear the first attempt's partial .ltar output, so the
+            # staging artifact holds the second attempt's files alone.
             rm -rf ../cache-staging
             stage
           fi
 
-      # Just .ltar files — no binary. upload_cache builds its own
-      # trusted cache tool from a clean master checkout.
+      # The artifact holds .ltar files only, no binary: upload_cache
+      # builds its own cache tool from a master checkout.
       - name: Upload staging artifact
         if: steps.stage.outcome == 'success'
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
@@ -277,11 +275,9 @@ jobs:
     # the push_failed result is uploaded; continue-on-error keeps the
     # workflow_run green so publish-lkg + generate-pages still chain.
     continue-on-error: true
-    # The environment fixes the OIDC subject claim that both credentials
-    # are granted through: the federated credential on the mathlib
-    # cache-writer Azure app, and the broker's
-    # `downstream-reports-warm-publish` grant. Its branch policy admits
-    # `main` alone, so both mints are main-only.
+    # The environment fixes the OIDC subject claim the broker's
+    # `downstream-reports-warm-publish` grant is bound to. Its branch
+    # policy admits `main` alone, so the mint is main-only.
     environment:
       name: cache-warming-token
       deployment: false
@@ -306,112 +302,62 @@ jobs:
             | sh -s -- -y --default-toolchain none
           echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
 
-      # Build a trusted cache binary from a clean master checkout —
-      # the cache token below never sees any binary produced by the
-      # build runner. Using the master tool here is safe across hash
-      # generations: `put-staged` uploads the staged .ltar files under
-      # the names build_and_stage's in-tree tool gave them, and does
-      # not compute hashes itself.
+      # The cache tool uploads with curl 8.20 or later (mathlib4#44940);
+      # ubuntu-latest ships 8.5. This is the static build mathlib4's own
+      # upload job installs, pinned to the same release and checksum.
+      - name: Install curl
+        env:
+          PINNED_CURL_RELEASE: v8.23.0
+          PINNED_CURL_SHA256: 83a56256434a3d3f6edbdad2cbdb1f23a44fe8fd52968d18ab57763fdc0afba0
+        run: |
+          set -euo pipefail
+          dir="$RUNNER_TEMP/curl-install"
+          mkdir -p "$dir"
+          cd "$dir"
+          curl -fsSL --retry 5 -o curl \
+            "https://github.com/leanprover-community/static-curl/releases/download/${PINNED_CURL_RELEASE}/curl-x86_64-linux-static"
+          echo "${PINNED_CURL_SHA256}  curl" | sha256sum -c -
+          chmod u+x curl
+          echo "$dir" >> "$GITHUB_PATH"
+          ./curl --version
+
+      # Build the cache binary from a master checkout, so the R2
+      # credentials below reach only a binary this job built. The
+      # master tool is safe across hash generations: `put-staged`
+      # uploads the staged .ltar files under the names build_and_stage's
+      # in-tree tool gave them and computes no hashes itself.
       - name: Clone mathlib master (cache tool)
         run: |
           git clone --depth=1 --branch=master \
             https://github.com/leanprover-community/mathlib4 mathlib4-tools
 
       - name: Build cache tool
-        id: build_tool
         working-directory: mathlib4-tools
         run: lake build cache
 
-      # Manual OIDC ↔ Entra exchange. Same flow as
-      # mathlib's azure-create-cache-token action, done inline so the
-      # workflow doesn't depend on `az` being on PATH.
-      - name: Mint Azure cache bearer token
-        id: cache_token
-        env:
-          AZ_CLIENT_ID: ${{ secrets.MATHLIB_CACHE_WRITER_CLIENT_ID }}
-          AZ_TENANT_ID: ${{ secrets.LPC_AZ_TENANT_ID }}
-        run: |
-          set -euo pipefail
-
-          ID_TOKEN=$(curl -fsSL \
-            -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
-            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=api://AzureADTokenExchange" \
-            | jq -er .value)
-
-          BEARER=$(curl -fsSL -X POST \
-            "https://login.microsoftonline.com/$AZ_TENANT_ID/oauth2/v2.0/token" \
-            -H "Content-Type: application/x-www-form-urlencoded" \
-            --data-urlencode "client_id=$AZ_CLIENT_ID" \
-            --data-urlencode "scope=https://storage.azure.com/.default" \
-            --data-urlencode "client_assertion_type=urn:ietf:params:oauth:client-assertion-type:jwt-bearer" \
-            --data-urlencode "client_assertion=$ID_TOKEN" \
-            --data-urlencode "grant_type=client_credentials" \
-            | jq -er .access_token)
-
-          if [ -z "$BEARER" ] || [ "$BEARER" = "null" ]; then
-            echo "::error::Failed to mint Azure bearer token (empty response)."
-            exit 1
-          fi
-
-          echo "::add-mask::$BEARER"
-          echo "MATHLIB_CACHE_AZURE_BEARER_TOKEN=$BEARER" >> "$GITHUB_ENV"
-
-      # The upload targets the Azure `master` container. These are
-      # Mathlib oleans at mathlib4 master commits, so they go to `master`:
-      # the container a mathlib4 consumer reads first, and the one the
-      # bearer token grants write to. The cache tool's azure backend
-      # uploads only to the flat endpoint `MATHLIB_CACHE_PUT_URL` names,
-      # and `leanprover-community/mathlib4` writes the flat
-      # `f/<hash>.ltar` names a mathlib4 consumer reads.
-      - name: Push staged cache to Azure
-        id: push
-        continue-on-error: true   # best-effort; push_failed surfaces in result.json
-        working-directory: mathlib4-tools
-        env:
-          MATHLIB_CACHE_PUT_URL: https://lakecache.blob.core.windows.net/mathlib4-master
-        run: |
-          push() {
-            lake env .lake/build/bin/cache put-staged --backend=azure \
-              --staging-dir=../cache-staging \
-              --repo=leanprover-community/mathlib4
-          }
-          if ! push; then
-            echo "::warning::Push attempt 1 failed, retrying once..."
-            push
-          fi
-
-      # Narrow the bearer's exposure to roughly mint→push.
-      - name: Clear cache bearer token
-        if: always() && steps.cache_token.outcome == 'success'
-        run: |
-          echo "MATHLIB_CACHE_AZURE_BEARER_TOKEN=" >> "$GITHUB_ENV"
-
-      # Second upload of the same staged set, to the R2 bucket behind
-      # cache.mathlib.org. `!cancelled()` keeps this leg running when the
-      # Azure leg failed, mint included; `build_tool` is the one shared
-      # dependency, since the push needs the cache tool. The step
-      # order holds a boundary: the bearer clear above runs first, so the two
-      # credentials never share a step environment.
+      # The action exchanges the job's OIDC token at the mathlib cache
+      # broker for short-lived S3 credentials. A failed mint fails the
+      # step; the result below then records push_failed. The credentials
+      # stay out of $GITHUB_ENV: the action masks them and returns them
+      # as step outputs, and only the push step maps them into its own
+      # `env:`.
       - name: Mint R2 credentials
         id: mint_r2
-        if: ${{ !cancelled() && steps.build_tool.outcome == 'success' && vars.MATHLIB_CACHE_BROKER_URL != '' }}
-        continue-on-error: true
         uses: leanprover-community/mathlib-ci/.github/actions/mint-s3-credentials@5a931cea32b8a6d5eb166aad4330531fb1e771e6
         with:
           broker-url: ${{ vars.MATHLIB_CACHE_BROKER_URL }}
           audience: mathlib-cache-broker
 
-      # Azure is the upload of record, so a failure here warns and leaves
-      # the job's status alone: `verify` finds the files on Azure.
-      #
-      # As in the Azure push above, `MATHLIB_CACHE_PUT_URL` names one flat
-      # endpoint and turns the container policy off, so `--repo` alone sets
-      # the prefix, and `leanprover-community/mathlib4` writes the flat
-      # `f/<hash>.ltar` names a mathlib4 consumer reads.
+      # The upload targets the R2 bucket behind cache.mathlib.org, the
+      # store every consumer's `lake exe cache get` reads. These are
+      # Mathlib oleans at commits on mathlib4 master or a release tag,
+      # so they go to the master set. `MATHLIB_CACHE_PUT_URL` names one
+      # flat endpoint and turns the container policy off, so `--repo`
+      # alone sets the prefix, and `leanprover-community/mathlib4`
+      # writes the flat `f/<hash>.ltar` names a mathlib4 consumer reads.
       - name: Push staged cache to R2
-        id: push_r2
-        if: ${{ !cancelled() && steps.mint_r2.outputs.success == 'true' }}
-        continue-on-error: true
+        id: push
+        continue-on-error: true   # push_failed surfaces in result.json
         working-directory: mathlib4-tools
         env:
           MATHLIB_CACHE_S3_ACCESS_KEY_ID: ${{ steps.mint_r2.outputs.access-key-id }}
@@ -425,15 +371,18 @@ jobs:
           GRANT: ${{ steps.mint_r2.outputs.grant }}
         run: |
           if [ -z "$MATHLIB_CACHE_PUT_URL" ]; then
-            echo "::warning::the secret MATHLIB_CACHE_R2_PUT_URL is unset; the R2 upload is skipped"
+            echo "::error::the secret MATHLIB_CACHE_R2_PUT_URL is unset; nothing can be uploaded"
             exit 1
           fi
+          push() {
+            lake env .lake/build/bin/cache put-staged --backend=s3 \
+              --staging-dir=../cache-staging \
+              --repo=leanprover-community/mathlib4
+          }
           echo "Uploading staged cache to R2 (broker grant: $GRANT)..."
-          if ! lake env .lake/build/bin/cache put-staged --backend=s3 \
-                 --staging-dir=../cache-staging \
-                 --repo=leanprover-community/mathlib4; then
-            echo "::warning::the R2 upload failed; the Azure upload holds this SHA's files"
-            exit 1
+          if ! push; then
+            echo "::warning::Push attempt 1 failed, retrying once..."
+            push
           fi
 
       - name: Write result
@@ -501,7 +450,7 @@ jobs:
 
       - name: Verify cache for SHA
         id: verify
-        continue-on-error: true   # best-effort; verify_failed surfaces in result.json
+        continue-on-error: true   # verify_failed surfaces in result.json
         env:
           SHA: ${{ inputs.sha }}
         run: |

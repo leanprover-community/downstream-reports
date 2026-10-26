@@ -13,7 +13,7 @@ name: warm-mathlib-cache
 # bypasses the inventory + DB lookup).
 #
 # See docs/internal/cache-warming.md for the threat model, the gating, and
-# the Azure and R2 prerequisites. Both upload credentials come through the
+# the R2 prerequisites. The upload credentials come through the
 # `cache-warming-token` environment, whose branch policy admits `main`
 # alone, so a feature-branch dispatch builds and stages, then stops at
 # that gate.
@@ -50,10 +50,9 @@ permissions:
   contents: read
   id-token: write   # required so the reusable workflow can mint the cache credentials
 
-# Only one warming run at a time across the whole repo. If a manual
-# dispatch lands while a workflow_run-triggered one is in progress, the
-# new one queues; any *previously* queued run is dropped (which is
-# exactly what we want — the latest plan is always the one to honour).
+# One warming run at a time across the whole repo. A run that starts
+# while another is in progress queues, and it replaces any run already
+# queued, so the latest plan is the one that runs.
 concurrency:
   group: warm-mathlib-cache
   cancel-in-progress: false
@@ -85,10 +84,10 @@ jobs:
       - name: Build matrix
         id: plan
         env:
-          # Read-only: the planner only reads cache_warmth to drop
-          # verified-warm SHAs and to schedule backoff retries for failed
-          # ones.  The write-capable DSN lives on the publish environment
-          # (used by the finalize job below), never here.
+          # Read-only: the planner reads cache_warmth to drop
+          # verified-warm SHAs and to pace failed ones. The write-capable
+          # DSN is a secret of the publish environment, so only the
+          # finalize job below can read it.
           POSTGRES_DSN: ${{ secrets.POSTGRES_DSN_RO }}
           MANUAL_SHAS: ${{ inputs.shas }}
         run: |
@@ -133,42 +132,39 @@ jobs:
   # the workflow on `no_result`. Per-SHA `push_failed` / `verify_failed`
   # surface as red allowed-failure jobs inside _warm-one-sha.yml instead.
   #
-  # Runs whenever the planner found *anything* worth talking about — either
-  # SHAs that went through the matrix (`has_jobs`) or SHAs that the
-  # `cache_warmth` filter dropped before the matrix (`has_skipped`). The
-  # latter is what makes scheduled "everything already warm" ticks still
-  # produce a summary row instead of a silent green checkmark, and it also
-  # makes partial runs honestly report the SHAs that were filtered out
-  # alongside the ones that ran.
+  # Runs when the planner found SHAs that went through the matrix
+  # (`has_jobs`) or SHAs that the `cache_warmth` filter dropped before
+  # the matrix (`has_skipped`). The second case gives a scheduled
+  # "everything already warm" tick a summary row, and it lets a partial
+  # run report the filtered SHAs beside the ones that ran.
   finalize:
     needs: [plan, warm-sha]
-    # Gated to main (like the report workflows' publish job): recording
-    # cache_warmth is a DB write, so off main it cleanly SKIPS rather than
-    # failing red at the environment gate.
+    # Gated to main, like the report workflows' publish job: recording
+    # cache_warmth is a DB write, so off main the job skips instead of
+    # failing at the environment gate.
     if: >-
       always() && github.ref == 'refs/heads/main' &&
       (needs.plan.outputs.has_jobs == 'true' ||
        needs.plan.outputs.has_skipped == 'true')
     runs-on: ubuntu-latest
-    # Writes cache_warmth, so it runs in the main-only `publish` environment and
-    # takes that environment's write-capable POSTGRES_DSN.  NOTE: `publish` must
-    # stay branch-policy-only — adding a required-reviewer or wait-timer rule
-    # would stall this unattended scheduled chain (and the report workflows'
-    # publish job that shares the environment) waiting on manual approval.
+    # Writes cache_warmth, so it runs in the main-only `publish` environment
+    # and takes that environment's write-capable POSTGRES_DSN. `publish` must
+    # stay branch-policy-only: a required-reviewer or wait-timer rule would
+    # stall this unattended scheduled chain, and the report workflows'
+    # publish job that shares the environment, until someone approves.
     environment:
       name: publish
       deployment: false
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
-      # Each warm-result-<sha> artifact gets its own subdirectory under
-      # results/. Without merge-multiple, files from different artifacts
-      # never collide — earlier we hit a bug where two SHAs reaching the
-      # same terminal stage both wrote `result.json` and the second
-      # overwrote the first, silently dropping rows from the summary.
+      # Every artifact holds a `result.json`, so a merge would let one
+      # SHA's file overwrite another's. Two or more artifacts land in
+      # their own subdirectories under results/, and a single one
+      # extracts to results/result.json; the summary step reads both.
       #
-      # Skipped on a pure-skipped run (matrix was empty) since no
-      # `warm-result-*` artifacts exist and the action would error out.
+      # Skipped when the matrix was empty: no `warm-result-*` artifact
+      # exists, and the action errors on an empty match.
       - name: Download per-SHA results
         if: needs.plan.outputs.has_jobs == 'true'
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -197,9 +193,8 @@ jobs:
             echo '[]' > received.json
           fi
 
-          # Compute received SHAs and planned SHAs so we can surface any
-          # matrix entries that didn't produce a result (job timeout, runner
-          # crash, etc.) — these show up as "missing" rows.
+          # Compare received SHAs with planned SHAs. A matrix entry without
+          # a result (job timeout, runner crash) becomes a "missing" row.
           jq -r '.[].sha' received.json | sort -u > received-shas.txt
           jq -r '.include[].sha' <<<"$MATRIX_JSON" | sort -u > planned-shas.txt
           comm -23 planned-shas.txt received-shas.txt > missing-shas.txt
@@ -231,9 +226,8 @@ jobs:
 
           jq -s 'add' received.json missing.json skipped.json > summary.json
 
-          # Counts by status, in a stable order. `cache_warmth_hit` is
-          # listed first because it represents the cheapest path: the
-          # SHA never even entered the matrix.
+          # Counts by status, in a stable order. `cache_warmth_hit` comes
+          # first as the cheapest path: the SHA skipped the matrix.
           statuses=(cache_warmth_hit already_warm warmed retry_backoff retry_exhausted build_failed push_failed verify_failed no_result)
           declare -A counts=()
           for status in "${statuses[@]}"; do

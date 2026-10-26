@@ -2,8 +2,8 @@
 
 Builds mathlib at the LKG / FKB SHAs reported for every downstream
 that does not opt out via `warm_cache: false`, and pushes the
-resulting oleans to both stores mathlib's own CI writes: the Azure
-`master` container, and the R2 bucket behind `cache.mathlib.org`.
+resulting oleans to the R2 bucket behind `cache.mathlib.org`: the
+store mathlib's own CI writes and every consumer reads.
 External consumers of `lkg/latest.json` (e.g. the `bump-to-latest`
 action) then hit a warm cache instead of rebuilding mathlib from
 scratch. The snapshot reports the warmth this workflow verifies: each
@@ -13,22 +13,20 @@ opens.
 
 ## Why
 
-mathlib's master branch advances via batched bors merges. mathlib's CI
-(`mathlib4/.github/workflows/build_template.yml`, `upload_cache` job)
-only pushes oleans for the SHAs CI actually built — typically the bors
-merge commits, not every commit on master.
+mathlib's master branch advances through batched bors merges. mathlib's
+CI (`mathlib4/.github/workflows/build_template.yml`, `upload_cache` job)
+pushes oleans for the SHAs it built: the bors merge commits, not every
+commit on master.
 
-The downstream-reports daily regression workflow records, per
-downstream, a `last_known_good_commit` (LKG) and `first_known_bad_commit`
-(FKB) — usually mathlib master SHAs, but a release-pinned downstream
-lands them on a release-tag commit (e.g. `v4.29.1`) that diverged from
-master. When those land on commits that didn't go through CI, their
-cache is empty. A consumer that
-fetches our `lkg/latest.json` and asks for the LKG ends up rebuilding
-mathlib from scratch.
+The regression workflow records a `last_known_good_commit` (LKG) and a
+`first_known_bad_commit` (FKB) per downstream. These are usually mathlib
+master SHAs, but a release-pinned downstream lands them on a release-tag
+commit (e.g. `v4.29.1`) that diverged from master. When an LKG or FKB is
+a commit that CI did not build, its cache is empty, and a consumer that
+fetches `lkg/latest.json` and bumps to it rebuilds mathlib from scratch.
 
-This workflow closes that gap by performing the build and push
-ourselves for a curated set of downstreams.
+This workflow builds and pushes those SHAs for every enabled downstream
+that does not opt out.
 
 ## Topology
 
@@ -44,14 +42,14 @@ warm-mathlib-cache.yml         (orchestrator; also: cron every 6h, dispatch)
     │
     ├─ warm-sha matrix → calls _warm-one-sha.yml once per SHA (max-parallel: 1)
     │                     │
-    │                     ├─ build_and_stage    self-hosted, NO token
+    │                     ├─ build_and_stage    self-hosted, NO credential
     │                     │   clone target SHA → probe → build → stage
     │                     │
     │                     ├─ upload_cache       ubuntu-latest, has cache creds
-    │                     │   shallow master → build cache → mint + put-staged
-    │                     │   to Azure, then mint + put-staged to R2
+    │                     │   shallow master → build cache → install curl
+    │                     │   → mint + put-staged to R2
     │                     │
-    │                     └─ verify             ubuntu-latest, NO token
+    │                     └─ verify             ubuntu-latest, NO credential
     │                         fresh clone → cache get → assert all oleans present
     │
     └─ finalize job    → renders breakdown, upserts every attempted
@@ -63,41 +61,33 @@ warm-mathlib-cache.yml         (orchestrator; also: cron every 6h, dispatch)
         (refresh lkg/latest.json, runs/latest.json, and the Pages site)
 ```
 
-**Where the warmth shows up.** In the snapshot, beside each commit:
-`export_lkg_snapshot.py` publishes `last_known_good_commit_warm` and
-`first_known_bad_commit_warm`, each true only when that SHA's
-`cache_warmth` row is verified warm (`already_warm` / `warmed`).
+**Where the warmth shows up.** `export_lkg_snapshot.py` publishes
+`last_known_good_commit_warm` and `first_known_bad_commit_warm` beside
+each commit, each true only when that SHA's `cache_warmth` row is
+verified warm (`already_warm` / `warmed`).
 
-The snapshot reports warmth; it never acts on it. There is no second
-"which commit" field to keep in sync, and `last_known_good_commit` /
-`first_known_bad_commit` keep meaning exactly the compatibility
-boundary — redefining them would break the LKG/FKB adjacency
-invariant. A cold SHA is published like any other, and the consumer
-decides: `bump-to-latest` bumps to it and puts a warning in the PR
-body naming the cost and where to ask for warming. That keeps the
-feedback where someone can act on it. A project that repeatedly pays
-for a from-source mathlib build has a concrete thing to point at, and
-the fix is to enable warming for it rather than to have the snapshot
-quietly withhold its target.
+The snapshot reports warmth and leaves the choice to the consumer.
+`last_known_good_commit` and `first_known_bad_commit` keep their
+meaning as the compatibility boundary, so the LKG/FKB adjacency
+invariant holds. A cold SHA is published like any other;
+`bump-to-latest` bumps to it and puts a warning in the PR body that
+names the cost and where to ask for warming. A project that repeatedly
+pays for a from-source mathlib build then has a concrete thing to point
+at, and the fix is to enable warming for it.
 
-Warmth is published per commit rather than per downstream because it
-is a fact about a SHA in mathlib's cache, shared by every downstream
-that happens to sit on it.
+Warmth is a fact about a SHA in mathlib's cache, shared by every
+downstream on it, so the snapshot publishes it per commit.
 
-**Why publish-lkg / generate-pages chain off warming, not off the
-report directly.** Ordering: a freshly-reported LKG gets its warming
-attempt before the snapshot refresh, so in the common case the same
-cycle that reported it also publishes it warm. If warming is skipped or
-fails outright, the snapshot and the rendered status page do not
-refresh — consumers continue to see the previous cycle.
+**Why publish-lkg / generate-pages chain off warming.** A freshly
+reported LKG gets its warming attempt before the snapshot refresh, so
+in the common case the cycle that reported it also publishes it warm.
+If warming is skipped or fails outright, the snapshot and the status
+page keep the previous cycle's content.
 
-**Eventual consistency.** The cron schedule (`0,6,12,18 UTC`) gives
-the chain a recurring entry point so a missed `workflow_run` event,
-a cancelled report run, or a transient warm failure can self-heal.
-Once `cache_warmth` filters every planned SHA, scheduled ticks
-finish in ~30s on `ubuntu-latest`, and their success still chains
-into `publish-lkg` + `generate-pages`, which re-read the current
-DB state and republish.
+**Eventual consistency.** The cron schedule gives the chain a recurring
+entry point. A missed `workflow_run` event or a cancelled report run
+self-heals on the next tick, and a failed warming attempt retries on
+the backoff schedule under "Plan job". See Trigger.
 
 ## Files
 
@@ -119,7 +109,7 @@ DB state and republish.
 
 The `cache_warmth` table is a rebuildable cache of warming state, not
 a system of record. When its rows stop matching reality — for example
-after the Azure olean container is cleared — drop and re-create it:
+after the cache bucket is cleared — drop and re-create it:
 
 ```sql
 DROP TABLE cache_warmth;
@@ -134,12 +124,13 @@ CREATE TABLE cache_warmth (
 );
 ```
 
-The rebuild is cheap: the planner only consults rows for SHAs that are
-*currently* someone's LKG/FKB, so the live set is small and the next
-scheduled tick re-probes it — a genuinely warm SHA takes the
-`already_warm` fast path (cache get + `--no-build` check, no build).
-Until that tick completes, the snapshot reports the re-probed SHAs
-cold.
+The rebuild is cheap. The planner consults only the rows of SHAs that
+are currently some downstream's LKG or FKB, so the live set is small,
+and the next scheduled tick re-probes it. A warm SHA takes the
+`already_warm` path (cache get plus the `--no-build` check, no build).
+The re-probe reads the runner's local cache first, so it has the
+caveat under "Probe measures the runner's view" in Trade-offs. Until
+that tick completes, the snapshot reports the re-probed SHAs cold.
 
 ## Trigger
 
@@ -152,28 +143,27 @@ cold.
   still chain into `publish-lkg` and `generate-pages` so a snapshot
   / page refresh that was missed by a previous broken chain
   self-heals within ~6h.
-- **`workflow_dispatch`** with optional `shas` input
-  (comma-separated 40-char hex SHAs). When `shas` is non-empty the
-  inventory + DB *and* the `cache_warmth` filter are bypassed —
-  operators forcing a re-warm should not be silently no-op'd.
+- **`workflow_dispatch`** with an optional `shas` input
+  (comma-separated 40-char hex SHAs). When `shas` is non-empty, the
+  planner skips the inventory, the DB, and the `cache_warmth` filter,
+  so a forced re-warm runs even for a SHA the table marks warm.
 
 ## Opt-out
 
-`DownstreamConfig.warm_cache: bool = True`. Warming is on by default
-so a newly-added downstream's SHAs are warm by the time anything bumps
-to them — TauCeti's cold pins in issue #77 came from consuming bumps
-without being warmed.
+`DownstreamConfig.warm_cache: bool = True`. Warming is on by default,
+so a newly added downstream's SHAs are warm by the time anything bumps
+to them.
 
-Set `"warm_cache": false` in `ci/inventory/downstreams.json` for
-downstreams that don't consume hopscotch bumps: warming them is wasted
-compute. Their commits are still published; the snapshot simply reports
-them cold. If such a project later starts bumping, its first bump PR
-carries the cold-cache warning, which is the signal to flip the flag.
+Set `"warm_cache": false` in `ci/inventory/downstreams.json` for a
+downstream that does not consume hopscotch bumps, because warming its
+SHAs spends runner time that no consumer uses. Its commits are still
+published, and the snapshot reports them cold. If such a project later
+starts to bump, its first bump PR carries the cold-cache warning, which
+is the signal to flip the flag.
 
-Deduplication by SHA keeps the default's marginal cost low: passing
-downstreams share master push tips (which mathlib's own CI already
-caches), so the SHAs that actually need building are the
-bisect-boundary commits inside bors batches.
+Deduplication by SHA keeps the default's cost low: passing downstreams
+share master push tips, which mathlib's own CI caches, so the SHAs that
+need a build are the bisect-boundary commits inside bors batches.
 
 ## Plan job
 
@@ -194,10 +184,10 @@ bisect-boundary commits inside bors batches.
 
 Classification per SHA:
 
-- no `cache_warmth` row → **include** (never attempted);
+- no `cache_warmth` row → **include** (not yet attempted);
 - verified warm (`already_warm` / `warmed`) → **skip** as
   `cache_warmth_hit`. Mathlib's olean cache is content-hashed and
-  immutable per SHA, so a verified SHA never needs re-probing;
+  immutable per SHA, so a verified SHA stays verified;
 - failed attempt with backoff still pending → **skip** as
   `retry_backoff`;
 - failed attempt past its backoff → **include** (retry);
@@ -206,11 +196,11 @@ Classification per SHA:
 
 The backoff doubles per recorded attempt: 6h (one scheduled tick),
 12h, 24h, 48h. Mathlib master always builds, so a failed warming
-attempt — `build_failed` included — is infra trouble, not a property
-of the SHA; the schedule keeps re-attempting without letting a
-flapping failure spin the self-hosted runner every tick. An exhausted
-SHA needs operator attention (or a `--manual-shas` backfill, which
-bypasses the filter).
+attempt, `build_failed` included, is infrastructure trouble and not a
+property of the SHA. The schedule keeps retrying without letting a
+flapping failure occupy the self-hosted runner every tick. An
+exhausted SHA needs operator attention, or a `--manual-shas` backfill,
+which bypasses the filter.
 
 Output JSON:
 
@@ -237,18 +227,18 @@ when the plan is empty.
 
 ## Per-SHA chain (`_warm-one-sha.yml`)
 
-Three jobs. Each has its own status; a terminal status uploads
-`warm-result-<sha>` directly so the orchestrator's finalize job always has
-exactly one final result per SHA. `build_and_stage` and `verify` run
-the target SHA's own in-tree cache tool (`lake exe cache`);
-`upload_cache` builds its cache tool fresh from a shallow `master`
-checkout, mirroring mathlib4's own tools-branch idiom — the cache
-binary that sees the bearer token never came off the build runner.
+Three jobs. Each has its own status, and the job that produces a
+terminal status uploads `warm-result-<sha>` itself, so the finalize job
+has exactly one final result per SHA. `build_and_stage` and `verify`
+run the target SHA's own in-tree cache tool (`lake exe cache`).
+`upload_cache` builds its cache tool from a shallow `master` checkout,
+as mathlib4's own upload job does, so the credentials reach only a
+binary this job built.
 
 ### `build_and_stage`
 
 - `runs-on: [self-hosted, pr]`
-- No cache token in scope.
+- No cache credential in scope.
 
 Steps:
 
@@ -257,39 +247,38 @@ Steps:
    from the checkout).
 3. Clone mathlib at the target SHA (`mathlib4/`, full commit graph,
    `--filter=blob:none` for size).
-4. **Verify SHA is published** — accepts the SHA if it's reachable
+4. **Verify SHA is published** — accepts the SHA if it is reachable
    from `origin/master` (`git merge-base --is-ancestor`) or from a
    published release tag (`git tag --contains`). The job exits 1 with
-   a clear error otherwise. Guards against typos in the dispatch input
-   while allowing release-pinned downstreams (see "Published-only"
+   an error otherwise. This guards against a typo in the dispatch
+   input and admits release-pinned downstreams (see "Published-only"
    under Trade-offs).
 5. Checkout the SHA.
-6. Clone mathlib master shallow into `mathlib4-tools/` — kept solely
-   as the leantar-backfill source.
+6. Clone mathlib master shallow into `mathlib4-tools/`, the leantar
+   backfill source.
 7. **Backfill leantar** into the target toolchain's sysroot when the
-   pinned toolchain predates leantar bundling
-   (nightly-2026-03-09): the cache tool resolves `leantar` strictly
-   from the sysroot, never from PATH.
+   pinned toolchain predates leantar bundling (nightly-2026-03-09):
+   the cache tool resolves `leantar` from the sysroot alone.
 8. **Probe:** `lake exe cache get` then
    `lake build --no-build -v Mathlib` (both in `mathlib4/`). This
-   runs the target SHA's own in-tree cache tool, so completeness is
-   measured exactly as a consumer at that SHA sees it. The probe is
-   a router, not a check: the step always exits 0 and reports
-   `warm`/`cold` through `outputs.status`, so a cold cache (the
-   normal reason the workflow runs) leaves no `##[error]`
-   annotation — red in this job marks a real failure. If the probe
-   reports `warm`, status becomes `already_warm` and the chain
-   ends.
-9. `lake build Mathlib` (in `mathlib4/`, only runs when the probe
-   reports `cold`). The cache is content-hashed, so anything `cache get`
-   already pulled is reused; only files whose hashes weren't in the
-   cache get rebuilt.
+   runs the target SHA's own in-tree cache tool, so the probe looks
+   up the file names a consumer at that SHA computes. It reads the
+   runner's local cache first; see "Probe measures the runner's view"
+   under Trade-offs. The step always exits 0 and reports `warm` or
+   `cold` through `outputs.status`. A cold cache is the normal reason
+   the workflow runs, so it leaves no `##[error]` annotation, and red
+   in this job marks a real failure. If the probe reports `warm`, the
+   status becomes `already_warm` and the chain ends.
+9. `lake build Mathlib` (in `mathlib4/`, only when the probe reports
+   `cold`). The cache is content-hashed, so the build reuses every
+   file `cache get` pulled and rebuilds only the files the cache
+   lacked.
 10. `lake exe cache stage --staging-dir=../cache-staging`. Staging
     must use the in-tree tool: cache file names embed the tool's
     hash generation (`Cache/IO.lean` `rootHashGeneration`), and only
     the tool at the target SHA names files the way `cache get` at
-    that SHA will look them up.
-11. Upload `stage-<sha>` artifact (just `.ltar` files — no binary).
+    that SHA looks them up.
+11. Upload the `stage-<sha>` artifact (`.ltar` files only, no binary).
 12. Write result, upload as `warm-result-<sha>` (terminal:
     `already_warm`/`build_failed`) or `intermediate-<sha>`
     (non-terminal: `staged`).
@@ -299,52 +288,47 @@ Steps:
 - `runs-on: ubuntu-latest`
 - `needs: build_and_stage`, `if: needs.build_and_stage.outputs.status == 'staged'` —
   skipped entirely on `already_warm` / `build_failed`.
-- `environment: cache-warming-token` — gates both mints, `main` only.
+- `environment: cache-warming-token` — gates the mint, `main` only.
   See [Authorization](#authorization).
 
 Steps:
 
 1. Download `intermediate-<sha>` and `stage-<sha>`.
 2. Install elan.
-3. Clone mathlib master shallow into `mathlib4-tools/`.
-4. `lake build cache` in `mathlib4-tools/` — a fresh, trusted cache
-   binary that never came off the build runner.
-5. **Mint Azure bearer** via an inline OIDC ↔ Entra exchange (curl +
-   jq). We do this manually rather than via mathlib's
-   `azure-create-cache-token` action because that action shells out
-   to `az`; the inline mint keeps the workflow self-contained.
-6. **Push to Azure** via `lake env .lake/build/bin/cache put-staged
-   --backend=azure --staging-dir=../cache-staging
-   --repo=leanprover-community/mathlib4` (run from
-   `mathlib4-tools/`), with `MATHLIB_CACHE_PUT_URL` set to the flat
-   endpoint of the `master` container. `put-staged` uploads the staged `.ltar` files
-   under the names staging gave them and computes no hashes, so the
-   master-built tool is safe here across hash generations.
-7. **Clear** `MATHLIB_CACHE_AZURE_BEARER_TOKEN` from `$GITHUB_ENV`
-   so the steps that follow don't see it.
-8. **Mint R2 credentials** via mathlib-ci's `mint-s3-credentials`
+3. **Install curl.** The cache tool uploads with curl 8.20 or later
+   (mathlib4#44940) and `ubuntu-latest` ships 8.5. The step fetches
+   the static `v8.23.0` build from `leanprover-community/static-curl`,
+   checks its pinned sha256, and prepends it to `PATH`. The release
+   and the checksum match mathlib4's own upload job.
+4. Clone mathlib master shallow into `mathlib4-tools/`.
+5. `lake build cache` in `mathlib4-tools/`, which builds the cache
+   binary this job runs.
+6. **Mint R2 credentials** via mathlib-ci's `mint-s3-credentials`
    action, which exchanges the job's OIDC token at the mathlib cache
-   broker for short-lived S3 credentials. The repo variable
-   `MATHLIB_CACHE_BROKER_URL` is the switch: empty turns this leg off.
-9. **Push to R2** via the same `put-staged`, with `--backend=s3`.
-   `MATHLIB_CACHE_PUT_URL` (the secret
-   `MATHLIB_CACHE_R2_PUT_URL`) names one flat endpoint and turns the
-   container policy off, so `--repo` alone sets the prefix and
+   broker for short-lived S3 credentials. A failed mint fails the
+   step, and the result still records `push_failed`.
+7. **Push to R2** via `lake env .lake/build/bin/cache put-staged
+   --backend=s3 --staging-dir=../cache-staging
+   --repo=leanprover-community/mathlib4` (run from
+   `mathlib4-tools/`), with one retry. `MATHLIB_CACHE_PUT_URL` (the
+   secret `MATHLIB_CACHE_R2_PUT_URL`) names one flat endpoint and turns
+   the container policy off, so `--repo` alone sets the prefix and
    `leanprover-community/mathlib4` writes the flat `f/<hash>.ltar`
-   names a mathlib4 consumer reads.
-10. Write result, upload as `warm-result-<sha>` (terminal:
-    `push_failed`) or `pushed-<sha>` (non-terminal: `pushed`).
-11. Exit 1 on Azure push failure, surfacing as a red job.
+   names a mathlib4 consumer reads. `put-staged` uploads the staged
+   `.ltar` files under the names staging gave them and computes no
+   hashes, so the master-built tool is safe here across hash
+   generations.
+8. Write result, upload as `warm-result-<sha>` (terminal:
+   `push_failed`) or `pushed-<sha>` (non-terminal: `pushed`).
+9. Exit 1 on push failure, so the job shows red.
 
-Azure is the upload of record, so steps 8 and 9 warn on failure and
-leave the job's status alone: `verify` finds the files on Azure. The two
-legs are independent and the R2 one runs even when the Azure mint or
-push failed. A skipped or failed R2 push leaves this SHA out of the
-bucket until the planner retries it or a backfill adds it.
+The R2 bucket is the only store this workflow writes, and the one
+`verify` reads through `cache.mathlib.org`, so a push that succeeds and
+a verify that passes describe the same files.
 
 ### `verify`
 
-- `runs-on: ubuntu-latest`, no token.
+- `runs-on: ubuntu-latest`, no credential.
 - `if: needs.upload_cache.outputs.status == 'pushed'` — skipped
   entirely otherwise.
 
@@ -352,15 +336,14 @@ Steps:
 
 1. Download `pushed-<sha>`.
 2. Install elan.
-3. **Fresh** clone of mathlib at the same SHA.
+3. Fresh clone of mathlib at the same SHA.
 4. `lake exe cache get` then `lake build --no-build --rehash -v
-   Mathlib`. Mirrors mathlib's own `post_steps` verification. The
-   fresh clone is essential — reusing the build runner's working
-   directory would let local oleans satisfy the check even if
-   nothing was uploaded.
-5. Roll status to `warmed` or `verify_failed`.
+   Mathlib`. This mirrors mathlib's own `post_steps` verification. The
+   job runs on a GitHub-hosted runner with an empty local cache, so
+   `cache get` downloads every file from the bucket.
+5. Roll the status to `warmed` or `verify_failed`.
 6. Upload `warm-result-<sha>`.
-7. Exit 1 if the verify lake check failed.
+7. Exit 1 if the check failed.
 
 ## Status flow
 
@@ -376,34 +359,34 @@ Steps:
 | `no_result` | finalize (synthesised) | n/a | red finalize job |
 
 "Allowed failure" means the job carries job-level
-`continue-on-error: true`: it shows a red X in the run's job list
-and emits an `::error::` annotation, but the workflow_run conclusion
-stays `success`, so the publish-lkg + generate-pages chain still
-fires and a failed SHA never blocks the snapshot refresh that serves
-every downstream. (The failed SHA is published with its `*_warm` flag
-false, so a consumer that bumps onto it is warned rather than
-surprised.)
+`continue-on-error: true`. It shows a red X in the run's job list and
+emits an `::error::` annotation, but the workflow_run conclusion stays
+`success`. The publish-lkg and generate-pages chain still fires, and
+the snapshot refresh that serves every downstream goes ahead. The
+failed SHA is published with its `*_warm` flag false, so a consumer
+that bumps onto it gets a warning.
 
 All three `*_failed` statuses are failures of the warming *attempt*,
 not of the SHA: mathlib master always builds, so `build_failed` is
 runner trouble (OOM, disk, toolchain download) just as `push_failed`
-and `verify_failed` are Azure trouble. The planner re-attempts each of
+and `verify_failed` are broker or bucket trouble. The planner re-attempts each of
 them on the backoff schedule described under "Plan job".
 
-`no_result` is synthesised by the finalize job for any SHA that was
-in the plan but didn't upload a `warm-result-<sha>` artifact —
-typically a runner crash or a job timeout that killed the worker
-before its terminal upload step ran. It surfaces as a red finalize
-job so we don't silently drop those.
+The finalize job synthesises `no_result` for any SHA that was in the
+plan but uploaded no `warm-result-<sha>` artifact, typically after a
+runner crash or a job timeout that stopped the worker before its
+terminal upload step. It surfaces as a red finalize job, so a dropped
+SHA is visible.
 
 ## Orchestrator finalize job
 
-The `finalize` job downloads all `warm-result-<sha>` artifacts (each
-into its own subdirectory under `results/` — *not* `merge-multiple`,
-because every terminal stage uploads under the same in-artifact
-filename and merging would silently overwrite earlier rows),
-combines them with synthetic `no_result` entries for any planned
-SHA that didn't report back, and renders to the run's job summary:
+The `finalize` job downloads all `warm-result-<sha>` artifacts without
+`merge-multiple`, because every artifact holds the same file name and
+a merge would overwrite rows. Two or more artifacts land in their own
+subdirectories under `results/`, and a single artifact extracts to
+`results/result.json`. The summary step's `find` reads both layouts.
+The job adds a synthetic `no_result` entry for each planned SHA that
+did not report back, and it renders this to the run's job summary:
 
 - A total count of SHAs processed.
 - A status-breakdown table with one row per non-zero status.
@@ -414,144 +397,86 @@ The finalize job exits 1 if any SHA reports `no_result`; per-SHA
 `push_failed` / `verify_failed` already surfaced as red
 allowed-failure jobs in the matrix.
 
-After rendering the summary, the job runs
-`scripts/record_warm_shas.py --backend sql ... --summary summary.json`
-which upserts `(upstream, sha)` rows into `cache_warmth` for every
-entry whose status is terminal (`already_warm`, `warmed`,
-`build_failed`, `push_failed`, `verify_failed`), storing the status
-verbatim, stamping the attempt time, and incrementing the row's
-attempt counter. A verified-warm row is dropped from future plans
-indefinitely (the olean cache is content-hashed and immutable per
-SHA); a failed row re-enters the plan on the backoff schedule.
-`no_result` entries and the planner's own skip statuses are never
-recorded — neither represents an attempt that ran. The recording step
-has `if: always()` so partial failures still persist the SHAs that
-did report.
+After it renders the summary, the job runs
+`scripts/record_warm_shas.py --backend sql ... --summary summary.json`,
+which upserts an `(upstream, sha)` row into `cache_warmth` for every
+entry with a terminal status (`already_warm`, `warmed`,
+`build_failed`, `push_failed`, `verify_failed`). The row stores the
+status verbatim, the attempt time, and an incremented attempt counter.
+The planner skips a verified-warm row in every future plan, because
+the olean cache is content-hashed and immutable per SHA, and a failed
+row re-enters the plan on the backoff schedule. The script records
+terminal statuses only. `no_result` marks an attempt that ended
+without a result, and the planner's skip statuses mark SHAs that did
+not run. The script records neither, so neither consumes retry budget.
+The recording step has `if: always()`, so a partial failure still
+persists the SHAs that did report.
 
-`record_warm_shas.py` takes the write-capable `POSTGRES_DSN`, so `finalize`
-runs in the main-only `publish` GitHub Environment and the whole job is gated
-to `main` (`github.ref == 'refs/heads/main'`), which makes a branch
-`workflow_dispatch` skip it cleanly rather than fail at the environment
-gate. **The `publish` environment must stay branch-policy-only:** adding
-a required-reviewer or wait-timer rule would stall
-this unattended scheduled chain — and the report/on-demand `publish` jobs that
-share the environment — waiting on manual approval.
+`record_warm_shas.py` takes the write-capable `POSTGRES_DSN`, so
+`finalize` runs in the main-only `publish` GitHub Environment. The
+job's `if:` also checks `github.ref == 'refs/heads/main'`, so a branch
+`workflow_dispatch` skips the job instead of failing at the
+environment gate. **The `publish` environment must stay branch-policy-only.** A
+required-reviewer or wait-timer rule would stall this unattended
+scheduled chain, and the report and on-demand `publish` jobs that share
+the environment, until someone approves.
 
 ## Throttling
 
 - **Workflow-level concurrency.** `concurrency: warm-mathlib-cache`
   with `cancel-in-progress: false`. At most one warming run executes
-  or queues at a time across the repo; if a third dispatch arrives
-  while one is running and one queued, the previously-queued one is
-  dropped (the latest plan is always the one to honour).
+  and one queues at a time across the repo. A third run replaces the
+  queued one, so the latest plan is the one that runs.
 - **Matrix throttle.** `max-parallel: 1` on the orchestrator's
-  `warm-sha` matrix caps in-flight per-SHA chains. The
-  `build_and_stage` job runs on the shared self-hosted `pr` runner;
-  this keeps cache-warming from contending with the regression
-  probe job. Bump up later if the daily plan grows large and there's
-  headroom on the `pr` runner pool.
-
-Tune up if the warming plan grows large and there's headroom on the
-`pr` runner pool.
+  `warm-sha` matrix caps the per-SHA chains in flight. The
+  `build_and_stage` job runs on the shared self-hosted `pr` pool, and
+  the cap keeps cache warming from contending with the regression
+  probe job. Raise it if the plan grows large and the pool has
+  headroom.
 
 ## Authorization
 
-Both credentials come through one GitHub Environment on this repo,
+The credentials come through one GitHub Environment on this repo,
 `cache-warming-token`, whose branch policy admits `main` alone. That is
-the single trust boundary for both mints.
+the trust boundary for the mint.
 
-### Azure
+The `mint-s3-credentials` action sends the job's OIDC token to the
+mathlib cache broker, which returns S3 credentials that expire after
+900 seconds. The broker's policy decides the grant from the token's
+claims: the row `downstream-reports-warm-publish` matches this job's
+subject and grants `object-read-write` on the `mathlib4/` prefix of the
+`mathlib4-cache` bucket. That prefix holds the master set. The broker
+lives in `mathlib-initiative/cache-infrastructure` under
+`cache-broker/`.
 
-The cache push targets the same Azure storage account mathlib's own
-CI uses, with a federated credential bound to a GitHub Environment
-on this repo. Distinct from the `azure/login`-based path
-`publish-lkg.yml` uses (different Azure app, different blob
-container). We perform the OIDC ↔ Entra token exchange inline rather
-than via mathlib's `azure-create-cache-token` composite action: that
-action requires `az` on PATH, which the self-hosted `pr` runner
-doesn't have. The exchange itself is the standard OAuth2 flow at
-`login.microsoftonline.com`.
-
-#### One-time prerequisites
+### One-time prerequisites
 
 1. **GitHub Environment** named `cache-warming-token` on this repo
    (Settings → Environments), with a deployment branch policy that
    lists `main`. The environment scopes the OIDC subject claim, and the
-   branch policy is what keeps both mints main-only.
-2. **Entra federated credential** on mathlib's cache-writer Azure app
-   with subject
-
-   ```
-   repo:leanprover-community/downstream-reports:environment:cache-warming-token
-   ```
-
-   Same pattern as the PR validation workflow's `pr-validation-token`
-   environment.
-3. Repo secret `MATHLIB_CACHE_WRITER_CLIENT_ID` (the cache-writer
-   Azure app's client ID).
-4. Repo secret `LPC_AZ_TENANT_ID` (shared tenant ID, already used by
-   other mathlib infra).
-
-Until 1–4 are in place, the Azure mint step fails with a clear Azure
-auth error.
-
-#### Target container
-
-The Azure push targets the `master` container. The workflow sets
-`MATHLIB_CACHE_PUT_URL` to its flat endpoint,
-`https://lakecache.blob.core.windows.net/mathlib4-master`, because the
-cache tool's azure backend uploads only to such an endpoint. These are
-Mathlib oleans at mathlib4 master commits, under the flat `f/<hash>`
-names mathlib master CI writes, and a mathlib4 consumer reads `master`
-first (`defaultContainersForRepo`, mathlib4 `Cache/Infra.lean`).
-
-Each writer identity may write exactly one container, and the storage
-account enforces it, so `MATHLIB_CACHE_WRITER_CLIENT_ID` must hold the
-identity that writes `master`. mathlib4 `Cache/SECURITY.md` holds the
-trust model; mathlib-ci `docs/github-apps/entra-apps.md` lists the
-identities.
-
-### R2
-
-The `mint-s3-credentials` action sends the job's OIDC token to the
-mathlib cache broker, which answers S3 credentials that expire after
-900 seconds. The broker's policy decides the grant from the token's
-claims: the row `downstream-reports-warm-publish` matches this job's
-subject and grants `object-read-write` on the `mathlib4/` prefix of the
-`mathlib4-cache` bucket. That prefix holds the master set, the same set
-the Azure `master` container holds, so the two pushes sit at one trust
-level. The broker lives in `mathlib-initiative/cache-infrastructure`
-under `cache-broker/`.
-
-#### One-time prerequisites
-
-1. **A broker grant row** whose claims match this job's subject.
+   branch policy is what keeps the mint main-only.
+2. **A broker grant row** whose claims match this job's subject.
    Without one the broker answers 403 and the mint step fails.
-2. **Repo variable** `MATHLIB_CACHE_BROKER_URL` — the broker's
-   credential endpoint, and the switch: while it is empty or absent,
-   the job runs the Azure push alone.
-3. **Environment secret** `MATHLIB_CACHE_R2_PUT_URL` on
+3. **Repo variable** `MATHLIB_CACHE_BROKER_URL` — the broker's
+   credential endpoint. The mint fails while it is unset.
+4. **Environment secret** `MATHLIB_CACHE_R2_PUT_URL` on
    `cache-warming-token` — the flat destination,
    `https://<account>.r2.cloudflarestorage.com/mathlib4-cache/mathlib4`.
-   While it is unset, the push step warns and uploads nothing.
+   While it is unset, the push step fails and the SHA records
+   `push_failed`.
 
-Both names match mathlib4's own for its `upload_cache` job.
+The variable and secret names match mathlib4's own for its
+`upload_cache` job.
 
 ## Token isolation
 
-Both mints run in `upload_cache`, a separate job from the build, so
-neither credential reaches the environment of the elaboration-time
-code. `verify` runs on a third runner with no credential.
-
-The cache tool reads the Azure bearer from
-`MATHLIB_CACHE_AZURE_BEARER_TOKEN`, so the bearer has to sit in
-`$GITHUB_ENV`. The job clears it right after the Azure push, and that
-clear runs before the R2 mint, so the two credentials never share a step
-environment.
+The mint runs in `upload_cache`, a separate job from the build, so the
+elaboration-time code in `build_and_stage` runs without the
+credentials. `verify` runs on a third runner with no credential.
 
 The R2 credentials stay out of `$GITHUB_ENV`: the action masks them and
-returns them as step outputs, and only the R2 push step maps them into
-its own `env:`.
+returns them as step outputs, and only the push step maps them into its
+own `env:`.
 
 ## Testing
 
@@ -578,22 +503,20 @@ python3 scripts/plan_cache_warm_jobs.py \
 
 ### Dispatch from a feature branch
 
-The orchestrator's name (`warm-mathlib-cache`) must exist on the
-default branch for `workflow_dispatch` to be registered. A shim on
-main provides that. Once landed:
+GitHub registers `workflow_dispatch` from the workflow file on the
+default branch and runs the dispatched ref's copy of both files
+(`./_warm-one-sha.yml` resolves at the caller's ref):
 
 ```bash
 gh workflow run warm-mathlib-cache.yml \
-  --ref WarmCacheWorkflow \
+  --ref <branch> \
   -f shas=<40-hex>
 ```
 
-GitHub locates the workflow via the shim on main but executes the
-feature branch's version of both files (`./_warm-one-sha.yml` resolves
-at the caller's ref). `build_and_stage` therefore runs, and
-`upload_cache` stops at the `cache-warming-token` gate, whose branch
-policy admits `main` alone. A feature-branch dispatch exercises the
-build and stage path; it does not upload.
+`build_and_stage` runs, and `upload_cache` stops at the
+`cache-warming-token` gate, whose branch policy admits `main` alone. A
+feature-branch dispatch exercises the build and stage path and uploads
+nothing.
 
 ### End-to-end check
 
@@ -607,8 +530,8 @@ lake exe cache get
 lake build --no-build -v Mathlib    # should succeed without rebuilds
 ```
 
-A fresh-machine check catches edge cases (CDN edge serving stale
-data) the in-job verify can't.
+A fresh-machine check catches a CDN edge that serves stale data,
+which the in-job verify cannot see.
 
 ## Failure modes
 
@@ -617,32 +540,33 @@ schedule; a SHA that exhausts its retry budget surfaces as
 `retry_exhausted` in the finalize summary with a `::warning::`
 annotation.
 
-- **`build_failed`** — mathlib didn't build at the SHA. Master always
-  builds, so this is runner trouble (OOM, disk pressure, toolchain
-  download flake). Workflow does not fail.
-- **`push_failed`** — mint succeeded but the put-staged call errored.
-  Look at the push step's logs and Azure storage account health.
-  The upload_cache job goes red (allowed failure); the run stays
-  green. A rejected command line, or a container the credential does
-  not cover, fails every SHA in the tick rather than one.
-- **`verify_failed`** — push reported success but the post-push
-  cache get + `lake build --no-build` showed missing oleans.
-  Indicates either the push didn't upload everything, or there's a
-  read-after-write consistency issue. The verify job goes red
-  (allowed failure); the run stays green.
-- **Mint failed** — Azure auth misconfigured. Check the federated
-  credential and the `MATHLIB_CACHE_WRITER_CLIENT_ID` secret.
+- **`build_failed`** — mathlib did not build at the SHA. Master always
+  builds, so this is runner trouble (OOM, disk pressure, a toolchain
+  download flake). The workflow stays green.
+- **`push_failed`** — a step of `upload_cache` failed before or during
+  the push: the curl install, the tool build, the mint, or the
+  put-staged call. Look at the step logs, the broker grant, and the
+  bucket. The upload_cache job goes red (allowed failure); the run
+  stays green. A rejected command line, a curl older than the tool
+  accepts, or a prefix the credential does not cover fails every SHA
+  in the tick rather than one.
+- **`verify_failed`** — the push reported success, but `cache get`
+  plus `lake build --no-build` found missing oleans. Either the push
+  uploaded an incomplete set, or the read lagged the write. The verify
+  job goes red (allowed failure); the run stays green.
+- **Mint failed** — the broker refused the token, and the SHA records
+  `push_failed`. Check the grant row and the `MATHLIB_CACHE_BROKER_URL`
+  variable.
 
 ## Trade-offs
 
 - **Three-job split mirrors mathlib4 CI.** Build runs on a self-hosted
-  runner with no token; push runs on ubuntu-latest with the bearer;
-  verify runs on a fresh ubuntu without the bearer. The cache binary
-  the upload job uses is built fresh from a shallow `master`
-  checkout, so it's never a binary that came off the build runner.
-  This is the same posture as
-  `mathlib4/.github/workflows/build_template.yml`'s
-  `build` → `upload_cache` → `post_steps` chain.
+  runner with no credential; push runs on ubuntu-latest with the R2
+  credentials; verify runs on a fresh ubuntu without them. The upload
+  job builds its cache binary from a shallow `master` checkout, so the
+  binary that holds the credentials came from this job. This is the
+  posture of the `build` → `upload_cache` → `post_steps` chain in
+  `mathlib4/.github/workflows/build_template.yml`.
 - **Probe/stage run the target SHA's cache tool.** Cache file names
   embed the tool's hash generation (`Cache/IO.lean`
   `rootHashGeneration`), which moves with mathlib master. Probing and
@@ -654,16 +578,19 @@ annotation.
   makes the in-tree tool source trusted.
 - **Published-only.** `build_and_stage` accepts SHAs reachable from
   `origin/master` and SHAs reachable from a published release tag
-  (`git tag --contains`); everything else is refused via an explicit
-  check. Downstreams that pin a stable mathlib release (e.g.
-  `v4.29.1`) land their LKG/FKB on a tag that diverged from master,
-  and warming those oleans is exactly what `lake exe cache get` at
-  that tag wants — mathlib's own release CI already caches the same
-  content-addressed blobs, so this is idempotent rather than
-  namespace pollution. Arbitrary branch tips and typo SHAs are still
-  refused.
-- **Probe is best-effort.** `lake build --no-build -v Mathlib` after
-  `cache get` is the canonical way to check completeness. False
-  negatives (cache present but probe reported `cold`) waste a build
-  but are harmless. False positives are not really possible — if
-  lake says every olean is present and valid, they are.
+  (`git tag --contains`), and refuses everything else. A downstream
+  that pins a stable mathlib release (e.g. `v4.29.1`) lands its
+  LKG/FKB on a tag that diverged from master, and `lake exe cache get`
+  at that tag reads the warmed oleans. mathlib's own release CI caches
+  the same content-addressed blobs, so the push is idempotent. The
+  check refuses arbitrary branch tips and typo SHAs.
+- **Probe measures the runner's view.** `cache get` downloads only the
+  files absent from the runner's local cache, and `lake build
+  --no-build -v Mathlib` then checks the oleans that `cache get`
+  unpacked. The `pr` pool keeps the local cache across jobs, and every
+  mathlib build on the pool (mathlib4's own CI and this
+  `build_and_stage`) packs its oleans into it before its upload runs,
+  so the probe can report `warm` for a file the bucket lacks. A `warm`
+  result ends the chain as `already_warm`, and `verify` runs only
+  after a push, so `already_warm` confirms the runner's local cache
+  and not the bucket. A false `cold` costs one build.
