@@ -251,11 +251,11 @@
       "repo": "TauCetiProject/TauCeti",
       "default_branch": "main",
       "dependency_name": "mathlib",
-      "enabled": true,
+      "enabled": false,
       "watch_manifest": true,
       "bumping_branch": "main",
       "target_mode": "master",
-      "revalidate_boundary": true
+      "revalidate_boundary": false
     },
     {
       "name": "PFR",
