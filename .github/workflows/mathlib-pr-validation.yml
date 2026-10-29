@@ -63,6 +63,7 @@ concurrency:
   # build cancels it by hand.
   group: mathlib-pr-validation
   cancel-in-progress: false
+  queue: max
 
 env:
   MATHLIB_CACHE_GET_URL: https://cache.mathlib.org/mathlib4
